@@ -1,0 +1,40 @@
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f3f4f6; /* slate-100 */
+  color: #111827; /* gray-900 */
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Leaflet tile images only (keeps our colored building overlays readable). */
+.leaflet-tile-container img {
+  /* Closer to the original "base grayscale" look (less washed out). */
+  filter: grayscale(1) contrast(1.05) brightness(1.05);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
