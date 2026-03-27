@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { loadData, saveData } from './db'
 import { newId } from './id'
-import type { AddressBounds, AppData, CanvassStatus, CaseFile, Location, Track, TrackPoint } from './types'
+import type { AddressBounds, AppData, AppUser, CanvassStatus, CaseFile, Location, Track, TrackPoint } from './types'
 
 type StoreState = {
   ready: boolean
@@ -54,18 +54,36 @@ type StoreState = {
 
 const StoreCtx = createContext<StoreState | null>(null)
 
+function ensurePocUsers(data: AppData): AppData {
+  if (data.users.length > 0) return data
+  const now = Date.now()
+  const users: AppUser[] = [
+    { id: 'u-demo-1', displayName: 'Det. Alex Rivera', email: 'alex.rivera.demo@nypd.local', taxNumber: 'TAX1001', createdAt: now },
+    { id: 'u-demo-2', displayName: 'Det. Morgan Lee', email: 'morgan.lee.demo@nypd.local', taxNumber: 'TAX1002', createdAt: now },
+    {
+      id: 'u-demo-3',
+      displayName: 'Sgt. Jordan Patel',
+      email: 'jordan.patel.demo@nypd.local',
+      taxNumber: 'TAX2001',
+      createdAt: now,
+    },
+  ]
+  return { ...data, users }
+}
+
 export function StoreProvider(props: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false)
-  const [data, setData] = useState<AppData>({ version: 1, cases: [], locations: [], tracks: [], trackPoints: [] })
-  const dataRef = useRef<AppData>({ version: 1, cases: [], locations: [], tracks: [], trackPoints: [] })
+  const [data, setData] = useState<AppData>({ version: 1, cases: [], locations: [], tracks: [], trackPoints: [], users: [], caseCollaborators: [] })
+  const dataRef = useRef<AppData>({ version: 1, cases: [], locations: [], tracks: [], trackPoints: [], users: [], caseCollaborators: [] })
 
   useEffect(() => {
     let alive = true
     ;(async () => {
-      const d = await loadData()
+      const d = ensurePocUsers(await loadData())
       if (!alive) return
       dataRef.current = d
       setData(d)
+      await saveData(d)
       setReady(true)
     })()
     return () => {

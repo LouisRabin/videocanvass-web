@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { Layout } from './Layout'
 import { useStore } from '../lib/store'
 import { Modal } from './Modal'
+import type { AppUser } from '../lib/types'
 
-export function CasesPage(props: { onOpenCase: (caseId: string) => void }) {
+export function CasesPage(props: { onOpenCase: (caseId: string) => void; currentUser: AppUser; onLogout: () => void }) {
   const { ready, data, createCase, deleteCase } = useStore()
   const [q, setQ] = useState('')
   const [showNewCaseForm, setShowNewCaseForm] = useState(false)
@@ -34,10 +35,16 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void }) {
   return (
     <Layout
       title="Cases"
+      subtitle={`Signed in as ${props.currentUser.displayName} (${props.currentUser.taxNumber})`}
       right={
-        <button onClick={() => setShowNewCaseForm(true)} style={btnPrimary}>
-          + New case
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setShowNewCaseForm(true)} style={btnPrimary}>
+            + New case
+          </button>
+          <button onClick={props.onLogout} style={btn}>
+            Sign out
+          </button>
+        </div>
       }
     >
       {!ready ? (

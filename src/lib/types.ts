@@ -82,12 +82,31 @@ export const CaseSchema = z.object({
 })
 export type CaseFile = z.infer<typeof CaseSchema>
 
+export const AppUserSchema = z.object({
+  id: z.string(),
+  displayName: z.string().min(1),
+  email: z.string().email(),
+  taxNumber: z.string().min(1),
+  createdAt: z.number(),
+})
+export type AppUser = z.infer<typeof AppUserSchema>
+
+export const CaseCollaboratorSchema = z.object({
+  caseId: z.string(),
+  userId: z.string(),
+  role: z.enum(['viewer', 'editor']).default('viewer'),
+  createdAt: z.number(),
+})
+export type CaseCollaborator = z.infer<typeof CaseCollaboratorSchema>
+
 export const AppDataSchema = z.object({
   version: z.literal(1),
   cases: z.array(CaseSchema),
   locations: z.array(LocationSchema),
   tracks: z.array(TrackSchema).default([]),
   trackPoints: z.array(TrackPointSchema).default([]),
+  users: z.array(AppUserSchema).default([]),
+  caseCollaborators: z.array(CaseCollaboratorSchema).default([]),
 })
 export type AppData = z.infer<typeof AppDataSchema>
 
@@ -97,6 +116,8 @@ export const DEFAULT_DATA: AppData = {
   locations: [],
   tracks: [],
   trackPoints: [],
+  users: [],
+  caseCollaborators: [],
 }
 
 export function statusLabel(s: CanvassStatus): string {

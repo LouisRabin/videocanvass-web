@@ -14,6 +14,13 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo Updating this folder:
+echo   %CD%
+echo.
+echo Remote:
+git remote -v
+echo.
+
 echo [1/2] Pulling latest changes...
 git pull
 if errorlevel 1 (
