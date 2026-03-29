@@ -714,6 +714,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         mapTimeLabelOffsetY: 0,
         createdByUserId: actor,
         createdAt: stamp,
+        updatedAt: stamp,
       }
 
       const next: AppData = {
