@@ -8,15 +8,26 @@
     "dev:lan": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "cap:sync": "npm run build && node scripts/cap-copy-web.cjs",
+    "cap:sync:cli": "npm run build && npx cap sync",
+    "cap:open": "npx cap open ios",
+    "cap:open:android": "npx cap open android",
+    "appetize:android": "powershell -ExecutionPolicy Bypass -File scripts/build-android-appetize.ps1",
+    "appetize:ios": "bash scripts/build-ios-simulator-appetize.sh"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.0",
+    "@capacitor/cli": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
+    "@capacitor/ios": "^8.3.0",
     "@supabase/supabase-js": "^2.57.4",
     "leaflet": "^1.9.4",
     "localforage": "^1.10.0",
+    "maplibre-gl": "^5.21.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-leaflet": "^5.0.0",
+    "react-map-gl": "^8.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

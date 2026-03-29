@@ -1,3 +1,31 @@
+# VideoCanvass (web + Capacitor)
+
+## Single working project (OneDrive only)
+
+**This folder is the only working codebase.** Do all edits, builds, and Android Studio opens here — for example `C:\Users\<you>\OneDrive\videocanvass-web`.
+
+- Do **not** keep a second “live” copy under `Documents`, `Desktop`, or another clone and switch between them; you will drift out of sync.
+- If an old duplicate exists elsewhere, **archive or delete it** after you confirm anything important is already here (or copy missing files in once, then remove the duplicate).
+- **Git** (if you use it) should point at **this same folder** — not a separate checkout you edit instead of OneDrive.
+
+Included: full **web** app (`src/`, Vite) and **Capacitor** **`android/`** + **`ios/`**.
+
+- **`npm run cap:sync`** — builds the web app and copies `dist/` into native projects (uses `scripts/cap-copy-web.cjs` so it works when OneDrive breaks `npx cap`).
+- **`npm run cap:open:android`** — open in Android Studio and Run on an emulator.
+
+Full steps: [docs/TESTING_WALKTHROUGH.md](docs/TESTING_WALKTHROUGH.md).
+
+**New or second PC (Android tomorrow):** [docs/SETUP_NEW_COMPUTER.md](docs/SETUP_NEW_COMPUTER.md).
+
+For native plugin changes or if you prefer the official tool: **`npm run cap:sync:cli`** (`npx cap sync`) on a machine where the Capacitor CLI runs cleanly.
+
+## For developers
+
+- **Where the code lives:** [docs/CODEMAP.md](docs/CODEMAP.md)
+- **Geocode, footprints, and retrieval policy:** [HANDOFF.md](HANDOFF.md)
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

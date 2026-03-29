@@ -30,6 +30,7 @@ export const LocationSchema = z.object({
   status: CanvassStatusSchema,
   notes: z.string().default(''),
   lastVisitedAt: z.number().nullable().default(null),
+  createdByUserId: z.string().default(''),
   createdAt: z.number(),
   updatedAt: z.number(),
 })
@@ -39,9 +40,10 @@ export const TrackSchema = z.object({
   id: z.string(),
   caseId: z.string(),
   label: z.string().min(1),
-  kind: z.enum(['person', 'vehicle']).default('person'),
+  kind: z.enum(['person', 'vehicle', 'other']).default('person'),
   // When set to a CSS hex color (e.g. #2563eb), routes and pins use it; empty string uses the default palette.
   routeColor: z.string().default(''),
+  createdByUserId: z.string().default(''),
   createdAt: z.number(),
 })
 export type Track = z.infer<typeof TrackSchema>
@@ -68,12 +70,16 @@ export const TrackPointSchema = z.object({
   // Pixel offset for that time label relative to the default spot next to the pin.
   mapTimeLabelOffsetX: z.number().int().default(0),
   mapTimeLabelOffsetY: z.number().int().default(0),
+  createdByUserId: z.string().default(''),
   createdAt: z.number(),
+  /** Bump on every edit; used for merge (createdAt alone stays fixed after create). */
+  updatedAt: z.number().optional(),
 })
 export type TrackPoint = z.infer<typeof TrackPointSchema>
 
 export const CaseSchema = z.object({
   id: z.string(),
+  ownerUserId: z.string().default(''),
   caseNumber: z.string().min(1),
   title: z.string().min(1),
   description: z.string().default(''),
@@ -99,6 +105,23 @@ export const CaseCollaboratorSchema = z.object({
 })
 export type CaseCollaborator = z.infer<typeof CaseCollaboratorSchema>
 
+/** In-app reference images (e.g. suspect description, wanted flyer); stored as data URLs in the shared JSON payload. */
+export const CaseAttachmentKindSchema = z.enum(['suspect_description', 'wanted_flyer', 'other'])
+export type CaseAttachmentKind = z.infer<typeof CaseAttachmentKindSchema>
+
+export const CaseAttachmentSchema = z.object({
+  id: z.string(),
+  caseId: z.string(),
+  kind: CaseAttachmentKindSchema.default('other'),
+  caption: z.string().default(''),
+  /** data:image/…;base64,… — resized client-side before save. */
+  imageDataUrl: z.string().min(1),
+  createdByUserId: z.string().default(''),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+})
+export type CaseAttachment = z.infer<typeof CaseAttachmentSchema>
+
 export const AppDataSchema = z.object({
   version: z.literal(1),
   cases: z.array(CaseSchema),
@@ -107,6 +130,13 @@ export const AppDataSchema = z.object({
   trackPoints: z.array(TrackPointSchema).default([]),
   users: z.array(AppUserSchema).default([]),
   caseCollaborators: z.array(CaseCollaboratorSchema).default([]),
+  caseAttachments: z.array(CaseAttachmentSchema).default([]),
+  /** IDs removed locally; kept so merge-with-remote cannot resurrect deleted rows from Supabase. */
+  deletedCaseIds: z.array(z.string()).default([]),
+  deletedLocationIds: z.array(z.string()).default([]),
+  deletedTrackIds: z.array(z.string()).default([]),
+  deletedTrackPointIds: z.array(z.string()).default([]),
+  deletedCaseAttachmentIds: z.array(z.string()).default([]),
 })
 export type AppData = z.infer<typeof AppDataSchema>
 
@@ -118,6 +148,23 @@ export const DEFAULT_DATA: AppData = {
   trackPoints: [],
   users: [],
   caseCollaborators: [],
+  caseAttachments: [],
+  deletedCaseIds: [],
+  deletedLocationIds: [],
+  deletedTrackIds: [],
+  deletedTrackPointIds: [],
+  deletedCaseAttachmentIds: [],
+}
+
+export function caseAttachmentKindLabel(k: CaseAttachmentKind): string {
+  switch (k) {
+    case 'suspect_description':
+      return 'Suspect / description'
+    case 'wanted_flyer':
+      return 'Wanted flyer'
+    case 'other':
+      return 'Other'
+  }
 }
 
 export function statusLabel(s: CanvassStatus): string {
@@ -125,7 +172,7 @@ export function statusLabel(s: CanvassStatus): string {
     case 'noCameras':
       return 'No cameras'
     case 'camerasNoAnswer':
-      return 'Cameras, no answer'
+      return 'Needs Follow up'
     case 'notProbativeFootage':
       return 'Not probative footage'
     case 'probativeFootage':

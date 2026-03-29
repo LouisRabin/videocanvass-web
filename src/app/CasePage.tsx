@@ -1,137 +1,238 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { CircleMarker, MapContainer, Marker, Polyline, Polygon, Rectangle, TileLayer, useMap, useMapEvents } from 'react-leaflet'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+} from 'react'
 import { Layout } from './Layout'
 import { Modal } from './Modal'
+import { AddressesMapLibre, type UnifiedCaseMapHandle } from './AddressesMapLibre'
 import { useStore } from '../lib/store'
-import type { CanvassStatus, Location, Track, TrackPoint } from '../lib/types'
-import { statusColor, statusLabel } from '../lib/types'
-import { GEOCODE_SCOPE, searchPlaces, type PlaceSuggestion } from '../lib/geocode'
-import { fetchBuildingFootprint, reverseGeocodeAddressText } from '../lib/building'
+import {
+  canAddCaseContent,
+  canDeleteAllTracksForCase,
+  canDeleteCaseAttachment,
+  canDeleteLocation,
+  canDeleteTrack,
+  canDeleteTrackPoint,
+  canEditCaseAttachment,
+  canEditCaseMeta,
+  canEditLocation,
+  canEditTrack,
+  canEditTrackPoint,
+} from '../lib/casePermissions'
+import { processCaseImageFile } from '../lib/caseImageUpload'
+import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track } from '../lib/types'
+import { caseAttachmentKindLabel, statusColor, statusLabel } from '../lib/types'
+import { GEOCODE_SCOPE, reverseGeocodeAddressText, searchPlaces, type PlaceSuggestion } from '../lib/geocode'
+import { fetchBuildingFootprint } from '../lib/building'
+import { buildResolvedTrackColorMap, TRACK_DEFAULT_COLORS_FIRST_FOUR } from '../lib/trackColors'
+import { formatAppDateTime } from '../lib/timeFormat'
+import { ProbativeDvrFlowModals } from './ProbativeDvrFlow'
+import { CASE_DESCRIPTION_MAX_CHARS, clampCaseDescription } from '../lib/caseMeta'
+import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 
-import L from 'leaflet'
+// See docs/CODEMAP.md; geocode/footprint policy in HANDOFF.md.
 
-const TRACK_COLOR_PALETTE = ['#3b82f6', '#f97316', '#a855f7', '#14b8a6', '#ef4444', '#22c55e', '#f59e0b', '#10b981'] as const
+import {
+  appendToNotes,
+  casePhotoCarouselArrowStyle,
+  CASE_WORKSPACE_CHROME_PX,
+  extendBoundsWithLocations,
+  extendBoundsWithPathPoints,
+  findLocationByAddressText,
+  findLocationHitByMapClick,
+  isProvisionalCanvassLabel,
+  LIST_STATUS_SORT_ORDER,
+  OUTLINE_CONCURRENCY,
+  type PendingAddItem,
+  readStoredCaseMapFocus,
+  samePendingPin,
+  sortTrackPointsStable,
+  writeStoredCaseMapFocus,
+} from './casePageHelpers'
 
-function paletteColorForTrackIndex(tracks: Track[], trackId: string): string {
-  const idx = tracks.findIndex((t) => t.id === trackId)
-  return TRACK_COLOR_PALETTE[Math.max(0, idx)] ?? '#111827'
+import {
+  LegendChip,
+  LocationDrawer,
+  TrackPointDrawer,
+  RowStatusButton,
+  btn,
+  btnDanger,
+  btnPrimary,
+  card,
+  caseHeaderReadonlyDesc,
+  caseHeaderReadonlyTitle,
+  caseMetaInlineDescEdit,
+  caseMetaInlineNameEdit,
+  field,
+  label,
+  listHeaderRow,
+  listRow,
+  listRowMainBtn,
+  mapTopBar,
+  select,
+  statusBadge,
+  suggestionBtn,
+  viewModeBtn,
+} from './case/CasePageChrome'
+
+/** Longer than AddressesMapLibre SINGLE_TAP_DEFER_MS (270) so open + deferred map tap don't dismiss the dock. */
+const MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS = 350
+
+/**
+ * When the browser page zoom is below 100%, `innerHeight` (CSS px) often grows while `outerHeight`
+ * stays near the window chrome size. Capping with `outerHeight` keeps the map column from stretching
+ * taller than a ~100% zoom layout.
+ */
+function useWorkspaceHeightCapPx(): number | undefined {
+  const [px, setPx] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    const tick = () => {
+      const inner = window.innerHeight
+      const outer = window.outerHeight
+      if (!outer || outer < 240) {
+        setPx(inner)
+        return
+      }
+      const frameCap = Math.round(outer * 0.94)
+      setPx(Math.min(inner, Math.max(280, frameCap)))
+    }
+    tick()
+    window.addEventListener('resize', tick)
+    return () => window.removeEventListener('resize', tick)
+  }, [])
+  return px
 }
 
-function trackRouteColor(tracks: Track[], trackId: string): string {
-  const t = tracks.find((x) => x.id === trackId)
-  const c = (t?.routeColor ?? '').trim()
-  if (/^#[0-9A-Fa-f]{6}$/.test(c)) return c
-  if (/^#[0-9A-Fa-f]{3}$/.test(c)) {
-    const h = c.slice(1)
-    return `#${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`
+const listNotesPeekRow: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  width: '100%',
+  boxSizing: 'border-box',
+  background: 'rgba(249,250,251,0.95)',
+  padding: '8px 10px',
+  borderRadius: 8,
+}
+
+const listNotesPeekArrowBtn: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  margin: 0,
+  border: 'none',
+  background: 'transparent',
+  padding: '8px 6px',
+  cursor: 'pointer',
+  fontSize: 16,
+  fontWeight: 900,
+  color: '#374151',
+  lineHeight: 1,
+  borderRadius: 6,
+  boxSizing: 'border-box',
+}
+
+function CaseListSelectedLocationPanel(props: {
+  location: Location
+  canEdit: boolean
+  canDelete: boolean
+  footprintLoading: boolean
+  footprintFailed: boolean
+  onNotesChange: (notes: string) => void
+  onRemove: () => void
+}) {
+  const [notesOpen, setNotesOpen] = useState(false)
+  const l = props.location
+  const removeBtn =
+    props.canDelete ? (
+      <button
+        type="button"
+        style={{ ...btnDanger, fontSize: 12, flexShrink: 0 }}
+        onClick={() => props.onRemove()}
+        aria-label="Remove address from case"
+      >
+        Remove
+      </button>
+    ) : null
+  if (!notesOpen) {
+    return (
+      <div style={{ gridColumn: '1 / -1' }} onClick={(e) => e.stopPropagation()}>
+        <div style={listNotesPeekRow}>
+          <button
+            type="button"
+            onClick={() => setNotesOpen(true)}
+            style={listNotesPeekArrowBtn}
+            aria-label="Expand notes and details"
+          >
+            ▲
+          </button>
+          {removeBtn}
+        </div>
+      </div>
+    )
   }
-  return paletteColorForTrackIndex(tracks, trackId)
+  return (
+    <div
+      style={{
+        gridColumn: '1 / -1',
+        paddingTop: 12,
+        marginTop: 4,
+        borderTop: '1px solid #e5e7eb',
+        display: 'grid',
+        gap: 10,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div style={{ ...listNotesPeekRow, background: '#f9fafb', border: '1px solid #e5e7eb' }}>
+        <button
+          type="button"
+          aria-expanded
+          onClick={() => setNotesOpen(false)}
+          style={listNotesPeekArrowBtn}
+          aria-label="Collapse notes and details"
+        >
+          ▼
+        </button>
+        {removeBtn}
+      </div>
+      {props.footprintLoading ? (
+        <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
+          Loading building outline in background…
+        </div>
+      ) : null}
+      {props.footprintFailed ? (
+        <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
+          Building outline unavailable for this point (notes still save normally).
+        </div>
+      ) : null}
+      <div>
+        <div style={label}>Notes</div>
+        <textarea
+          value={l.notes}
+          readOnly={!props.canEdit}
+          onChange={(e) => props.onNotesChange(e.target.value)}
+          placeholder="What did you observe?"
+          style={{ ...field, minHeight: 96, resize: 'vertical', maxWidth: '100%', boxSizing: 'border-box' }}
+        />
+      </div>
+    </div>
+  )
 }
 
-function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
-  const ds = a.sequence - b.sequence
-  if (ds !== 0) return ds
-  const dt = (a.visitedAt ?? a.createdAt) - (b.visitedAt ?? b.createdAt)
-  if (dt !== 0) return dt
-  return a.id.localeCompare(b.id)
-}
-
-function escapeHtmlAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
-}
-
-function formatSubjectTime(ts: number): string {
-  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-}
-
-const MAP_LABEL_OFFSET_MAX = 800
-
-function clampMapLabelOffset(n: number): number {
-  if (!Number.isFinite(n)) return 0
-  return Math.max(-MAP_LABEL_OFFSET_MAX, Math.min(MAP_LABEL_OFFSET_MAX, Math.round(n)))
-}
-
-function timeLabelTetherScreenEndpoints(
-  map: {
-    latLngToContainerPoint(ll: InstanceType<typeof L.LatLng>): { x: number; y: number }
-    containerPointToLatLng(pt: { x: number; y: number }): { lat: number; lng: number }
-  },
-  pinLat: number,
-  pinLon: number,
-  timeMarkerLat: number,
-  timeMarkerLng: number,
-  _labelW: number,
-  labelH: number,
-): { pinX: number; pinY: number; chipX: number; chipY: number } {
-  const pinAnchorPx = map.latLngToContainerPoint(L.latLng(pinLat, pinLon))
-  const pinX = pinAnchorPx.x
-  const pinY = pinAnchorPx.y
-
-  const anchorPx = map.latLngToContainerPoint(L.latLng(timeMarkerLat, timeMarkerLng))
-  // The label marker anchor sits at bottom-center of the chip divIcon.
-  // Use the chip center for a continuously moving tether endpoint.
-  const chipX = anchorPx.x
-  const chipY = anchorPx.y - labelH / 2
-  return { pinX, pinY, chipX, chipY }
-}
-
-function timeLabelTetherLatLngs(
-  map: {
-    latLngToContainerPoint(ll: InstanceType<typeof L.LatLng>): { x: number; y: number }
-    containerPointToLatLng(pt: { x: number; y: number }): { lat: number; lng: number }
-  },
-  pinLat: number,
-  pinLon: number,
-  timeMarkerLat: number,
-  timeMarkerLng: number,
-  labelW: number,
-  labelH: number,
-): [[number, number], [number, number]] {
-  const se = timeLabelTetherScreenEndpoints(map, pinLat, pinLon, timeMarkerLat, timeMarkerLng, labelW, labelH)
-  const a = map.containerPointToLatLng(L.point(se.pinX, se.pinY))
-  const b = map.containerPointToLatLng(L.point(se.chipX, se.chipY))
-  return [
-    [a.lat, a.lng],
-    [b.lat, b.lng],
-  ]
-}
-
-function colorPickerValueForTrack(tracks: Track[], t: Track): string {
-  const c = (t.routeColor ?? '').trim()
-  if (/^#[0-9A-Fa-f]{6}$/.test(c)) return c
-  return paletteColorForTrackIndex(tracks, t.id)
-}
-
-function extendBoundsWithLocations(
-  b: any,
-  locs: Array<Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>>,
-): any {
-  let out = b
-  for (const p of locs) {
-    const lb = L.latLngBounds(locationBounds(p))
-    out = out ? out.extend(lb) : lb
-  }
-  return out
-}
-
-function extendBoundsWithPathPoints(
-  b: any,
-  pts: Array<{ lat: number; lon: number }>,
-): any {
-  let out = b
-  for (const p of pts) {
-    const ll = L.latLng(p.lat, p.lon)
-    out = out ? out.extend(ll) : L.latLngBounds(ll, ll)
-  }
-  return out
-}
-
-export function CasePage(props: { caseId: string; onBack: () => void }) {
+export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: () => void }) {
   const {
     data,
     createLocation,
     updateLocation,
     deleteLocation,
+    updateCase,
+    addCaseAttachment,
+    updateCaseAttachment,
+    deleteCaseAttachment,
     createTrack,
     updateTrack,
     deleteTrack,
@@ -141,8 +242,177 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
     updateTrackPoint,
   } =
     useStore()
+  const actorId = props.currentUser.id
   const c = data.cases.find((x) => x.id === props.caseId) ?? null
+  const canEditCaseMetaHere = useMemo(
+    () => (c ? canEditCaseMeta(data, c.id, actorId) : false),
+    [c, data, actorId],
+  )
+  const canAddCaseContentHere = useMemo(
+    () => canAddCaseContent(data, props.caseId, actorId),
+    [data, props.caseId, actorId],
+  )
+  const canDeleteAllTracksHere = useMemo(
+    () => canDeleteAllTracksForCase(data, props.caseId, actorId),
+    [data, props.caseId, actorId],
+  )
 
+  const caseAttachments = useMemo(() => {
+    return data.caseAttachments
+      .filter((a) => a.caseId === props.caseId)
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+  }, [data.caseAttachments, props.caseId])
+
+  const [addPhotoModalOpen, setAddPhotoModalOpen] = useState(false)
+  const [pendingAddKind, setPendingAddKind] = useState<CaseAttachmentKind>('wanted_flyer')
+  const [refPhotoBusy, setRefPhotoBusy] = useState(false)
+  const [refPhotoErr, setRefPhotoErr] = useState<string | null>(null)
+  const refPhotoInputRef = useRef<HTMLInputElement>(null)
+  const [sidebarMediaIndex, setSidebarMediaIndex] = useState(0)
+  const [photoViewerIndex, setPhotoViewerIndex] = useState<number | null>(null)
+  const workspaceCapPx = useWorkspaceHeightCapPx()
+  const caseShellMaxH =
+    workspaceCapPx != null ? Math.max(240, workspaceCapPx - CASE_WORKSPACE_CHROME_PX) : undefined
+  const isNarrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
+  const [mapLeftToolDockOpen, setMapLeftToolDockOpen] = useState(false)
+  const [mapLeftToolSection, setMapLeftToolSection] = useState<null | 'filters' | 'views' | 'photos' | 'tracks'>(null)
+  /** Shared: narrow “Views” dock + wide control column quick-add. */
+  const [quickMenuAddr, setQuickMenuAddr] = useState('')
+  const [quickMenuSug, setQuickMenuSug] = useState<PlaceSuggestion[]>([])
+  const [quickMenuLoading, setQuickMenuLoading] = useState(false)
+  const [dvrLinkLocationSession, setDvrLinkLocationSession] = useState<null | { notesAppend: string }>(null)
+  const [dvrLinkAddr, setDvrLinkAddr] = useState('')
+  const [dvrLinkSug, setDvrLinkSug] = useState<PlaceSuggestion[]>([])
+  const [dvrLinkLoading, setDvrLinkLoading] = useState(false)
+  const [dvrLinkPicked, setDvrLinkPicked] = useState<null | PlaceSuggestion>(null)
+  const [dvrLinkSaving, setDvrLinkSaving] = useState(false)
+  useEffect(() => {
+    if (!isNarrow) {
+      setMapLeftToolDockOpen(false)
+      setMapLeftToolSection(null)
+    }
+  }, [isNarrow])
+
+  const mapToolsDockRef = useRef<HTMLDivElement>(null)
+  /** Ignore outside-dismiss until this time (performance.now ms) so open + deferred map tap don't instantly close. */
+  const mapToolsDockIgnoreOutsideUntilRef = useRef(0)
+  const narrowMapAddressRef = useRef<HTMLDivElement>(null)
+  const wideAddrSearchRef = useRef<HTMLDivElement>(null)
+  const mapPaneShellRef = useRef<HTMLDivElement>(null)
+  const caseMapDetailOverlayRef = useRef<HTMLDivElement>(null)
+  const addrSearchInputRef = useRef<HTMLInputElement>(null)
+  /** Keep latest UI flags for document/window capture handler (avoids stale `menuOpen` / `addrMapDismiss` closures). */
+  const isNarrowRef = useRef(false)
+  const mapLeftToolDockOpenRef = useRef(false)
+  const addrFieldFocusedRef = useRef(false)
+  const caseTabRef = useRef<'addresses' | 'tracking'>('addresses')
+  const viewModeRef = useRef<'map' | 'list'>('map')
+  const probativePlacementSessionRef = useRef<null | { trackId: string }>(null)
+  const closeMapToolsDock = useCallback(() => {
+    mapToolsDockIgnoreOutsideUntilRef.current = 0
+    setMapLeftToolDockOpen(false)
+    setMapLeftToolSection(null)
+    setQuickMenuAddr('')
+    setQuickMenuSug([])
+    setQuickMenuLoading(false)
+  }, [])
+
+  const [photoViewerCaptionDraft, setPhotoViewerCaptionDraft] = useState('')
+  const [photoViewerCaptionFocused, setPhotoViewerCaptionFocused] = useState(false)
+  const photoCaptionTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const activePhotoViewerAttachment =
+    photoViewerIndex != null ? caseAttachments[photoViewerIndex] ?? null : null
+
+  useEffect(() => {
+    if (photoViewerIndex == null) {
+      setPhotoViewerCaptionDraft('')
+      setPhotoViewerCaptionFocused(false)
+      return
+    }
+    if (activePhotoViewerAttachment) {
+      setPhotoViewerCaptionDraft(activePhotoViewerAttachment.caption ?? '')
+    }
+  }, [photoViewerIndex, activePhotoViewerAttachment?.id, activePhotoViewerAttachment?.updatedAt])
+
+  useLayoutEffect(() => {
+    const el = photoCaptionTextareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const cap = isNarrow ? 200 : 280
+    el.style.height = `${Math.min(el.scrollHeight, cap)}px`
+  }, [photoViewerCaptionDraft, photoViewerIndex, isNarrow])
+
+  useEffect(() => {
+    if (!photoViewerCaptionFocused || !isNarrow) return
+    const id = window.setTimeout(() => {
+      photoCaptionTextareaRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 280)
+    return () => window.clearTimeout(id)
+  }, [photoViewerCaptionFocused, isNarrow])
+
+  const onRefPhotoPick = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      e.target.value = ''
+      if (!file || !c) return
+      setRefPhotoErr(null)
+      setRefPhotoBusy(true)
+      try {
+        const imageDataUrl = await processCaseImageFile(file)
+        const kind = pendingAddKind
+        await addCaseAttachment(actorId, {
+          caseId: c.id,
+          kind,
+          imageDataUrl,
+        })
+        setAddPhotoModalOpen(false)
+        setSidebarMediaIndex(0)
+      } catch (err) {
+        setRefPhotoErr(err instanceof Error ? err.message : 'Could not add photo')
+      } finally {
+        setRefPhotoBusy(false)
+      }
+    },
+    [actorId, c, pendingAddKind, addCaseAttachment],
+  )
+
+  const attachmentCount = caseAttachments.length
+  useEffect(() => {
+    if (attachmentCount === 0) {
+      setSidebarMediaIndex(0)
+      setPhotoViewerIndex(null)
+      return
+    }
+    setSidebarMediaIndex((i) => Math.min(Math.max(0, i), attachmentCount - 1))
+    setPhotoViewerIndex((v) => (v == null ? null : Math.min(Math.max(0, v), attachmentCount - 1)))
+  }, [attachmentCount])
+
+  useEffect(() => {
+    if (photoViewerIndex == null) return
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement
+      if (t.closest('textarea, input, select')) return
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        setPhotoViewerIndex((v) => {
+          if (v == null || caseAttachments.length < 2) return v
+          return (v - 1 + caseAttachments.length) % caseAttachments.length
+        })
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        setPhotoViewerIndex((v) => {
+          if (v == null || caseAttachments.length < 2) return v
+          return (v + 1) % caseAttachments.length
+        })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [photoViewerIndex, caseAttachments.length])
+
+  /** Every canvass location in this case (all statuses). `mapPins` / list UI may be filtered; this is not. */
   const locations = useMemo(() => data.locations.filter((l) => l.caseId === props.caseId), [data.locations, props.caseId])
 
   const [filters, setFilters] = useState<Record<CanvassStatus, boolean>>({
@@ -154,8 +424,27 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
 
   const filtered = useMemo(() => locations.filter((l) => filters[l.status]), [locations, filters])
 
+  const locationsForListView = useMemo(() => {
+    return filtered.slice().sort((a, b) => {
+      const ds = LIST_STATUS_SORT_ORDER[a.status] - LIST_STATUS_SORT_ORDER[b.status]
+      if (ds !== 0) return ds
+      return b.updatedAt - a.updatedAt
+    })
+  }, [filtered])
+
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [locationDetailOpen, setLocationDetailOpen] = useState(false)
   const selected = useMemo(() => (selectedId ? locations.find((l) => l.id === selectedId) ?? null : null), [locations, selectedId])
+
+  useEffect(() => {
+    if (!selectedId) setLocationDetailOpen(false)
+  }, [selectedId])
+
+  /** Map tap: always select the location and open the notes/drawer (one click). */
+  const onMapLocationPress = useCallback((id: string) => {
+    setSelectedId(id)
+    setLocationDetailOpen(true)
+  }, [])
 
   const mapPins = useMemo(() => {
     const base = filtered.length ? filtered : locations
@@ -175,25 +464,101 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map')
   const [caseTab, setCaseTab] = useState<'addresses' | 'tracking'>('addresses')
 
+  useEffect(() => {
+    if (viewMode === 'list') setLocationDetailOpen(false)
+  }, [viewMode])
+
+  useEffect(() => {
+    if (isNarrow && viewMode === 'list') closeMapToolsDock()
+  }, [isNarrow, viewMode, closeMapToolsDock])
+
+  useEffect(() => {
+    if (caseTab !== 'addresses') setLocationDetailOpen(false)
+  }, [caseTab])
+
+  const [filterLegendOpen, setFilterLegendOpen] = useState(false)
+  const [caseMetaEditing, setCaseMetaEditing] = useState(false)
+  const [caseNameDraft, setCaseNameDraft] = useState('')
+  const [caseDescDraft, setCaseDescDraft] = useState('')
+  const [caseNameBaseline, setCaseNameBaseline] = useState('')
+  const [caseDescBaseline, setCaseDescBaseline] = useState('')
+
+  const beginCaseMetaEdit = useCallback(() => {
+    if (!c || !canEditCaseMeta(data, c.id, actorId)) return
+    const desc = clampCaseDescription(c.description ?? '')
+    setCaseNameBaseline(c.caseNumber)
+    setCaseDescBaseline(desc)
+    setCaseNameDraft(c.caseNumber)
+    setCaseDescDraft(desc)
+    setCaseMetaEditing(true)
+  }, [actorId, c, data])
+
+  const discardCaseMetaEdit = useCallback(() => {
+    setCaseNameDraft(caseNameBaseline)
+    setCaseDescDraft(caseDescBaseline)
+    setCaseMetaEditing(false)
+  }, [caseNameBaseline, caseDescBaseline])
+
+  const saveCaseMetaEdit = useCallback(() => {
+    if (!c) return
+    const name = caseNameDraft.trim() || caseNameBaseline
+    void updateCase(actorId, c.id, {
+      caseNumber: name,
+      title: name,
+      description: clampCaseDescription(caseDescDraft.trim()),
+    })
+    setCaseMetaEditing(false)
+  }, [c, actorId, caseNameDraft, caseDescDraft, caseNameBaseline, updateCase])
+
+  useEffect(() => {
+    setCaseMetaEditing(false)
+  }, [props.caseId])
+
+  useEffect(() => {
+    if (!canEditCaseMetaHere) setCaseMetaEditing(false)
+  }, [canEditCaseMetaHere])
+
   const caseTracks = useMemo(() => data.tracks.filter((t) => t.caseId === props.caseId), [data.tracks, props.caseId])
-  const [activeTrackId, setActiveTrackId] = useState<string | null>(null)
+  const resolvedTrackColors = useMemo(() => buildResolvedTrackColorMap(caseTracks), [caseTracks])
   const [autoContinuationTrackId, setAutoContinuationTrackId] = useState<string | null>(null)
   const [visibleTrackIds, setVisibleTrackIds] = useState<Record<string, boolean>>({})
   const caseTrackPoints = useMemo(() => data.trackPoints.filter((p) => p.caseId === props.caseId), [data.trackPoints, props.caseId])
 
   const trackForMapAdd = useMemo(() => {
-    if (activeTrackId) return activeTrackId
     if (autoContinuationTrackId && caseTracks.some((t) => t.id === autoContinuationTrackId)) return autoContinuationTrackId
     return caseTracks[0]?.id ?? null
-  }, [activeTrackId, autoContinuationTrackId, caseTracks])
+  }, [autoContinuationTrackId, caseTracks])
   const [showManageTracks, setShowManageTracks] = useState(false)
+  const [showAddTrack, setShowAddTrack] = useState(false)
+  const [addTrackKind, setAddTrackKind] = useState<Track['kind']>('person')
+  const [addTrackLabel, setAddTrackLabel] = useState('')
   const [selectedTrackPointId, setSelectedTrackPointId] = useState<string | null>(null)
+  /** While this equals the open step id, collapsed drawer shows Undo (delete) for the step just placed. */
+  const [trackStepUndoTargetId, setTrackStepUndoTargetId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!activeTrackId) return
-    if (caseTracks.some((t) => t.id === activeTrackId)) return
-    setActiveTrackId(null)
-  }, [caseTracks, activeTrackId])
+    setTrackStepUndoTargetId(null)
+  }, [caseTab])
+
+  useEffect(() => {
+    if (trackStepUndoTargetId != null && selectedTrackPointId !== trackStepUndoTargetId) {
+      setTrackStepUndoTargetId(null)
+    }
+  }, [selectedTrackPointId, trackStepUndoTargetId])
+
+  const onTrackStepLongPress = useCallback((pointId: string) => {
+    if (!window.confirm('Open Subject tracking for this step?')) return
+    setCaseTab('tracking')
+    setSelectedTrackPointId(pointId)
+  }, [])
+
+  const onCanvassLocationLongPress = useCallback((locationId: string) => {
+    if (!window.confirm('Open Video canvassing for this address?')) return
+    setCaseTab('addresses')
+    setSelectedId(locationId)
+    setLocationDetailOpen(true)
+    setSelectedTrackPointId(null)
+  }, [])
 
   useEffect(() => {
     if (!autoContinuationTrackId) return
@@ -202,14 +567,10 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
   }, [caseTracks, autoContinuationTrackId])
 
   useEffect(() => {
-    if (activeTrackId) {
-      setAutoContinuationTrackId(activeTrackId)
-      return
-    }
     if (!selectedTrackPointId) return
     const p = caseTrackPoints.find((x) => x.id === selectedTrackPointId)
     if (p) setAutoContinuationTrackId(p.trackId)
-  }, [activeTrackId, selectedTrackPointId, caseTrackPoints])
+  }, [selectedTrackPointId, caseTrackPoints])
 
   useEffect(() => {
     setVisibleTrackIds((prev) => {
@@ -232,21 +593,458 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
     if (caseTab !== 'tracking') setSelectedTrackPointId(null)
   }, [caseTab])
 
+  const resumeMapFocus = useMemo(() => {
+    const s = readStoredCaseMapFocus(props.caseId)
+    if (!s) return null
+    if (s.kind === 'location') {
+      const loc = locations.find((l) => l.id === s.id)
+      return loc ? { lat: loc.lat, lon: loc.lon } : null
+    }
+    const pt = caseTrackPoints.find((p) => p.id === s.id)
+    return pt ? { lat: pt.lat, lon: pt.lon } : null
+  }, [props.caseId, locations, caseTrackPoints])
+
   useEffect(() => {
-    if (!selectedTrackPointId || !activeTrackId) return
-    const p = caseTrackPoints.find((x) => x.id === selectedTrackPointId)
-    if (!p || p.trackId !== activeTrackId) setSelectedTrackPointId(null)
-  }, [activeTrackId, selectedTrackPointId, caseTrackPoints])
+    if (selectedTrackPointId) {
+      writeStoredCaseMapFocus(props.caseId, 'trackPoint', selectedTrackPointId)
+      return
+    }
+    if (selectedId) {
+      writeStoredCaseMapFocus(props.caseId, 'location', selectedId)
+    }
+  }, [props.caseId, selectedId, selectedTrackPointId])
 
   // Address add UI (autocomplete)
   const [addr, setAddr] = useState('')
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([])
   const [loadingSug, setLoadingSug] = useState(false)
   const [geoBias, setGeoBias] = useState<{ lat: number; lon: number } | null>(null)
+  const [addrFieldFocused, setAddrFieldFocused] = useState(false)
+  const addrBlurClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearAddrFieldFocusSoon = useCallback(() => {
+    if (addrBlurClearRef.current) clearTimeout(addrBlurClearRef.current)
+    addrBlurClearRef.current = window.setTimeout(() => {
+      addrBlurClearRef.current = null
+      setAddrFieldFocused(false)
+    }, 180)
+  }, [])
+  const addrAutocompleteEngaged = addrFieldFocused || loadingSug || suggestions.length > 0
+  const suppressCanvassMapAdd = caseTab === 'addresses' && addrAutocompleteEngaged
+
+  useEffect(() => {
+    return () => {
+      if (addrBlurClearRef.current) clearTimeout(addrBlurClearRef.current)
+    }
+  }, [])
 
   // Map-click create flow: user must choose a status before we create a saved location.
-  const [pendingAdd, setPendingAdd] = useState<null | { lat: number; lon: number; addressText: string }>(null)
-  const [pendingAddBusy, setPendingAddBusy] = useState(false)
+  const [pendingAddQueue, setPendingAddQueue] = useState<PendingAddItem[]>([])
+  const pendingAdd: PendingAddItem | null = pendingAddQueue[0] ?? null
+  const [addLocationSaving, setAddLocationSaving] = useState(false)
+  const addCategoryInFlightRef = useRef(false)
+
+  type ProbativeFlowTarget =
+    | { kind: 'existing'; locationId: string }
+    | { kind: 'new'; pending: PendingAddItem }
+    | { kind: 'dvr_only' }
+  const [probativeFlow, setProbativeFlow] = useState<null | { step: 'accuracy' | 'calc'; target: ProbativeFlowTarget }>(null)
+  const probativeFlowRef = useRef(probativeFlow)
+  probativeFlowRef.current = probativeFlow
+
+  type PostProbativeMarkerPhase = null | 'ask'
+  const [postProbativeMarkerPhase, setPostProbativeMarkerPhase] = useState<PostProbativeMarkerPhase>(null)
+  const [postProbativePickTrackId, setPostProbativePickTrackId] = useState('')
+  const [probativePlacementSession, setProbativePlacementSession] = useState<null | { trackId: string }>(null)
+  /** Blocks duplicate map taps before React re-renders after probative single-shot placement. */
+  const probativePlacementLockRef = useRef(false)
+
+  const postProbativeEffectiveTrackId = useMemo(() => {
+    if (postProbativeMarkerPhase !== 'ask' || !caseTracks.length) return ''
+    if (postProbativePickTrackId && caseTracks.some((t) => t.id === postProbativePickTrackId)) {
+      return postProbativePickTrackId
+    }
+    return (
+      autoContinuationTrackId && caseTracks.some((t) => t.id === autoContinuationTrackId)
+        ? autoContinuationTrackId
+        : caseTracks[0]!.id
+    )
+  }, [postProbativeMarkerPhase, caseTracks, postProbativePickTrackId, autoContinuationTrackId])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && probativePlacementSession) {
+        e.preventDefault()
+        probativePlacementLockRef.current = false
+        setProbativePlacementSession(null)
+        return
+      }
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      const el = document.activeElement
+      if (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement ||
+        (el instanceof HTMLElement && el.isContentEditable)
+      ) {
+        return
+      }
+      if (caseMetaEditing) return
+      if (pendingAddQueue.length > 0 || showAddTrack || showManageTracks) return
+      if (probativeFlow != null) return
+      if (postProbativeMarkerPhase != null) return
+
+      if (caseTab === 'tracking' && selectedTrackPointId) {
+        const pt = caseTrackPoints.find((p) => p.id === selectedTrackPointId)
+        if (!pt || !canDeleteTrackPoint(data, actorId, pt)) return
+        e.preventDefault()
+        void deleteTrackPoint(actorId, selectedTrackPointId)
+        setSelectedTrackPointId(null)
+        return
+      }
+
+      if (caseTab === 'addresses' && selectedId) {
+        const loc = locations.find((l) => l.id === selectedId)
+        if (!loc || !canDeleteLocation(data, actorId, loc)) return
+        e.preventDefault()
+        if (!window.confirm('Delete this address from the case? This cannot be undone.')) return
+        setProbativeFlow(null)
+        void deleteLocation(actorId, selectedId)
+        setSelectedId(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    actorId,
+    caseMetaEditing,
+    caseTab,
+    caseTrackPoints,
+    data,
+    deleteLocation,
+    deleteTrackPoint,
+    locations,
+    pendingAddQueue.length,
+    probativeFlow,
+    selectedId,
+    selectedTrackPointId,
+    showAddTrack,
+    showManageTracks,
+    postProbativeMarkerPhase,
+    probativePlacementSession,
+  ])
+
+  const openAddLocationModal = useCallback(
+    (payload: {
+      lat: number
+      lon: number
+      addressText: string
+      bounds?: Location['bounds'] | null
+      vectorTileBuildingRing?: LatLon[] | null
+    }) => {
+      addCategoryInFlightRef.current = false
+      setAddLocationSaving(false)
+      setPendingAddQueue((q) => {
+        if (q.some((x) => samePendingPin(x, payload))) return q
+        const item: PendingAddItem = {
+          lat: payload.lat,
+          lon: payload.lon,
+          addressText: payload.addressText,
+          bounds: payload.bounds ?? undefined,
+          vectorTileBuildingRing: payload.vectorTileBuildingRing,
+        }
+        return [...q, item]
+      })
+    },
+    [],
+  )
+  const closeAddLocationModal = useCallback(() => {
+    addCategoryInFlightRef.current = false
+    setAddLocationSaving(false)
+    setPendingAddQueue((q) => q.slice(1))
+  }, [])
+  const [footprintLoadingIds, setFootprintLoadingIds] = useState<Set<string>>(new Set())
+  const [footprintFailedIds, setFootprintFailedIds] = useState<Set<string>>(new Set())
+  const [outlineQueue, setOutlineQueue] = useState<
+    Array<{ id: string; lat: number; lon: number; addressText?: string; vectorTileBuildingRing?: LatLon[] }>
+  >([])
+  const outlineQueuedRef = useRef<Set<string>>(new Set())
+  const outlineDoneRef = useRef<Set<string>>(new Set())
+  const outlineInFlightRef = useRef<Set<string>>(new Set())
+  const locationsRef = useRef(locations)
+  locationsRef.current = locations
+
+  /** One in-flight reverse lookup per map coordinate so the add modal can fill in street text while you keep working. */
+  const pendingQueueGeoKeysRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const item of pendingAddQueue) {
+      if (!isProvisionalCanvassLabel(item.addressText)) continue
+      const key = `${item.lat.toFixed(6)},${item.lon.toFixed(6)}`
+      if (pendingQueueGeoKeysRef.current.has(key)) continue
+      pendingQueueGeoKeysRef.current.add(key)
+      const lat = item.lat
+      const lon = item.lon
+      void (async () => {
+        try {
+          const resolved = await reverseGeocodeAddressText(lat, lon).catch(() => null)
+          if (!resolved?.trim() || isProvisionalCanvassLabel(resolved)) return
+          setPendingAddQueue((q) => {
+            const i = q.findIndex((x) => samePendingPin(x, { lat, lon }))
+            if (i < 0) return q
+            if (!isProvisionalCanvassLabel(q[i]!.addressText)) return q
+            const next = q.slice()
+            next[i] = { ...next[i]!, addressText: resolved.trim() }
+            return next
+          })
+        } finally {
+          pendingQueueGeoKeysRef.current.delete(key)
+        }
+      })()
+    }
+  }, [pendingAddQueue])
+
+  /** Saved pins that still have a coordinate-only label get a street line without blocking the outline pipeline. */
+  const savedProvisionalGeoIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const loc of locations) {
+      if (loc.caseId !== props.caseId) continue
+      if (!isProvisionalCanvassLabel(loc.addressText)) continue
+      if (savedProvisionalGeoIdsRef.current.has(loc.id)) continue
+      savedProvisionalGeoIdsRef.current.add(loc.id)
+      const id = loc.id
+      const lat = loc.lat
+      const lon = loc.lon
+      void (async () => {
+        try {
+          const resolved = await reverseGeocodeAddressText(lat, lon).catch(() => null)
+          if (!resolved?.trim() || isProvisionalCanvassLabel(resolved)) return
+          const still = locationsRef.current.find((l) => l.id === id)
+          if (!still || !isProvisionalCanvassLabel(still.addressText)) return
+          void updateLocation(actorId, id, { addressText: resolved.trim() })
+        } finally {
+          savedProvisionalGeoIdsRef.current.delete(id)
+        }
+      })()
+    }
+  }, [locations, props.caseId, updateLocation])
+
+  const enqueueOutlineForLocation = useCallback(
+    (locationId: string, lat: number, lon: number, addressText?: string | null, vectorTileBuildingRing?: LatLon[] | null) => {
+      if (outlineDoneRef.current.has(locationId)) {
+        return
+      }
+      if (outlineInFlightRef.current.has(locationId)) {
+        return
+      }
+      if (outlineQueuedRef.current.has(locationId)) {
+        return
+      }
+      outlineQueuedRef.current.add(locationId)
+      const hint = addressText?.trim() || undefined
+      const vr =
+        vectorTileBuildingRing && vectorTileBuildingRing.length >= 3 ? vectorTileBuildingRing : undefined
+      setOutlineQueue((prev) => [...prev, { id: locationId, lat, lon, addressText: hint, vectorTileBuildingRing: vr }])
+      setFootprintLoadingIds((prev) => {
+        const next = new Set(prev)
+        next.add(locationId)
+        return next
+      })
+      // A new attempt should clear a previous failed flag.
+      setFootprintFailedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(locationId)
+        return next
+      })
+    },
+    [],
+  )
+
+  const completePendingLocation = useCallback(
+    async (snapshot: PendingAddItem, status: CanvassStatus, notes?: string) => {
+      if (addCategoryInFlightRef.current) return
+      addCategoryInFlightRef.current = true
+      const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
+      let { addressText } = snapshot
+      setAddLocationSaving(true)
+      try {
+        const id = await createLocation({
+          caseId: props.caseId,
+          createdByUserId: actorId,
+          addressText,
+          lat,
+          lon,
+          bounds: bounds ?? null,
+          status,
+          notes: (notes ?? '').trim(),
+        })
+        closeAddLocationModal()
+        setLocationDetailOpen(false)
+        setSelectedId(id)
+        enqueueOutlineForLocation(id, lat, lon, addressText, vectorTileBuildingRing ?? null)
+
+        if (isProvisionalCanvassLabel(addressText)) {
+          const lat0 = lat
+          const lon0 = lon
+          void (async () => {
+            const signal =
+              typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+                ? AbortSignal.timeout(12_000)
+                : undefined
+            const resolved = await reverseGeocodeAddressText(lat0, lon0, signal).catch(() => null)
+            if (resolved?.trim() && !isProvisionalCanvassLabel(resolved)) {
+              void updateLocation(actorId, id, { addressText: resolved.trim() })
+            }
+          })()
+        }
+      } finally {
+        setAddLocationSaving(false)
+        addCategoryInFlightRef.current = false
+      }
+    },
+    [actorId, closeAddLocationModal, createLocation, enqueueOutlineForLocation, props.caseId, updateLocation],
+  )
+
+  const handleProbativeAccurate = useCallback(() => {
+    const f = probativeFlowRef.current
+    if (!f || f.target.kind === 'dvr_only') return
+    const t = f.target
+    setProbativeFlow(null)
+    setPostProbativeMarkerPhase('ask')
+    if (t.kind === 'existing') {
+      void updateLocation(actorId, t.locationId, { status: 'probativeFootage' })
+    } else {
+      void completePendingLocation(t.pending, 'probativeFootage')
+    }
+  }, [completePendingLocation, updateLocation])
+
+  const handleProbativeNotAccurate = useCallback(() => {
+    setProbativeFlow((pf) => (pf && pf.step === 'accuracy' ? { ...pf, step: 'calc' } : pf))
+  }, [])
+
+  const handleProbativeCalcBack = useCallback(() => {
+    setProbativeFlow((pf) => {
+      if (!pf) return pf
+      if (pf.target.kind === 'dvr_only') return null
+      return pf.step === 'calc' ? { ...pf, step: 'accuracy' } : pf
+    })
+  }, [])
+
+  const handleProbativeFlowDismiss = useCallback(() => setProbativeFlow(null), [])
+
+  useEffect(() => {
+    setProbativeFlow((pf) => {
+      if (!pf) return pf
+      if (pf.target.kind === 'new' || pf.target.kind === 'dvr_only') return pf
+      // Clear when the user selects a different location; keep when selection is cleared (list / after drawer close).
+      if (selectedId != null && selectedId !== pf.target.locationId) return null
+      return pf
+    })
+  }, [selectedId])
+
+  const handleProbativeCalcApply = useCallback(
+    (notesAppend: string) => {
+      const f = probativeFlowRef.current
+      if (!f) return
+      if (f.target.kind === 'dvr_only') {
+        setProbativeFlow(null)
+        setDvrLinkPicked(null)
+        setDvrLinkAddr('')
+        setDvrLinkSug([])
+        setDvrLinkSaving(false)
+        setDvrLinkLocationSession({ notesAppend })
+        return
+      }
+      const t = f.target
+      setProbativeFlow(null)
+      setPostProbativeMarkerPhase('ask')
+      if (t.kind === 'existing') {
+        const loc = data.locations.find((l) => l.id === t.locationId)
+        void updateLocation(actorId, t.locationId, {
+          status: 'probativeFootage',
+          notes: appendToNotes(loc?.notes ?? '', notesAppend),
+        })
+      } else {
+        void completePendingLocation(t.pending, 'probativeFootage', notesAppend)
+      }
+    },
+    [completePendingLocation, data.locations, updateLocation],
+  )
+
+  useEffect(() => {
+    const available = OUTLINE_CONCURRENCY - outlineInFlightRef.current.size
+    if (available <= 0) return
+    if (!outlineQueue.length) return
+    const toStart = outlineQueue.slice(0, available)
+    if (!toStart.length) return
+    setOutlineQueue((prev) => prev.slice(toStart.length))
+
+    for (const nextItem of toStart) {
+      outlineInFlightRef.current.add(nextItem.id)
+
+      let vectorRing = nextItem.vectorTileBuildingRing
+      if ((!vectorRing || vectorRing.length < 3) && vectorRingLookupRef.current) {
+        const fromMap = vectorRingLookupRef.current(nextItem.lat, nextItem.lon)
+        if (fromMap && fromMap.length >= 3) vectorRing = fromMap
+      }
+
+      void fetchBuildingFootprint(nextItem.lat, nextItem.lon, undefined, {
+        addressText: nextItem.addressText,
+        vectorTileBuildingRing: vectorRing,
+      })
+        .then(async (footprint) => {
+          if (!footprint || footprint.length < 3) {
+            setFootprintFailedIds((prev) => {
+              const next = new Set(prev)
+              next.add(nextItem.id)
+              return next
+            })
+            return
+          }
+          if (!outlineDoneRef.current.has(nextItem.id)) {
+            outlineDoneRef.current.add(nextItem.id)
+          }
+          setFootprintFailedIds((prev) => {
+            const next = new Set(prev)
+            next.delete(nextItem.id)
+            return next
+          })
+          try {
+            await updateLocation(actorId, nextItem.id, { footprint })
+          } catch {
+            setFootprintFailedIds((prev) => {
+              const next = new Set(prev)
+              next.add(nextItem.id)
+              return next
+            })
+            outlineDoneRef.current.delete(nextItem.id)
+          }
+        })
+        .catch(() => {
+          setFootprintFailedIds((prev) => {
+            const next = new Set(prev)
+            next.add(nextItem.id)
+            return next
+          })
+        })
+        .finally(() => {
+          outlineInFlightRef.current.delete(nextItem.id)
+          outlineQueuedRef.current.delete(nextItem.id)
+          setFootprintLoadingIds((prev) => {
+            const next = new Set(prev)
+            next.delete(nextItem.id)
+            return next
+          })
+        })
+    }
+  }, [outlineQueue, footprintLoadingIds, updateLocation])
+
+  useEffect(() => {
+    if (!selectedId) return
+    const loc = locationsRef.current.find((l) => l.id === selectedId)
+    if (!loc) return
+    if (outlineDoneRef.current.has(loc.id)) return
+    if (loc.footprint && loc.footprint.length >= 3) return
+    enqueueOutlineForLocation(loc.id, loc.lat, loc.lon, loc.addressText)
+  }, [selectedId, enqueueOutlineForLocation])
 
   useEffect(() => {
     if (!navigator.geolocation) return
@@ -268,8 +1066,8 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
       setLoadingSug(false)
       return
     }
-    setLoadingSug(true)
     const t = window.setTimeout(() => {
+      setLoadingSug(true)
       ;(async () => {
         const res = await searchPlaces(q, { signal: ctrl.signal, bias: geoBias ?? undefined })
         if (!alive) return
@@ -287,6 +1085,65 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
       window.clearTimeout(t)
     }
   }, [addr, geoBias])
+
+  useEffect(() => {
+    let alive = true
+    const ctrl = new AbortController()
+    const q = quickMenuAddr.trim()
+    if (q.length < 3) {
+      setQuickMenuSug([])
+      setQuickMenuLoading(false)
+      return
+    }
+    const t = window.setTimeout(() => {
+      setQuickMenuLoading(true)
+      ;(async () => {
+        const res = await searchPlaces(q, { signal: ctrl.signal, bias: geoBias ?? undefined })
+        if (!alive) return
+        setQuickMenuSug(res)
+        setQuickMenuLoading(false)
+      })().catch(() => {
+        if (!alive) return
+        setQuickMenuSug([])
+        setQuickMenuLoading(false)
+      })
+    }, 280)
+    return () => {
+      alive = false
+      ctrl.abort()
+      window.clearTimeout(t)
+    }
+  }, [quickMenuAddr, geoBias])
+
+  useEffect(() => {
+    if (!dvrLinkLocationSession) return
+    let alive = true
+    const ctrl = new AbortController()
+    const q = dvrLinkAddr.trim()
+    if (q.length < 3) {
+      setDvrLinkSug([])
+      setDvrLinkLoading(false)
+      return
+    }
+    const t = window.setTimeout(() => {
+      setDvrLinkLoading(true)
+      ;(async () => {
+        const res = await searchPlaces(q, { signal: ctrl.signal, bias: geoBias ?? undefined })
+        if (!alive) return
+        setDvrLinkSug(res)
+        setDvrLinkLoading(false)
+      })().catch(() => {
+        if (!alive) return
+        setDvrLinkSug([])
+        setDvrLinkLoading(false)
+      })
+    }, 280)
+    return () => {
+      alive = false
+      ctrl.abort()
+      window.clearTimeout(t)
+    }
+  }, [dvrLinkAddr, geoBias, dvrLinkLocationSession])
 
   const defaultCenter = useMemo(() => {
     const first = mapPins[0] ?? locations[0]
@@ -321,6 +1178,243 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
     return i >= 0 ? i + 1 : 0
   }, [selectedTrackPoint, caseTrackPoints])
 
+  const selectedTrackLabel = useMemo(() => {
+    if (!selectedTrackPoint) return ''
+    return caseTracks.find((t) => t.id === selectedTrackPoint.trackId)?.label ?? 'Track'
+  }, [selectedTrackPoint, caseTracks])
+
+  const mapRef = useRef<UnifiedCaseMapHandle | null>(null)
+
+  const clearDvrLinkLocationUi = useCallback(() => {
+    setDvrLinkLocationSession(null)
+    setDvrLinkAddr('')
+    setDvrLinkSug([])
+    setDvrLinkPicked(null)
+    setDvrLinkSaving(false)
+  }, [])
+
+  const submitDvrLinkLocation = useCallback(
+    async (probativePick: boolean) => {
+      if (!dvrLinkLocationSession || !dvrLinkPicked) return
+      const s = dvrLinkPicked
+      const status: CanvassStatus = probativePick ? 'probativeFootage' : 'notProbativeFootage'
+      const canvassLine = probativePick
+        ? `[Canvass — DVR link] Probative. ${s.label}`
+        : `[Canvass — DVR link] Not probative. ${s.label}`
+      const mergedNotes = appendToNotes(dvrLinkLocationSession.notesAppend, canvassLine)
+      const existing = findLocationByAddressText(locations, s.label)
+
+      setDvrLinkSaving(true)
+      try {
+        if (existing) {
+          if (!canEditLocation(data, actorId, existing)) return
+          await updateLocation(actorId, existing.id, {
+            status,
+            notes: appendToNotes(existing.notes ?? '', mergedNotes),
+          })
+          clearDvrLinkLocationUi()
+          setSelectedId(existing.id)
+          setCaseTab('addresses')
+          setViewMode('map')
+          setLocationDetailOpen(true)
+          enqueueOutlineForLocation(existing.id, s.lat, s.lon, s.label, null)
+          closeMapToolsDock()
+          window.setTimeout(() => {
+            const m = mapRef.current
+            if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+          }, 0)
+          return
+        }
+        if (!canAddCaseContentHere) return
+        const id = await createLocation({
+          caseId: props.caseId,
+          createdByUserId: actorId,
+          addressText: s.label,
+          lat: s.lat,
+          lon: s.lon,
+          bounds: s.bounds ?? null,
+          status,
+          notes: mergedNotes,
+        })
+        clearDvrLinkLocationUi()
+        setSelectedId(id)
+        setCaseTab('addresses')
+        setViewMode('map')
+        setLocationDetailOpen(true)
+        enqueueOutlineForLocation(id, s.lat, s.lon, s.label, null)
+        closeMapToolsDock()
+        window.setTimeout(() => {
+          const m = mapRef.current
+          if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+        }, 0)
+      } catch {
+        /* Store reports failures elsewhere */
+      } finally {
+        setDvrLinkSaving(false)
+      }
+    },
+    [
+      actorId,
+      canAddCaseContentHere,
+      clearDvrLinkLocationUi,
+      closeMapToolsDock,
+      createLocation,
+      data,
+      dvrLinkLocationSession,
+      dvrLinkPicked,
+      enqueueOutlineForLocation,
+      locations,
+      props.caseId,
+      updateLocation,
+    ],
+  )
+
+  const handleQuickMenuPick = useCallback(
+    (s: PlaceSuggestion) => {
+      if (!canAddCaseContentHere) return
+      const probative = window.confirm(
+        `Add this address to the case:\n\n“${s.label}”\n\n` +
+          `OK — Video was probative\nCancel — Video was not probative`,
+      )
+      const status: CanvassStatus = probative ? 'probativeFootage' : 'notProbativeFootage'
+      const notes = probative
+        ? `[Canvass — quick add] Probative. ${s.label}`
+        : `[Canvass — quick add] Not probative. ${s.label}`
+      void (async () => {
+        try {
+          const id = await createLocation({
+            caseId: props.caseId,
+            createdByUserId: actorId,
+            addressText: s.label,
+            lat: s.lat,
+            lon: s.lon,
+            bounds: s.bounds ?? null,
+            status,
+            notes,
+          })
+          setQuickMenuAddr('')
+          setQuickMenuSug([])
+          setSelectedId(id)
+          setCaseTab('addresses')
+          setViewMode('map')
+          setLocationDetailOpen(true)
+          enqueueOutlineForLocation(id, s.lat, s.lon, s.label, null)
+          closeMapToolsDock()
+          window.setTimeout(() => {
+            const m = mapRef.current
+            if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+          }, 0)
+        } catch {
+          /* Store reports failures elsewhere */
+        }
+      })()
+    },
+    [
+      actorId,
+      canAddCaseContentHere,
+      closeMapToolsDock,
+      createLocation,
+      enqueueOutlineForLocation,
+      props.caseId,
+    ],
+  )
+
+  isNarrowRef.current = isNarrow
+  mapLeftToolDockOpenRef.current = mapLeftToolDockOpen
+  addrFieldFocusedRef.current = addrFieldFocused
+  caseTabRef.current = caseTab
+  viewModeRef.current = viewMode
+  probativePlacementSessionRef.current = probativePlacementSession
+
+  /**
+   * Window capture (runs before MapLibre) + ref-backed flags so `menuOpen` / address-dismiss are never stale.
+   * Cancels deferred canvass single-tap via `mapRef.clearPendingMapTap()` so the dismiss tap does not select/add.
+   */
+  useEffect(() => {
+    const touchOpts: AddEventListenerOptions = { capture: true, passive: false }
+    const mapPaneShowsNow = () => {
+      const c = caseTabRef.current
+      const v = viewModeRef.current
+      const p = probativePlacementSessionRef.current
+      return (c === 'tracking' || v === 'map') && !p
+    }
+
+    const onMapPaneOutsideCapture = (e: Event) => {
+      if (!mapPaneShowsNow()) return
+      const t = e.target
+      if (!(t instanceof Node)) return
+      if (mapToolsDockRef.current?.contains(t)) return
+      if (caseMapDetailOverlayRef.current?.contains(t)) return
+      if (wideAddrSearchRef.current?.contains(t)) return
+
+      const menuOpen =
+        isNarrowRef.current && mapLeftToolDockOpenRef.current && !probativePlacementSessionRef.current
+      const addrMapDismiss = addrFieldFocusedRef.current && mapPaneShowsNow()
+      if (!menuOpen && !addrMapDismiss) return
+
+      if (narrowMapAddressRef.current?.contains(t)) {
+        if (menuOpen) {
+          closeMapToolsDock()
+          window.setTimeout(() => addrSearchInputRef.current?.focus(), 0)
+        }
+        return
+      }
+
+      const shell = mapPaneShellRef.current
+      if (!shell?.contains(t)) return
+
+      let consumed = false
+      if (menuOpen) {
+        if (performance.now() >= mapToolsDockIgnoreOutsideUntilRef.current) {
+          closeMapToolsDock()
+          consumed = true
+        }
+      }
+      if (addrMapDismiss) {
+        if (addrBlurClearRef.current) {
+          clearTimeout(addrBlurClearRef.current)
+          addrBlurClearRef.current = null
+        }
+        setAddrFieldFocused(false)
+        setSuggestions([])
+        setLoadingSug(false)
+        addrSearchInputRef.current?.blur()
+        consumed = true
+      }
+      if (consumed) {
+        mapRef.current?.clearPendingMapTap()
+        e.preventDefault()
+        e.stopPropagation()
+        ;(e as Event & { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.()
+      }
+    }
+
+    window.addEventListener('pointerdown', onMapPaneOutsideCapture, true)
+    window.addEventListener('touchstart', onMapPaneOutsideCapture, touchOpts)
+    return () => {
+      window.removeEventListener('pointerdown', onMapPaneOutsideCapture, true)
+      window.removeEventListener('touchstart', onMapPaneOutsideCapture, touchOpts)
+    }
+  }, [closeMapToolsDock])
+
+  /** MapLibre only: query Carto vector `building` layers at a pin (speeds queued fetches). */
+  const vectorRingLookupRef = useRef<((lat: number, lon: number) => LatLon[] | null) | null>(null)
+
+  const findLocationHit = useCallback(
+    (lat: number, lon: number) => findLocationHitByMapClick(locations, lat, lon, footprintLoadingIds),
+    [locations, footprintLoadingIds],
+  )
+
+  const findLocationByAddrMemo = useCallback(
+    (text: string) => findLocationByAddressText(locations, text),
+    [locations],
+  )
+
+  const getRouteColorMemo = useCallback(
+    (trackId: string) => resolvedTrackColors.get(trackId) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0],
+    [resolvedTrackColors],
+  )
+
   const fitMapToCanvass = useCallback(() => {
     const m = mapRef.current
     if (!m) return
@@ -347,93 +1441,893 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
     if (b && b.isValid()) m.fitBounds(b.pad(0.2))
   }, [filtered, locations, trackingMapPoints])
 
-  const activeTrackPointsOrdered = useMemo(() => {
-    if (!activeTrackId) return []
-    return caseTrackPoints.filter((p) => p.trackId === activeTrackId).slice().sort(sortTrackPointsStable)
-  }, [caseTrackPoints, activeTrackId])
-
-  const mapRef = useRef<any>(null)
-  const MapContainerAny = MapContainer as any
-
-  const canManipulateTrackFn = useCallback(
-    (trackId: string) => activeTrackId == null || activeTrackId === trackId,
-    [activeTrackId],
+  const canManipulateTrackPointFn = useCallback(
+    (pointId: string) => {
+      const p = caseTrackPoints.find((x) => x.id === pointId)
+      return !!p && canEditTrackPoint(data, actorId, p)
+    },
+    [caseTrackPoints, data, actorId],
   )
   const onSelectTrackPointMap = useCallback((id: string) => setSelectedTrackPointId(id), [])
   const onTrackPointDragEnd = useCallback(
     (pointId: string, lat: number, lon: number) => {
-      void updateTrackPoint(pointId, { lat, lon })
+      const p = caseTrackPoints.find((x) => x.id === pointId)
+      if (!p || !canEditTrackPoint(data, actorId, p)) return
+      void updateTrackPoint(actorId, pointId, { lat, lon })
     },
-    [updateTrackPoint],
+    [actorId, caseTrackPoints, data, updateTrackPoint],
+  )
+  const onTrackTimeLabelDragEnd = useCallback(
+    (pointId: string, offsetX: number, offsetY: number) => {
+      const p = caseTrackPoints.find((x) => x.id === pointId)
+      if (!p || !canEditTrackPoint(data, actorId, p)) return
+      void updateTrackPoint(actorId, pointId, { mapTimeLabelOffsetX: offsetX, mapTimeLabelOffsetY: offsetY })
+    },
+    [actorId, caseTrackPoints, data, updateTrackPoint],
   )
 
-  const trackingMapInteraction = useMemo(() => {
-    if (caseTab !== 'tracking') return undefined
-    return {
+  const trackingMapInteraction = useMemo(
+    () => ({
       trackPoints: caseTrackPoints,
       visibleTrackIds,
-      canManipulateTrack: (tid: string) => activeTrackId == null || activeTrackId === tid,
+      canManipulateTrackPoint: canManipulateTrackPointFn,
       onPickPoint: onSelectTrackPointMap,
       onAddPoint: (lat: number, lon: number) => {
-        const tid = trackForMapAdd
+        const placeTid = probativePlacementSession?.trackId
+        const tid = placeTid ?? trackForMapAdd
         if (!tid) return
-        void createTrackPoint({ caseId: props.caseId, trackId: tid, lat, lon }).then((id) => {
-          setSelectedTrackPointId(id)
-        })
+        if (placeTid) {
+          if (probativePlacementLockRef.current) return
+          probativePlacementLockRef.current = true
+          setProbativePlacementSession(null)
+        }
+        void createTrackPoint({ caseId: props.caseId, createdByUserId: actorId, trackId: tid, lat, lon })
+          .then((id) => {
+            setSelectedTrackPointId(id)
+            setTrackStepUndoTargetId(id)
+            if (placeTid) {
+              setAutoContinuationTrackId(placeTid)
+            }
+          })
+          .catch(() => {
+            if (placeTid) {
+              setProbativePlacementSession({ trackId: placeTid })
+            }
+          })
+          .finally(() => {
+            if (placeTid) probativePlacementLockRef.current = false
+          })
       },
-      addDisabled: !trackForMapAdd,
-    }
-  }, [
-    caseTab,
-    caseTrackPoints,
-    visibleTrackIds,
-    activeTrackId,
-    trackForMapAdd,
-    props.caseId,
-    createTrackPoint,
-    onSelectTrackPointMap,
-  ])
+      addDisabled: !(probativePlacementSession?.trackId ?? trackForMapAdd),
+    }),
+    [
+      caseTrackPoints,
+      visibleTrackIds,
+      trackForMapAdd,
+      probativePlacementSession,
+      props.caseId,
+      createTrackPoint,
+      onSelectTrackPointMap,
+      canManipulateTrackPointFn,
+      actorId,
+    ],
+  )
 
-  const TileLayerAny = TileLayer as any
-  const contentPanelHeight = '100%'
-  const controlPaneWidth = 'clamp(260px, 24vw, 340px)'
+  const controlPaneWidth = 'clamp(300px, 28vw, 380px)'
+  const workspaceGridStyle = useMemo<CSSProperties>(
+    () =>
+      isNarrow
+        ? {
+            display: 'grid',
+            gridTemplateColumns: '1fr',
+            // Map (or list) uses all flexible height; tabs strip is only as tall as its content — no empty gap below.
+            gridTemplateRows: 'minmax(0, 1fr) auto',
+            gridTemplateAreas: '"map" "controls"',
+            gap: 'clamp(4px, 0.9vw, 10px)',
+            alignItems: 'stretch',
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+          }
+        : {
+            display: 'grid',
+            gridTemplateColumns: `${controlPaneWidth} minmax(0, 1fr)`,
+            gridTemplateRows: 'minmax(0, 1fr)',
+            gridTemplateAreas: '"controls map"',
+            gap: 'clamp(4px, 0.9vw, 10px)',
+            alignItems: 'stretch',
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+          },
+    [isNarrow, controlPaneWidth],
+  )
+  const mapPaneDetailOverlay: CSSProperties = {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    maxHeight: isNarrow ? 'min(220px, 42svh)' : 'min(280px, 34svh)',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    padding: 'var(--vc-space-xs) var(--vc-space-sm) var(--vc-space-md)',
+    boxSizing: 'border-box',
+    // Above MapLibre markers/track pins (~40) so status pills receive clicks; modals stay higher (~60000).
+    zIndex: 5000,
+    pointerEvents: 'auto',
+    isolation: 'isolate',
+    background: 'rgba(255,255,255,0.96)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    borderTop: '1px solid #e5e7eb',
+    borderBottomLeftRadius: 'var(--vc-radius-lg)',
+    borderBottomRightRadius: 'var(--vc-radius-lg)',
+  }
+  const mapPaneShell: CSSProperties = {
+    ...card,
+    position: 'relative',
+    padding: 0,
+    overflow: 'hidden',
+    minWidth: 0,
+    minHeight: 0,
+    height: '100%',
+    borderRadius: 12,
+    gridArea: 'map',
+  }
 
   if (!c) {
     return (
-      <Layout title="Case not found" right={<button onClick={props.onBack} style={btn}>Back</button>}>
+      <Layout title="Case not found" right={<button onClick={props.onBack} style={btn}>Case List</button>}>
         <div style={{ color: '#374151' }}>This case may have been deleted.</div>
       </Layout>
     )
   }
 
+  const addrSearchProminent =
+    addrFieldFocused || loadingSug || suggestions.length > 0 || addr.trim().length > 0
+
+  const renderAddAddressSearch = (floating: boolean) => (
+    <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
+      {!floating && !isNarrow ? (
+        <div style={{ fontWeight: 900, fontSize: 13 }}>Add address</div>
+      ) : null}
+      <input
+        ref={addrSearchInputRef}
+        value={addr}
+        onChange={(e) => setAddr(e.target.value)}
+        onFocus={() => {
+          if (addrBlurClearRef.current) {
+            clearTimeout(addrBlurClearRef.current)
+            addrBlurClearRef.current = null
+          }
+          setAddrFieldFocused(true)
+        }}
+        onBlur={() => clearAddrFieldFocusSoon()}
+        placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
+        style={{
+          ...field,
+          maxWidth: '100%',
+          boxSizing: 'border-box',
+          minWidth: 0,
+          fontSize: isNarrow ? 16 : undefined,
+          ...(floating
+            ? { padding: '6px 9px', minHeight: 38, lineHeight: 1.25 }
+            : isNarrow
+              ? { padding: '8px 10px' }
+              : {}),
+        }}
+      />
+      {(!floating || addrSearchProminent) && GEOCODE_SCOPE === 'ny' ? (
+        <div
+          style={{
+            color: '#374151',
+            fontSize: floating ? 11 : 12,
+            lineHeight: 1.35,
+          }}
+        >
+          Autocomplete is currently scoped to New York addresses.
+        </div>
+      ) : null}
+      {!floating || addrSearchProminent ? (
+        loadingSug ? (
+          <div style={{ color: '#374151', fontSize: floating ? 11 : 12 }}>Searching…</div>
+        ) : null
+      ) : null}
+      {suggestions.length ? (
+        <div
+          style={{
+            display: 'grid',
+            gap: floating ? 3 : 6,
+            maxHeight: isNarrow ? `min(${floating ? 150 : 220}px, ${floating ? 28 : 36}vh)` : undefined,
+            overflowY: isNarrow ? 'auto' : undefined,
+            WebkitOverflowScrolling: isNarrow ? 'touch' : undefined,
+          }}
+        >
+          {suggestions.map((s) => (
+            <button
+              type="button"
+              key={`${s.lat},${s.lon},${s.label}`}
+              style={suggestionBtn}
+              onClick={() => {
+                if (addrBlurClearRef.current) {
+                  clearTimeout(addrBlurClearRef.current)
+                  addrBlurClearRef.current = null
+                }
+                setAddrFieldFocused(false)
+                setLoadingSug(false)
+                setAddr('')
+                setSuggestions([])
+                openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
+                const m = mapRef.current
+                if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      ) : !floating || addrSearchProminent ? (
+        addr.trim().length >= 3 ? (
+          /^\d{1,4}-\d{1,4}$/.test(addr.trim()) ? (
+            <div style={{ color: '#374151', fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
+              Add the street name after the house number (e.g., ‘120-37 170 Street’).
+            </div>
+          ) : (
+            <div style={{ color: '#374151', fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
+              No suggestions. Try adding city/state.
+            </div>
+          )
+        ) : null
+      ) : null}
+    </div>
+  )
+
+  const quickMenuAddressBlock = (
+    <div style={{ display: 'grid', gap: 6, width: '100%', minWidth: 0 }}>
+      <div style={{ fontWeight: 800, fontSize: 10, color: '#6b7280', letterSpacing: '0.02em' }}>Quick add address</div>
+      <input
+        value={quickMenuAddr}
+        onChange={(e) => setQuickMenuAddr(e.target.value)}
+        placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
+        style={{
+          ...field,
+          maxWidth: '100%',
+          boxSizing: 'border-box',
+          minWidth: 0,
+          fontSize: isNarrow ? 16 : 13,
+          padding: '8px 10px',
+        }}
+      />
+      {GEOCODE_SCOPE === 'ny' ? (
+        <div style={{ color: '#374151', fontSize: 11, lineHeight: 1.35 }}>Autocomplete is scoped to New York.</div>
+      ) : null}
+      {quickMenuLoading ? <div style={{ color: '#374151', fontSize: 11 }}>Searching…</div> : null}
+      {quickMenuSug.length ? (
+        <div
+          style={{
+            display: 'grid',
+            gap: 4,
+            maxHeight: 'min(160px, 28vh)',
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
+          {quickMenuSug.map((s) => (
+            <button
+              type="button"
+              key={`q-${s.lat},${s.lon},${s.label}`}
+              style={suggestionBtn}
+              disabled={!canAddCaseContentHere}
+              title={!canAddCaseContentHere ? 'No access to add addresses' : undefined}
+              onClick={() => handleQuickMenuPick(s)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      ) : quickMenuAddr.trim().length >= 3 && !quickMenuLoading ? (
+        /^\d{1,4}-\d{1,4}$/.test(quickMenuAddr.trim()) ? (
+          <div style={{ color: '#374151', fontSize: 11, lineHeight: 1.35 }}>
+            Add the street name after the house number (e.g., ‘120-37 170 Street’).
+          </div>
+        ) : (
+          <div style={{ color: '#374151', fontSize: 11 }}>No suggestions. Try adding city/state.</div>
+        )
+      ) : null}
+    </div>
+  )
+
+  const mapLeftDockProminent = mapLeftToolDockOpen || mapLeftToolSection !== null
+
+  const filterLegendChipsGrid = (
+    <div
+      style={{
+        display: 'grid',
+        gap: 6,
+        gridTemplateColumns: '1fr 1fr',
+        alignItems: 'stretch',
+      }}
+    >
+      <LegendChip
+        label={`No cameras (${counts.noCameras})`}
+        color={statusColor('noCameras')}
+        on={filters.noCameras}
+        onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
+      />
+      <LegendChip
+        label={`Needs Follow up (${counts.camerasNoAnswer})`}
+        color={statusColor('camerasNoAnswer')}
+        on={filters.camerasNoAnswer}
+        onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
+      />
+      <LegendChip
+        label={`Not probative (${counts.notProbativeFootage})`}
+        color={statusColor('notProbativeFootage')}
+        on={filters.notProbativeFootage}
+        onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
+      />
+      <LegendChip
+        label={`Probative (${counts.probativeFootage})`}
+        color={statusColor('probativeFootage')}
+        on={filters.probativeFootage}
+        onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
+      />
+    </div>
+  )
+
+  const filterLegendChipsGridDock = (
+    <div
+      style={{
+        display: 'grid',
+        gap: 4,
+        gridTemplateColumns: '1fr 1fr',
+        alignItems: 'stretch',
+        minWidth: 0,
+      }}
+    >
+      <LegendChip
+        dockCompact
+        label={`No cameras (${counts.noCameras})`}
+        color={statusColor('noCameras')}
+        on={filters.noCameras}
+        onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
+      />
+      <LegendChip
+        dockCompact
+        label={`Needs Follow up (${counts.camerasNoAnswer})`}
+        color={statusColor('camerasNoAnswer')}
+        on={filters.camerasNoAnswer}
+        onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
+      />
+      <LegendChip
+        dockCompact
+        label={`Not probative (${counts.notProbativeFootage})`}
+        color={statusColor('notProbativeFootage')}
+        on={filters.notProbativeFootage}
+        onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
+      />
+      <LegendChip
+        dockCompact
+        label={`Probative (${counts.probativeFootage})`}
+        color={statusColor('probativeFootage')}
+        on={filters.probativeFootage}
+        onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
+      />
+    </div>
+  )
+
+  const mapViewFitLocateButtons = (
+    <>
+      <button
+        type="button"
+        style={{
+          ...viewModeBtn(viewMode === 'map'),
+          width: '100%',
+          opacity: caseTab === 'tracking' ? 0.55 : 1,
+        }}
+        disabled={caseTab === 'tracking'}
+        title={
+          caseTab === 'tracking'
+            ? 'Subject tracking mode keeps the map open for route steps. Switch to Video canvassing for list-only layout.'
+            : undefined
+        }
+        onClick={() => {
+          setViewMode('map')
+          closeMapToolsDock()
+        }}
+      >
+        Map view
+      </button>
+      <button
+        type="button"
+        style={{
+          ...viewModeBtn(viewMode === 'list'),
+          width: '100%',
+          opacity: caseTab === 'tracking' ? 0.55 : 1,
+        }}
+        disabled={caseTab === 'tracking'}
+        title={
+          caseTab === 'tracking'
+            ? 'Subject tracking mode keeps the map open for route steps. Switch to Video canvassing for list-only layout.'
+            : undefined
+        }
+        onClick={() => {
+          setViewMode('list')
+          closeMapToolsDock()
+        }}
+      >
+        List view
+      </button>
+      <button
+        type="button"
+        style={{ ...btn, width: '100%' }}
+        onClick={() => {
+          fitMapToCanvass()
+          closeMapToolsDock()
+        }}
+        disabled={!locations.length}
+        title="Zoom to canvass pins"
+      >
+        Fit canvass
+      </button>
+      <button
+        type="button"
+        style={{ ...btn, width: '100%' }}
+        onClick={() => {
+          fitMapToPaths()
+          closeMapToolsDock()
+        }}
+        disabled={!trackingMapPoints.length}
+        title="Zoom to visible tracks"
+      >
+        Fit paths
+      </button>
+      <button
+        type="button"
+        style={{ ...btn, width: '100%' }}
+        onClick={() => {
+          fitMapToAll()
+          closeMapToolsDock()
+        }}
+        disabled={!locations.length && !trackingMapPoints.length}
+        title="Zoom to show everything"
+      >
+        Fit all
+      </button>
+      <button
+        type="button"
+        style={{ ...btn, width: '100%' }}
+        onClick={() => {
+          closeMapToolsDock()
+          if (!navigator.geolocation) return
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const m = mapRef.current
+              if (!m) return
+              m.flyTo(pos.coords.latitude, pos.coords.longitude, Math.max(m.getZoom(), 16), { duration: 0.6 })
+            },
+            () => {},
+            { enableHighAccuracy: true, timeout: 8000 },
+          )
+        }}
+      >
+        Locate me
+      </button>
+    </>
+  )
+
+  const casePhotosSidebarBlock =
+    caseAttachments.length > 0 || canAddCaseContentHere ? (
+      <div
+        style={{
+          borderTop: '1px solid #e5e7eb',
+          marginTop: 8,
+          paddingTop: 10,
+          paddingLeft: 8,
+          paddingRight: 8,
+          paddingBottom: 8,
+          flexShrink: 0,
+          minWidth: 0,
+        }}
+      >
+        <input ref={refPhotoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onRefPhotoPick} />
+        {canAddCaseContentHere ? (
+          <button
+            type="button"
+            style={{
+              ...btnPrimary,
+              fontSize: 'clamp(10px, 0.98vw, 12px)',
+              padding: 'clamp(5px, 0.9vw, 9px) clamp(8px, 1.2vw, 12px)',
+              width: '100%',
+              boxSizing: 'border-box',
+            }}
+            onClick={() => {
+              setRefPhotoErr(null)
+              setPendingAddKind('wanted_flyer')
+              setAddPhotoModalOpen(true)
+            }}
+          >
+            Add photo
+          </button>
+        ) : null}
+        {caseAttachments.length > 0 ? (
+          <div style={{ marginTop: 10, display: 'grid', gap: 8, minWidth: 0 }}>
+            <div
+              style={{
+                position: 'relative',
+                borderRadius: 10,
+                overflow: 'hidden',
+                border: '1px solid #e5e7eb',
+                background: '#0f172a',
+              }}
+            >
+              {caseAttachments.length > 1 ? (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous photo"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSidebarMediaIndex((i) => (i - 1 + caseAttachments.length) % caseAttachments.length)
+                    }}
+                    style={casePhotoCarouselArrowStyle('left')}
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next photo"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSidebarMediaIndex((i) => (i + 1) % caseAttachments.length)
+                    }}
+                    style={casePhotoCarouselArrowStyle('right')}
+                  >
+                    ›
+                  </button>
+                </>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setPhotoViewerIndex(sidebarMediaIndex)}
+                style={{ padding: 0, border: 'none', cursor: 'pointer', display: 'block', width: '100%' }}
+              >
+                <img
+                  src={caseAttachments[sidebarMediaIndex]!.imageDataUrl}
+                  alt=""
+                  style={{
+                    width: '100%',
+                    height: 'clamp(72px, 14vh, 120px)',
+                    objectFit: 'cover',
+                    display: 'block',
+                  }}
+                />
+              </button>
+            </div>
+            {(() => {
+              const att = caseAttachments[sidebarMediaIndex]!
+              const canEdit = canEditCaseAttachment(data, actorId, att)
+              return canEdit ? (
+                <textarea
+                  placeholder="Description (optional)"
+                  defaultValue={att.caption}
+                  key={`${att.id}:${att.updatedAt}:sidebar`}
+                  rows={2}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim()
+                    if (v !== (att.caption ?? '').trim()) {
+                      void updateCaseAttachment(actorId, att.id, { caption: v })
+                    }
+                  }}
+                  style={{
+                    ...field,
+                    fontSize: 11,
+                    padding: 6,
+                    resize: 'vertical',
+                    minHeight: 44,
+                    width: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: '#374151',
+                    lineHeight: 1.35,
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {(att.caption ?? '').trim() ? att.caption : '—'}
+                </div>
+              )
+            })()}
+          </div>
+        ) : null}
+      </div>
+    ) : null
+
+  const mapDockPanelStyle: CSSProperties = {
+    alignSelf: 'stretch',
+    marginTop: 6,
+    padding: 10,
+    background: 'rgba(255,255,255,0.98)',
+    borderRadius: 10,
+    border: '1px solid #e5e7eb',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+    maxHeight: 'min(48vh, 360px)',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    WebkitOverflowScrolling: 'touch',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+  }
+
+  /** Filter chips are compact 2×2 — no inner scroll; outer tool menu scrolls if needed. */
+  const mapDockFilterPanelStyle: CSSProperties = {
+    ...mapDockPanelStyle,
+    maxHeight: 'none',
+    overflowY: 'visible',
+    padding: 8,
+  }
+
+  const mapDockColumnStyle: CSSProperties = {
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: 6,
+    minWidth: 44,
+    width: 'auto',
+    maxWidth: 'min(calc(100vw - 32px), 300px)',
+    position: 'relative',
+    pointerEvents: 'auto',
+    boxSizing: 'border-box',
+  }
+
+  /** Same chrome for map overlay + list header on narrow — matches Video canvassing / Subject tracking map. */
+  const narrowFloatingAddressCardStyle: CSSProperties = {
+    padding: 5,
+    boxSizing: 'border-box',
+    background: 'rgba(255,255,255,0.96)',
+    backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
+    borderRadius: 9,
+    border: '1px solid #e5e7eb',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+    minWidth: 0,
+    maxWidth: '100%',
+  }
+
+  /** Skip MapLibre top-left zoom stack (~30px + control margins) so the search card does not cover +/- . */
+  const narrowMapTopReserveLeft = 'calc(max(10px, env(safe-area-inset-left, 0px)) + 58px)'
+
+  const narrowMapToolsScrollStyle: CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: 6,
+    minWidth: 0,
+    maxHeight: 'min(70vh, 540px, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 72px))',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    WebkitOverflowScrolling: 'touch',
+    paddingBottom: 2,
+    boxSizing: 'border-box',
+  }
+
+  /**
+   * Outer shell: pointer-events none so taps on the map “under” empty overlay space still hit the map/backdrop
+   * (closes menu). Inner column below keeps pointer-events auto for real controls only.
+   */
+  const narrowMapToolsOverlayPassThroughStyle: CSSProperties = {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 2,
+    width: 'min(280px, calc(100vw - 48px))',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    pointerEvents: 'none',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+  }
+
+  const narrowMapToolsOverlayInteractiveStyle: CSSProperties = {
+    ...narrowMapToolsScrollStyle,
+    pointerEvents: 'auto',
+    width: 'max-content',
+    maxWidth: 'min(280px, calc(100vw - 48px))',
+    alignSelf: 'flex-end',
+  }
+
+  const mapDockNavBtnBase: CSSProperties = {
+    ...btn,
+    alignSelf: 'flex-end',
+    width: 'auto',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    padding: '7px 12px',
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    whiteSpace: 'nowrap',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
+    flexShrink: 0,
+  }
+
+  const narrowMapTopShowsFloatingAddress =
+    caseTab === 'tracking' || (caseTab === 'addresses' && viewMode === 'map')
+
+  const mapPaneShowsInteractive = caseTab === 'tracking' || viewMode === 'map'
+  const addrSearchMapShieldActive =
+    addrFieldFocused && !probativePlacementSession && mapPaneShowsInteractive
+
   return (
     <>
       <Layout
-      title={c.caseNumber}
-      subtitle={c.description ? c.description : undefined}
+      dense
+      title={
+        caseMetaEditing ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              alignItems: 'stretch',
+              minWidth: 0,
+              width: '100%',
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                minWidth: 0,
+                width: '100%',
+              }}
+            >
+              <input
+                autoFocus
+                value={caseNameDraft}
+                onChange={(e) => setCaseNameDraft(e.target.value)}
+                aria-label="Case name"
+                autoComplete="off"
+                name="vc-case-number-edit"
+                inputMode="text"
+                style={caseMetaInlineNameEdit}
+              />
+              <textarea
+                value={caseDescDraft}
+                maxLength={CASE_DESCRIPTION_MAX_CHARS}
+                onChange={(e) => setCaseDescDraft(e.target.value)}
+                placeholder="Add description"
+                aria-label="Description"
+                rows={2}
+                autoComplete="off"
+                name="vc-case-desc-edit"
+                inputMode="text"
+                style={{
+                  ...caseMetaInlineDescEdit,
+                  width: '100%',
+                  flex: 'none',
+                  minWidth: 0,
+                  minHeight: 72,
+                  maxHeight: 200,
+                  fontWeight: 500,
+                  color: '#4b5563',
+                }}
+              />
+            </div>
+            {isNarrow ? (
+              <div style={{ display: 'flex', gap: 8, width: '100%', boxSizing: 'border-box' }}>
+                <button type="button" onClick={saveCaseMetaEdit} style={{ ...btnPrimary, flex: 1, minWidth: 0 }}>
+                  Save
+                </button>
+                <button type="button" onClick={discardCaseMetaEdit} style={{ ...btn, flex: 1, minWidth: 0 }}>
+                  Discard
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              gap: 2,
+              minWidth: 0,
+              width: '100%',
+            }}
+          >
+            {canEditCaseMetaHere ? (
+              <>
+                <button
+                  type="button"
+                  onClick={beginCaseMetaEdit}
+                  title="Edit case name and description"
+                  style={caseHeaderReadonlyTitle}
+                >
+                  {c.caseNumber}
+                </button>
+                <button
+                  type="button"
+                  onClick={beginCaseMetaEdit}
+                  title="Edit case name and description"
+                  style={caseHeaderReadonlyDesc}
+                >
+                  {(c.description ?? '').trim() ? c.description : 'Add description'}
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ ...caseHeaderReadonlyTitle, cursor: 'default' }}>{c.caseNumber}</div>
+                <div style={{ ...caseHeaderReadonlyDesc, cursor: 'default' }}>
+                  {(c.description ?? '').trim() ? c.description : '—'}
+                </div>
+              </>
+            )}
+          </div>
+        )
+      }
+      subtitle={null}
       right={
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={props.onBack} style={btn}>
-            Back
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {caseMetaEditing && !isNarrow ? (
+            <>
+              <button type="button" onClick={saveCaseMetaEdit} style={btnPrimary}>
+                Save
+              </button>
+              <button type="button" onClick={discardCaseMetaEdit} style={btn}>
+                Discard
+              </button>
+            </>
+          ) : null}
+          <button type="button" onClick={props.onBack} style={btn}>
+            Case List
           </button>
         </div>
       }
     >
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, height: '100%', paddingLeft: 12, paddingRight: 16, boxSizing: 'border-box' }}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: caseTab === 'tracking' ? 'minmax(0,1fr) minmax(220px, 26vw)' : selected ? 'minmax(0,1fr) minmax(240px, 28vw)' : 'minmax(0,1fr)',
-            gap: 10,
-            alignItems: 'start',
-            minHeight: 0,
-            height: '100%',
-          }}
-        >
-          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: `${controlPaneWidth} minmax(0,1fr)`, alignItems: 'stretch', minHeight: 0 }}>
-            <div style={{ ...card, padding: 0, overflowY: 'auto', overflowX: 'hidden', height: contentPanelHeight }}>
-              <div style={{ padding: 10, display: 'grid', gap: 8, borderBottom: '1px solid #e5e7eb' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: isNarrow ? 'clamp(2px, 0.6vw, 6px)' : 'clamp(4px, 0.9vw, 10px)',
+          flex: 1,
+          minHeight: 0,
+          maxHeight: isNarrow ? undefined : caseShellMaxH,
+          overflow: 'hidden',
+          paddingLeft: 'clamp(4px, 1.2vw, 12px)',
+          paddingRight: 'clamp(4px, 1.2vw, 12px)',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div className="case-workspace-shell" style={workspaceGridStyle}>
+            <div
+              className="case-control-pane"
+              style={{
+                gridArea: 'controls',
+                ...card,
+                padding: 0,
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                minHeight: 0,
+                minWidth: 0,
+                height: isNarrow ? 'auto' : '100%',
+                maxWidth: '100%',
+                boxSizing: 'border-box',
+                borderRadius: 12,
+              }}
+            >
+              <div style={{ padding: 8, display: 'grid', gap: 6, borderBottom: '1px solid #e5e7eb' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                   <button type="button" style={{ ...viewModeBtn(caseTab === 'addresses'), width: '100%' }} onClick={() => setCaseTab('addresses')}>
                     Video canvassing
                   </button>
@@ -442,475 +2336,936 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
                   </button>
                 </div>
 
-                {caseTab === 'addresses' ? (
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    <div style={{ fontWeight: 900, fontSize: 14 }}>Add address</div>
-                    <input
-                      value={addr}
-                      onChange={(e) => setAddr(e.target.value)}
-                      placeholder={GEOCODE_SCOPE === 'ny' ? 'Start typing a NY address…' : 'Start typing an address…'}
-                      style={field}
-                    />
-                    {GEOCODE_SCOPE === 'ny' ? (
-                      <div style={{ color: '#374151', fontSize: 12 }}>Autocomplete is currently scoped to New York addresses.</div>
-                    ) : null}
-                    {loadingSug ? <div style={{ color: '#374151', fontSize: 12 }}>Searching…</div> : null}
-                    {suggestions.length ? (
-                      <div style={{ display: 'grid', gap: 6 }}>
-                        {suggestions.map((s) => (
-                          <button
-                            key={`${s.lat},${s.lon},${s.label}`}
-                            style={suggestionBtn}
-                            onClick={() => {
-                              setAddr('')
-                              setSuggestions([])
-                              setPendingAdd({ lat: s.lat, lon: s.lon, addressText: s.label })
-                              const m = mapRef.current
-                              if (m) m.flyTo([s.lat, s.lon], Math.max(m.getZoom(), 16), { duration: 0.6 })
-                            }}
-                          >
-                            {s.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : addr.trim().length >= 3 ? (
-                      /^\d{1,4}-\d{1,4}$/.test(addr.trim()) ? (
-                        <div style={{ color: '#374151', fontSize: 12 }}>Add the street name after the house number (e.g., "120-37 170 Street").</div>
-                      ) : (
-                        <div style={{ color: '#374151', fontSize: 12 }}>No suggestions. Try adding city/state.</div>
-                      )
-                    ) : null}
-                  </div>
-                ) : (
-                  <div style={{ color: '#374151', fontSize: 13, lineHeight: 1.45 }}>
-                    This uses the same map as video canvassing—buildings and subject routes stay visible together. Switch to this tab and
-                    click the map (not on a building outline) to add the next numbered step; describe what happened in the prompt.
-                  </div>
-                )}
-              </div>
-              <div style={{ ...mapTopBar, flexDirection: 'column', alignItems: 'stretch' }}>
-                {caseTab === 'addresses' ? (
-                  <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr', alignItems: 'stretch' }}>
-                    <LegendChip
-                      label={`No cameras (${counts.noCameras})`}
-                      color={statusColor('noCameras')}
-                      on={filters.noCameras}
-                      onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
-                    />
-                    <LegendChip
-                      label={`No answer (${counts.camerasNoAnswer})`}
-                      color={statusColor('camerasNoAnswer')}
-                      on={filters.camerasNoAnswer}
-                      onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
-                    />
-                    <LegendChip
-                      label={`Not probative (${counts.notProbativeFootage})`}
-                      color={statusColor('notProbativeFootage')}
-                      on={filters.notProbativeFootage}
-                      onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
-                    />
-                    <LegendChip
-                      label={`Probative (${counts.probativeFootage})`}
-                      color={statusColor('probativeFootage')}
-                      on={filters.probativeFootage}
-                      onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
-                    />
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.4 }}>
-                    Map shows canvass statuses and subject paths. Add steps on the map while this tab is active.
-                  </div>
-                )}
-
-                <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr', alignItems: 'stretch' }}>
-                  {caseTab === 'addresses' ? (
-                    <>
-                      <button style={{ ...viewModeBtn(viewMode === 'map'), width: '100%' }} onClick={() => setViewMode('map')}>
-                        Map view
-                      </button>
-                      <button style={{ ...viewModeBtn(viewMode === 'list'), width: '100%' }} onClick={() => setViewMode('list')}>
-                        List view
-                      </button>
-                    </>
-                  ) : null}
-                  <button type="button" style={{ ...btn, width: '100%' }} onClick={() => fitMapToCanvass()} disabled={!locations.length} title="Zoom to canvass pins">
-                    Fit canvass
-                  </button>
-                  <button type="button" style={{ ...btn, width: '100%' }} onClick={() => fitMapToPaths()} disabled={!trackingMapPoints.length} title="Zoom to visible tracks">
-                    Fit paths
-                  </button>
-                  <button type="button" style={{ ...btn, width: '100%' }} onClick={() => fitMapToAll()} disabled={!locations.length && !trackingMapPoints.length} title="Zoom to show everything">
-                    Fit all
-                  </button>
-                  <button
-                    type="button"
-                    style={{ ...btn, width: '100%' }}
-                    onClick={() => {
-                      if (!navigator.geolocation) return
-                      navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                          const m = mapRef.current
-                          if (!m) return
-                          m.flyTo([pos.coords.latitude, pos.coords.longitude], Math.max(m.getZoom(), 16), { duration: 0.6 })
-                        },
-                        () => {},
-                        { enableHighAccuracy: true, timeout: 8000 },
-                      )
-                    }}
-                  >
-                    Locate me
-                  </button>
-                </div>
-
-                {caseTab === 'tracking' || caseTracks.length > 0 ? (
-                  <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr', alignItems: 'stretch' }}>
-                    {caseTracks.length > 0 ? (
-                      <span style={{ fontSize: 12, fontWeight: 800, color: '#374151', gridColumn: '1 / -1' }}>Active track</span>
-                    ) : caseTab === 'tracking' ? (
-                      <span style={{ fontSize: 12, color: '#6b7280', gridColumn: '1 / -1' }}>
-                        No tracks yet — add one to plot steps.
-                      </span>
-                    ) : null}
-                    {caseTab === 'tracking' ? (
-                      <>
-                        <select
-                          value={activeTrackId ?? ''}
-                          onChange={(e) => setActiveTrackId(e.target.value || null)}
-                          style={{ ...select, minWidth: 0, width: '100%', gridColumn: '1 / -1' }}
-                          disabled={!caseTracks.length}
-                          title="Auto: select or drag any track's steps on the map. A named track: only that track's steps; use the map to add new steps."
-                        >
-                          <option value="">Auto</option>
-                          {caseTracks.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.label}
-                            </option>
-                          ))}
-                        </select>
-                        <button type="button" style={{ ...btn, width: '100%' }} onClick={() => setShowManageTracks(true)}>
-                          Manage tracks
-                        </button>
-                        <button
-                          type="button"
-                          style={{ ...btn, width: '100%' }}
-                          onClick={() => {
-                            const stayAuto = activeTrackId == null
-                            const nextN = caseTracks.length + 1
-                            void createTrack({ caseId: props.caseId, label: `Track ${nextN}` }).then((id) => {
-                              setAutoContinuationTrackId(id)
-                              setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
-                              if (!stayAuto) setActiveTrackId(id)
-                            })
-                          }}
-                        >
-                          + Track
-                        </button>
-                      </>
-                    ) : null}
-                    {caseTracks.map((t) => {
-                      const on = visibleTrackIds[t.id] !== false
-                      return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          style={{ ...viewModeBtn(on), width: '100%' }}
-                          onClick={() => setVisibleTrackIds((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
-                          title={on ? `Hide path: ${t.label}` : `Show path: ${t.label}`}
-                        >
-                          {t.label}
-                        </button>
-                      )
-                    })}
+                {!isNarrow ? (
+                  <div ref={wideAddrSearchRef}>
+                    {renderAddAddressSearch(false)}
                   </div>
                 ) : null}
               </div>
+              <div style={{ ...mapTopBar, flexDirection: 'column', alignItems: 'stretch' }}>
+                {!isNarrow && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setFilterLegendOpen((v) => !v)}
+                      aria-expanded={filterLegendOpen}
+                      style={{
+                        ...btn,
+                        width: '100%',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 8,
+                        fontWeight: 800,
+                        fontSize: 12,
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span>Total locations selected ({locations.length})</span>
+                      <span style={{ flexShrink: 0, opacity: 0.65, fontSize: 10 }} aria-hidden>
+                        {filterLegendOpen ? '▼' : '▶'}
+                      </span>
+                    </button>
+                    {filterLegendOpen ? filterLegendChipsGrid : null}
+                    <div
+                      className="case-pane-actions-row"
+                      style={{
+                        display: 'grid',
+                        gap: 6,
+                        gridTemplateColumns: '1fr 1fr',
+                        alignItems: 'stretch',
+                      }}
+                    >
+                      {quickMenuAddressBlock}
+                      {mapViewFitLocateButtons}
+                    </div>
+                    <button
+                      type="button"
+                      style={{ ...btn, width: '100%', fontWeight: 800, fontSize: 12 }}
+                      onClick={() => setShowManageTracks(true)}
+                    >
+                      Manage tracks
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...btn, width: '100%', fontWeight: 800, fontSize: 12 }}
+                      onClick={() => setProbativeFlow({ step: 'calc', target: { kind: 'dvr_only' } })}
+                    >
+                      DVR calculator
+                    </button>
+                  </>
+                )}
+
+                {!isNarrow ? casePhotosSidebarBlock : null}
+
+              </div>
             </div>
 
-            {caseTab === 'tracking' || viewMode === 'map' ? (
-              <div style={{ ...card, padding: 0, overflow: 'hidden', minWidth: 0, marginRight: 12 }}>
-                <div style={{ height: contentPanelHeight }}>
-                  <MapContainerAny
-                    center={defaultCenter}
-                    zoom={15}
-                    style={{ height: '100%', width: '100%' }}
-                    ref={(m: any) => {
-                      mapRef.current = m as any
+            <div ref={mapPaneShellRef} style={mapPaneShell}>
+              {probativePlacementSession ? (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 10,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    zIndex: 25,
+                    maxWidth: 'min(520px, calc(100% - 24px))',
+                    padding: '10px 14px',
+                    background: 'rgba(17,24,39,0.92)',
+                    color: 'white',
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    lineHeight: 1.4,
+                    textAlign: 'center',
+                    pointerEvents: 'none',
+                    boxShadow: '0 4px 20px rgba(0,0,0,0.18)',
+                  }}
+                >
+                  Click the map to place a marker on “
+                  {caseTracks.find((t) => t.id === probativePlacementSession.trackId)?.label ?? 'track'}” (where the subject was
+                  last seen). Press Esc to cancel.
+                </div>
+              ) : null}
+              {isNarrow && !probativePlacementSession && viewMode !== 'list' ? (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 'max(6px, env(safe-area-inset-top, 0px))',
+                    left: 0,
+                    right: 0,
+                    zIndex: 45,
+                    paddingLeft: narrowMapTopShowsFloatingAddress ? narrowMapTopReserveLeft : 'max(10px, env(safe-area-inset-left, 0px))',
+                    paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {narrowMapTopShowsFloatingAddress ? (
+                    <div
+                      ref={narrowMapAddressRef}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        pointerEvents: 'auto',
+                        position: 'relative',
+                        zIndex: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          ...narrowFloatingAddressCardStyle,
+                          opacity: addrSearchProminent ? 1 : 0.52,
+                          transition: 'opacity 0.2s ease',
+                        }}
+                      >
+                        {renderAddAddressSearch(true)}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div
+                    ref={mapToolsDockRef}
+                    style={{
+                      ...mapDockColumnStyle,
+                      marginLeft: narrowMapTopShowsFloatingAddress ? undefined : 'auto',
                     }}
                   >
-                    <TileLayerAny attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                    <FitCaseMapFirstLoad locations={mapPins} pathPoints={trackingMapPoints} />
-                    <UnifiedMapClick
-                      caseTab={caseTab}
-                      locations={locations}
-                      updateLocation={updateLocation}
-                      onSelectLocation={(id) => setSelectedId(id)}
-                      canvassAddDisabled={pendingAdd !== null}
-                      onRequestCanvassAdd={(input) => {
-                        setPendingAdd({ lat: input.lat, lon: input.lon, addressText: input.addressText })
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-end',
+                        gap: 6,
+                        opacity: mapLeftDockProminent ? 1 : 0.45,
+                        transition: 'opacity 0.2s ease',
+                        minWidth: 0,
                       }}
-                      trackingInteraction={trackingMapInteraction}
-                    />
-                    <TravelPathOverlay tracks={caseTracks} trackPoints={caseTrackPoints} visibleTrackIds={visibleTrackIds} />
-                    {caseTab === 'tracking' || viewMode === 'map' ? (
-                      <WaypointTimeLabelLayer
-                        tracks={caseTracks}
-                        trackPoints={caseTrackPoints}
-                        visibleTrackIds={visibleTrackIds}
-                        canManipulatePoint={caseTab === 'tracking' ? canManipulateTrackFn : () => false}
-                        onSelectPoint={caseTab === 'tracking' ? onSelectTrackPointMap : undefined}
-                        labelDraggable={caseTab === 'tracking'}
-                        onDragEndLabel={
-                          caseTab === 'tracking'
-                            ? (pointId, offsetX, offsetY) => {
-                                void updateTrackPoint(pointId, {
-                                  mapTimeLabelOffsetX: clampMapLabelOffset(offsetX),
-                                  mapTimeLabelOffsetY: clampMapLabelOffset(offsetY),
-                                })
-                              }
-                            : undefined
-                        }
-                      />
-                    ) : null}
-                    <TrackingWaypointMarkers
-                      tracks={caseTracks}
-                      trackPoints={caseTrackPoints}
-                      visibleTrackIds={visibleTrackIds}
-                      selectedPointId={caseTab === 'tracking' ? selectedTrackPointId : null}
-                      canManipulatePoint={caseTab === 'tracking' ? canManipulateTrackFn : undefined}
-                      onSelectPoint={caseTab === 'tracking' ? onSelectTrackPointMap : undefined}
-                      draggable={caseTab === 'tracking'}
-                      onDragEndPoint={caseTab === 'tracking' ? onTrackPointDragEnd : undefined}
-                    />
-                    {mapPins.map((l) => (
-                      l.footprint && l.footprint.length >= 3 ? (
-                        <Polygon
-                          key={l.id}
-                          positions={l.footprint}
-                          pathOptions={{
-                            // Use the status color outline for the selected building.
-                            color: selectedId === l.id ? statusColor(l.status) : '#ffffff',
-                            weight: selectedId === l.id ? 3.5 : 2,
-                            fillColor: statusColor(l.status),
-                            // Brighter selection for readability on grayscale tiles.
-                            fillOpacity: selectedId === l.id ? 0.72 : 0.38,
-                            opacity: selectedId === l.id ? 0.95 : 0.75,
-                          }}
-                          eventHandlers={{
-                            click: (e: any) => {
-                              ;(e as any)?.originalEvent?.stopPropagation?.()
-                              setSelectedId(l.id)
-                            },
-                          }}
-                        />
-                      ) : (
-                        <>
-                          {l.bounds ? (
-                            <Rectangle
-                              key={l.id}
-                              bounds={locationBounds(l)}
-                              pathOptions={{
-                            // Footprint may still be loading. Avoid the big "box pop" by
-                            // rendering only a subtle outline (and no fill) until the polygon arrives.
-                            color: selectedId === l.id ? statusColor(l.status) : '#ffffff',
-                            weight: selectedId === l.id ? 3.5 : 1,
-                            fillColor: statusColor(l.status),
-                            // When footprint is still loading, avoid the "big box pop"
-                            // but still show a bright selected cue.
-                            fillOpacity: selectedId === l.id ? 0.35 : 0,
-                            opacity: selectedId === l.id ? 0.95 : 0,
-                              }}
-                              eventHandlers={{
-                                click: (e: any) => {
-                                  ;(e as any)?.originalEvent?.stopPropagation?.()
-                                  setSelectedId(l.id)
-                                },
-                              }}
-                            />
-                          ) : (
-                            // While footprint is loading (new entries), render an invisible hit-target
-                            // instead of showing the fallback box.
-                            <Rectangle
-                              key={l.id}
-                              bounds={locationBounds(l)}
-                              pathOptions={{
-                                color: selectedId === l.id ? '#111827' : '#ffffff',
-                                opacity: selectedId === l.id ? 1 : 0,
-                                weight: selectedId === l.id ? 3 : 1,
-                                fillColor: statusColor(l.status),
-                                fillOpacity: selectedId === l.id ? 0.5 : 0,
-                              }}
-                              eventHandlers={{
-                                click: (e: any) => {
-                                  ;(e as any)?.originalEvent?.stopPropagation?.()
-                                  setSelectedId(l.id)
-                                },
-                              }}
-                            />
-                          )}
-                        </>
-                      )
-                    ))}
-                  </MapContainerAny>
-                </div>
-              </div>
-            ) : (
-              <div style={{ ...card, padding: 0, overflow: 'hidden', minWidth: 0, marginRight: 12 }}>
-                <div style={{ ...listHeaderRow, borderBottom: '1px solid #e5e7eb' }}>
-                  <div style={{ fontWeight: 900 }}>Locations ({filtered.length})</div>
-                </div>
-                {filtered.length ? (
-                  <div style={{ maxHeight: contentPanelHeight, overflow: 'auto', display: 'grid' }}>
-                    {filtered.map((l) => (
-                      <div key={l.id} style={{ ...listRow, background: selectedId === l.id ? '#f9fafb' : 'white' }}>
-                        <button style={listRowMainBtn} onClick={() => setSelectedId(l.id)}>
-                          <div style={{ fontWeight: 800, textAlign: 'left' }}>{l.addressText}</div>
-                          <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <span style={{ ...statusBadge, background: `${statusColor(l.status)}35`, color: statusColor(l.status) }}>
-                              {statusLabel(l.status)}
-                            </span>
-                            <span style={{ color: '#374151', fontSize: 12 }}>
-                              Updated {new Date(l.updatedAt).toLocaleString()}
-                            </span>
-                          </div>
-                        </button>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                          <RowStatusButton
-                            label="No cameras"
-                            color={statusColor('noCameras')}
-                            active={l.status === 'noCameras'}
-                            onClick={() => void updateLocation(l.id, { status: 'noCameras' })}
-                          />
-                          <RowStatusButton
-                            label="No answer"
-                            color={statusColor('camerasNoAnswer')}
-                            active={l.status === 'camerasNoAnswer'}
-                            onClick={() => void updateLocation(l.id, { status: 'camerasNoAnswer' })}
-                          />
-                          <RowStatusButton
-                            label="Not probative"
-                            color={statusColor('notProbativeFootage')}
-                            active={l.status === 'notProbativeFootage'}
-                            onClick={() => void updateLocation(l.id, { status: 'notProbativeFootage' })}
-                          />
-                          <RowStatusButton
-                            label="Probative"
-                            color={statusColor('probativeFootage')}
-                            active={l.status === 'probativeFootage'}
-                            onClick={() => void updateLocation(l.id, { status: 'probativeFootage' })}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ padding: 14, color: '#374151' }}>No locations in the selected filters.</div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {caseTab === 'tracking' ? (
-            selectedTrackPoint ? (
-              <TrackPointDrawer
-                point={selectedTrackPoint}
-                stepIndex={selectedTrackPointStepIndex}
-                onClose={() => setSelectedTrackPointId(null)}
-                onUpdate={(patch) => void updateTrackPoint(selectedTrackPoint.id, patch)}
-                onDelete={() => {
-                  void deleteTrackPoint(selectedTrackPoint.id)
-                  setSelectedTrackPointId(null)
-                }}
-              />
-            ) : (
-              <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-                <div style={{ ...listHeaderRow, borderBottom: '1px solid #e5e7eb' }}>
-                  <div style={{ fontWeight: 900, fontSize: 13 }}>
-                    {activeTrackId ? `Steps (${activeTrackPointsOrdered.length})` : 'Steps'}
-                  </div>
-                </div>
-                <div style={{ maxHeight: contentPanelHeight, overflow: 'auto' }}>
-                  {!activeTrackId ? (
-                    <div style={{ padding: 12, color: '#374151', fontSize: 13, lineHeight: 1.45 }}>
-                      <strong>Auto</strong> — click a step to select or drag it (even when tracks overlap; the nearest pin under your
-                      click wins). Click empty map to add the next step on the same track as your last selection, or on the first
-                      track if none yet. Choose a named track above to only edit that track and to see its list here.
-                    </div>
-                  ) : activeTrackPointsOrdered.length === 0 ? (
-                    <div style={{ padding: 12, color: '#374151', fontSize: 13 }}>No steps yet—click the map to add one.</div>
-                  ) : (
-                    <div style={{ display: 'grid' }}>
-                      {activeTrackPointsOrdered.map((p, idx) => (
+                    >
+                      {!mapLeftToolDockOpen ? (
                         <button
-                          key={p.id}
                           type="button"
-                          onClick={() => setSelectedTrackPointId(p.id)}
+                          aria-label="Open map tools: views, filters, tracks, and photos"
+                          onClick={() => {
+                            mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
+                            setMapLeftToolDockOpen(true)
+                          }}
                           style={{
-                            ...listRowMainBtn,
-                            textAlign: 'left',
-                            padding: '10px 12px',
-                            borderBottom: '1px solid #f3f4f6',
-                            borderRadius: 0,
-                            background: 'white',
-                            display: 'grid',
-                            gap: 4,
-                            cursor: 'pointer',
+                            ...btn,
+                            width: 44,
+                            height: 44,
+                            minWidth: 44,
+                            padding: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 20,
+                            lineHeight: 1,
+                            borderRadius: 10,
+                            boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
                           }}
                         >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'start' }}>
-                            <span style={{ fontWeight: 900, fontSize: 12, color: '#64748b' }}>Step {idx + 1}</span>
-                            <span style={{ fontSize: 10, fontWeight: 800, color: '#6b7280' }}>Edit →</span>
-                          </div>
-                          <div style={{ fontWeight: 800, fontSize: 13, lineHeight: 1.25 }}>{p.addressText}</div>
-                          <div style={{ fontSize: 11, color: '#6b7280', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                            <span>
-                              {p.lat.toFixed(5)}, {p.lon.toFixed(5)}
-                            </span>
-                            <span>
-                              {p.visitedAt != null ? (
-                                <>Subject: {formatSubjectTime(p.visitedAt)}</>
-                              ) : (
-                                <span style={{ opacity: 0.85 }}>No subject time</span>
-                              )}
-                              {p.displayTimeOnMap && p.visitedAt != null ? ' · time on map' : ''}
-                            </span>
-                            {p.showOnMap === false ? (
-                              <span style={{ ...statusBadge, background: '#f3f4f6', color: '#6b7280' }}>Hidden on map</span>
-                            ) : null}
-                            {p.locationId ? <span>Linked to canvass</span> : null}
-                          </div>
+                          ☰
                         </button>
-                      ))}
+                      ) : (
+                        <>
+                          {/** Keeps the top bar’s right edge aligned with the collapsed ☰ while the menu overlays leftward. */}
+                          <div style={{ width: 44, height: 44, flexShrink: 0, pointerEvents: 'none' }} aria-hidden />
+                          <div style={narrowMapToolsOverlayPassThroughStyle}>
+                            <div style={narrowMapToolsOverlayInteractiveStyle}>
+                          <button
+                            type="button"
+                            aria-label="Close map tools"
+                            onClick={closeMapToolsDock}
+                            style={{
+                              ...btn,
+                              width: 44,
+                              height: 44,
+                              minWidth: 44,
+                              padding: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: 20,
+                              lineHeight: 1,
+                              borderRadius: 10,
+                              boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
+                              flexShrink: 0,
+                            }}
+                          >
+                            ☰
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMapLeftToolSection((s) => {
+                                const next = s === 'views' ? null : 'views'
+                                return next
+                              })
+                            }
+                            style={{
+                              ...mapDockNavBtnBase,
+                              textAlign: 'left',
+                              background: mapLeftToolSection === 'views' ? '#f3f4f6' : 'white',
+                            }}
+                          >
+                            Views
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMapLeftToolSection((s) => {
+                                const next = s === 'filters' ? null : 'filters'
+                                return next
+                              })
+                            }
+                            style={{
+                              ...mapDockNavBtnBase,
+                              textAlign: 'left',
+                              background: mapLeftToolSection === 'filters' ? '#f3f4f6' : 'white',
+                            }}
+                          >
+                            Filters
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMapLeftToolSection((s) => {
+                                const next = s === 'tracks' ? null : 'tracks'
+                                return next
+                              })
+                            }
+                            style={{
+                              ...mapDockNavBtnBase,
+                              textAlign: 'left',
+                              background: mapLeftToolSection === 'tracks' ? '#f3f4f6' : 'white',
+                            }}
+                          >
+                            Tracks
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMapLeftToolSection((s) => {
+                                const next = s === 'photos' ? null : 'photos'
+                                return next
+                              })
+                            }
+                            style={{
+                              ...mapDockNavBtnBase,
+                              textAlign: 'left',
+                              background: mapLeftToolSection === 'photos' ? '#f3f4f6' : 'white',
+                            }}
+                          >
+                            Photos
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProbativeFlow({ step: 'calc', target: { kind: 'dvr_only' } })
+                              closeMapToolsDock()
+                            }}
+                            style={{
+                              ...mapDockNavBtnBase,
+                              textAlign: 'left',
+                              background: 'white',
+                            }}
+                          >
+                            DVR calculator
+                          </button>
+                          {mapLeftToolSection === 'filters' ? (
+                            <div style={mapDockFilterPanelStyle}>
+                              <div style={{ fontWeight: 800, fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+                                Result ({locations.length} total)
+                              </div>
+                              {filterLegendChipsGridDock}
+                            </div>
+                          ) : null}
+                          {mapLeftToolSection === 'views' ? (
+                            <div style={mapDockPanelStyle}>
+                              <div
+                                className="case-pane-actions-row"
+                                style={{
+                                  display: 'grid',
+                                  gap: 6,
+                                  gridTemplateColumns: '1fr',
+                                  alignItems: 'stretch',
+                                  minWidth: 0,
+                                  width: '100%',
+                                }}
+                              >
+                                {quickMenuAddressBlock}
+                                {mapViewFitLocateButtons}
+                              </div>
+                            </div>
+                          ) : null}
+                          {mapLeftToolSection === 'tracks' ? (
+                            <div style={mapDockPanelStyle}>
+                              <div style={{ display: 'grid', gap: 8, width: '100%', minWidth: 0 }}>
+                                <button
+                                  type="button"
+                                  style={{ ...btnPrimary, width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+                                  disabled={!canAddCaseContentHere}
+                                  title={!canAddCaseContentHere ? 'No access to add tracks' : undefined}
+                                  onClick={() => {
+                                    setCaseTab('tracking')
+                                    setAddTrackKind('person')
+                                    setAddTrackLabel(`Track ${caseTracks.length + 1}`)
+                                    setShowAddTrack(true)
+                                  }}
+                                >
+                                  New Track
+                                </button>
+                                {caseTracks.length === 0 ? (
+                                  <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
+                                    No tracks yet — add one to plot steps on the map.
+                                  </div>
+                                ) : (
+                                  caseTracks.map((t) => {
+                                    const on = visibleTrackIds[t.id] !== false
+                                    const canEditT = canEditTrack(data, actorId, t)
+                                    const canDelT = canDeleteTrack(data, actorId, t)
+                                    const lineColor = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+                                    const colorPickerId = `map-dock-track-color-${t.id}`
+                                    return (
+                                      <div
+                                        key={t.id}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 8,
+                                          minWidth: 0,
+                                          padding: '6px 8px',
+                                          border: '1px solid #e5e7eb',
+                                          borderRadius: 10,
+                                          background: '#fafafa',
+                                          boxSizing: 'border-box',
+                                        }}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={on}
+                                          title={on ? 'Hide path on map' : 'Show path on map'}
+                                          onChange={(e) =>
+                                            setVisibleTrackIds((prev) => ({ ...prev, [t.id]: e.target.checked }))
+                                          }
+                                          style={{ flexShrink: 0, width: 18, height: 18, cursor: 'pointer' }}
+                                        />
+                                        <label
+                                          htmlFor={colorPickerId}
+                                          title={canEditT ? 'Change path color' : 'No permission to change color'}
+                                          style={{
+                                            flexShrink: 0,
+                                            width: 32,
+                                            height: 32,
+                                            borderRadius: 8,
+                                            border: `2px solid ${lineColor}`,
+                                            background: lineColor,
+                                            cursor: canEditT ? 'pointer' : 'default',
+                                            position: 'relative',
+                                            overflow: 'hidden',
+                                            boxSizing: 'border-box',
+                                          }}
+                                        >
+                                          <input
+                                            id={colorPickerId}
+                                            type="color"
+                                            value={lineColor}
+                                            disabled={!canEditT}
+                                            onChange={(e) => void updateTrack(actorId, t.id, { routeColor: e.target.value })}
+                                            style={{
+                                              opacity: 0,
+                                              position: 'absolute',
+                                              width: '180%',
+                                              height: '180%',
+                                              left: '-40%',
+                                              top: '-40%',
+                                              cursor: canEditT ? 'pointer' : 'default',
+                                              border: 'none',
+                                              padding: 0,
+                                            }}
+                                          />
+                                        </label>
+                                        <input
+                                          value={t.label}
+                                          readOnly={!canEditT}
+                                          placeholder="Track name"
+                                          title={canEditT ? 'Rename track' : 'No permission to rename'}
+                                          onChange={(e) => void updateTrack(actorId, t.id, { label: e.target.value })}
+                                          style={{
+                                            ...field,
+                                            flex: 1,
+                                            minWidth: 0,
+                                            padding: '8px 10px',
+                                          }}
+                                        />
+                                        {canDelT ? (
+                                          <button
+                                            type="button"
+                                            aria-label={`Delete ${t.label}`}
+                                            title="Delete track"
+                                            style={{
+                                              flexShrink: 0,
+                                              width: 32,
+                                              height: 32,
+                                              padding: 0,
+                                              border: '1px solid #fecaca',
+                                              borderRadius: 8,
+                                              background: '#fff1f2',
+                                              color: '#9f1239',
+                                              cursor: 'pointer',
+                                              fontSize: 16,
+                                              fontWeight: 900,
+                                              lineHeight: 1,
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              justifyContent: 'center',
+                                            }}
+                                            onClick={() => {
+                                              if (
+                                                !window.confirm(
+                                                  `Delete "${t.label}" and every step on it? This cannot be undone.`,
+                                                )
+                                              )
+                                                return
+                                              const remaining = caseTracks.filter((x) => x.id !== t.id)
+                                              const nextTrackId = remaining[0]?.id ?? null
+                                              const clearStep =
+                                                !!selectedTrackPointId &&
+                                                caseTrackPoints.some((p) => p.id === selectedTrackPointId && p.trackId === t.id)
+                                              void deleteTrack(actorId, t.id).then(() => {
+                                                setVisibleTrackIds((prev) => {
+                                                  const next = { ...prev }
+                                                  delete next[t.id]
+                                                  return next
+                                                })
+                                                if (autoContinuationTrackId === t.id) setAutoContinuationTrackId(nextTrackId)
+                                                if (clearStep) setSelectedTrackPointId(null)
+                                              })
+                                            }}
+                                          >
+                                            ✕
+                                          </button>
+                                        ) : (
+                                          <span style={{ width: 32, flexShrink: 0 }} aria-hidden />
+                                        )}
+                                      </div>
+                                    )
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+                          {mapLeftToolSection === 'photos' ? (
+                            <div style={{ ...mapDockPanelStyle, padding: 8 }}>
+                              <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                                {casePhotosSidebarBlock ?? (
+                                  <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
+                                    No reference photos yet{canAddCaseContentHere ? '. Use Add photo in this panel.' : '.'}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
-              </div>
-            )
-          ) : selected ? (
-            <LocationDrawer
-              location={selected}
-              onClose={() => setSelectedId(null)}
-              onUpdate={(patch) => void updateLocation(selected.id, patch)}
-              onDelete={() => {
-                void deleteLocation(selected.id)
-                setSelectedId(null)
-              }}
-            />
-          ) : null}
-        </div>
+              ) : null}
+              {caseTab === 'tracking' || viewMode === 'map' ? (
+                <div style={{ position: 'absolute', inset: 0, minHeight: 0, zIndex: 1 }}>
+                  {isNarrow && mapLeftToolDockOpen && !probativePlacementSession ? (
+                    <div
+                      role="presentation"
+                      aria-hidden
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        zIndex: 22,
+                        background: 'rgba(17,24,39,0.16)',
+                        touchAction: 'none',
+                      }}
+                      onPointerDown={(e) => {
+                        if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          return
+                        }
+                        e.preventDefault()
+                        e.stopPropagation()
+                        mapRef.current?.clearPendingMapTap()
+                        closeMapToolsDock()
+                      }}
+                    />
+                  ) : null}
+                  <div style={{ position: 'absolute', inset: 0, zIndex: 1, minHeight: 0 }}>
+                  <AddressesMapLibre
+                    key={props.caseId}
+                    ref={mapRef}
+                    caseTab={caseTab}
+                    defaultCenter={defaultCenter}
+                    resumeMapFocus={resumeMapFocus}
+                    mapPins={mapPins}
+                    locations={locations}
+                    selectedId={selectedId}
+                    footprintLoadingIds={footprintLoadingIds}
+                    vectorRingLookupRef={vectorRingLookupRef}
+                    caseTracks={caseTracks}
+                    caseTrackPoints={caseTrackPoints}
+                    visibleTrackIds={visibleTrackIds}
+                    trackingMapPoints={trackingMapPoints}
+                    getRouteColor={getRouteColorMemo}
+                    findHit={findLocationHit}
+                    findByAddressText={findLocationByAddrMemo}
+                    onSelectLocation={onMapLocationPress}
+                    onEnsureFootprint={enqueueOutlineForLocation}
+                    suppressCanvassMapAdd={suppressCanvassMapAdd}
+                    onRequestCanvassAdd={(input) => {
+                      openAddLocationModal({
+                        lat: input.lat,
+                        lon: input.lon,
+                        addressText: input.addressText,
+                        vectorTileBuildingRing: input.vectorTileBuildingRing,
+                      })
+                    }}
+                    onCanvassAddAddressResolved={(result) => {
+                      if (result.existingLocationId) {
+                        setPendingAddQueue((q) => q.filter((x) => !samePendingPin(x, result)))
+                        setLocationDetailOpen(false)
+                        setSelectedId(result.existingLocationId)
+                        const match = locationsRef.current.find((l) => l.id === result.existingLocationId)
+                        if (match && (!match.footprint || match.footprint.length < 3)) {
+                          enqueueOutlineForLocation(match.id, match.lat, match.lon, match.addressText)
+                        }
+                        return
+                      }
+                      setPendingAddQueue((q) => {
+                        const i = q.findIndex((x) => samePendingPin(x, result))
+                        if (i < 0) return q
+                        const next = q.slice()
+                        next[i] = { ...next[i]!, addressText: result.addressText }
+                        return next
+                      })
+                    }}
+                    outlineDoneRef={outlineDoneRef}
+                    outlineInFlightRef={outlineInFlightRef}
+                    outlineQueuedRef={outlineQueuedRef}
+                    footprintFailedIds={footprintFailedIds}
+                    onEnqueueViewport={enqueueOutlineForLocation}
+                    trackingInteraction={trackingMapInteraction}
+                    selectedTrackPointId={selectedTrackPointId}
+                    canManipulateTrackPoint={canManipulateTrackPointFn}
+                    onSelectTrackPoint={onSelectTrackPointMap}
+                    onTrackPointDragEnd={onTrackPointDragEnd}
+                    onTrackTimeLabelDragEnd={onTrackTimeLabelDragEnd}
+                    placementClickAddsTrackPoint={probativePlacementSession != null}
+                    onTrackStepLongPress={onTrackStepLongPress}
+                    onCanvassLocationLongPress={onCanvassLocationLongPress}
+                  />
+                  </div>
+                  {addrSearchMapShieldActive ? (
+                    <div
+                      role="presentation"
+                      aria-hidden
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        zIndex: 18,
+                        background: 'rgba(17, 24, 39, 0.26)',
+                        touchAction: 'none',
+                      }}
+                      onPointerDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        mapRef.current?.clearPendingMapTap()
+                        if (addrBlurClearRef.current) {
+                          clearTimeout(addrBlurClearRef.current)
+                          addrBlurClearRef.current = null
+                        }
+                        setAddrFieldFocused(false)
+                        setSuggestions([])
+                        setLoadingSug(false)
+                        addrSearchInputRef.current?.blur()
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    height: '100%',
+                    minHeight: 0,
+                    position: 'relative',
+                  }}
+                >
+                  <div
+                    style={{
+                      ...listHeaderRow,
+                      flexShrink: 0,
+                      borderBottom: '1px solid #e5e7eb',
+                      flexDirection: 'column',
+                      alignItems: 'stretch',
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 10,
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <div style={{ fontWeight: 900 }}>Locations ({filtered.length})</div>
+                      <button type="button" style={btn} onClick={() => setViewMode('map')}>
+                        Back to map
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        flexWrap: 'nowrap',
+                        gap: 6,
+                        alignItems: 'center',
+                        overflowX: 'auto',
+                        WebkitOverflowScrolling: 'touch',
+                        paddingBottom: 2,
+                        marginLeft: -2,
+                        marginRight: -2,
+                        maxWidth: '100%',
+                      }}
+                      role="group"
+                      aria-label="Filter locations by result"
+                    >
+                      <LegendChip
+                        dense
+                        label={`No cameras (${counts.noCameras})`}
+                        color={statusColor('noCameras')}
+                        on={filters.noCameras}
+                        onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
+                      />
+                      <LegendChip
+                        dense
+                        label={`Needs Follow up (${counts.camerasNoAnswer})`}
+                        color={statusColor('camerasNoAnswer')}
+                        on={filters.camerasNoAnswer}
+                        onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
+                      />
+                      <LegendChip
+                        dense
+                        label={`Not probative (${counts.notProbativeFootage})`}
+                        color={statusColor('notProbativeFootage')}
+                        on={filters.notProbativeFootage}
+                        onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
+                      />
+                      <LegendChip
+                        dense
+                        label={`Probative (${counts.probativeFootage})`}
+                        color={statusColor('probativeFootage')}
+                        on={filters.probativeFootage}
+                        onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
+                      />
+                    </div>
+                  </div>
+                  {filtered.length ? (
+                    <div
+                      style={{
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'auto',
+                        display: 'grid',
+                        alignContent: 'start',
+                      }}
+                    >
+                      {locationsForListView.map((l) => {
+                        const isListSelected = selectedId === l.id
+                        const dimListRow = selectedId != null && !isListSelected
+                        const canEditL = canEditLocation(data, actorId, l)
+                        const canDelL = canDeleteLocation(data, actorId, l)
+                        return (
+                        <div
+                          key={l.id}
+                          style={{
+                            ...listRow,
+                            alignItems: 'start',
+                            ...(isNarrow
+                              ? {
+                                  gridTemplateColumns: '1fr',
+                                  gap: 10,
+                                  padding: '10px 12px',
+                                }
+                              : {}),
+                            background: isListSelected ? '#ffffff' : dimListRow ? '#ececef' : 'white',
+                            opacity: dimListRow ? 0.72 : 1,
+                            boxShadow: isListSelected ? 'inset 3px 0 0 #111827' : undefined,
+                            transition: 'background 0.15s ease, opacity 0.15s ease',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            style={{
+                              ...listRowMainBtn,
+                              ...(isNarrow ? { width: '100%', minWidth: 0, boxSizing: 'border-box' } : {}),
+                            }}
+                            onClick={() => {
+                              setLocationDetailOpen(false)
+                              setSelectedId((id) => (id === l.id ? null : l.id))
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontWeight: 800,
+                                textAlign: 'left',
+                                wordBreak: 'break-word',
+                                overflowWrap: 'anywhere',
+                                lineHeight: 1.35,
+                              }}
+                            >
+                              {l.addressText}
+                            </div>
+                            <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span style={{ ...statusBadge, background: `${statusColor(l.status)}35`, color: statusColor(l.status) }}>
+                                {statusLabel(l.status)}
+                              </span>
+                              <span style={{ color: '#374151', fontSize: 12 }}>
+                                Updated {formatAppDateTime(l.updatedAt)}
+                              </span>
+                            </div>
+                          </button>
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                              gap: 6,
+                              minWidth: 0,
+                              justifyItems: 'stretch',
+                              ...(isNarrow
+                                ? {
+                                    gridColumn: '1 / -1',
+                                    width: '100%',
+                                  }
+                                : {}),
+                            }}
+                          >
+                            <RowStatusButton
+                              label="No cameras"
+                              color={statusColor('noCameras')}
+                              active={l.status === 'noCameras'}
+                              disabled={!canEditL}
+                              stretch
+                              onClick={() => {
+                                setProbativeFlow(null)
+                                void updateLocation(actorId, l.id, { status: 'noCameras' })
+                              }}
+                            />
+                            <RowStatusButton
+                              label="Needs Follow up"
+                              color={statusColor('camerasNoAnswer')}
+                              active={l.status === 'camerasNoAnswer'}
+                              disabled={!canEditL}
+                              stretch
+                              onClick={() => {
+                                setProbativeFlow(null)
+                                void updateLocation(actorId, l.id, { status: 'camerasNoAnswer' })
+                              }}
+                            />
+                            <RowStatusButton
+                              label="Not probative"
+                              color={statusColor('notProbativeFootage')}
+                              active={l.status === 'notProbativeFootage'}
+                              disabled={!canEditL}
+                              stretch
+                              onClick={() => {
+                                setProbativeFlow(null)
+                                void updateLocation(actorId, l.id, { status: 'notProbativeFootage' })
+                              }}
+                            />
+                            <RowStatusButton
+                              label="Probative"
+                              color={statusColor('probativeFootage')}
+                              active={l.status === 'probativeFootage'}
+                              disabled={!canEditL}
+                              stretch
+                              onClick={() => {
+                                if (l.status !== 'probativeFootage') {
+                                  setLocationDetailOpen(false)
+                                  setSelectedId(l.id)
+                                  setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: l.id } })
+                                  return
+                                }
+                                void updateLocation(actorId, l.id, { status: 'probativeFootage' })
+                              }}
+                            />
+                          </div>
+                          {selectedId === l.id ? (
+                            <CaseListSelectedLocationPanel
+                              key={l.id}
+                              location={l}
+                              canEdit={canEditL}
+                              canDelete={canDelL}
+                              footprintLoading={footprintLoadingIds.has(l.id)}
+                              footprintFailed={footprintFailedIds.has(l.id)}
+                              onNotesChange={(notes) => void updateLocation(actorId, l.id, { notes })}
+                              onRemove={() => {
+                                if (!window.confirm('Delete this address from the case? This cannot be undone.')) return
+                                void deleteLocation(actorId, l.id)
+                                setSelectedId(null)
+                              }}
+                            />
+                          ) : null}
+                        </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ padding: 12, color: '#374151', flex: 1 }}>No locations in the selected filters.</div>
+                  )}
+                  {isNarrow && mapLeftToolDockOpen ? (
+                    <div
+                      role="presentation"
+                      aria-hidden
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        zIndex: 24,
+                        background: 'rgba(17,24,39,0.14)',
+                        touchAction: 'none',
+                      }}
+                      onPointerDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        closeMapToolsDock()
+                      }}
+                    />
+                  ) : null}
+                </div>
+              )}
+
+              {(caseTab === 'addresses' && selected && viewMode !== 'list' && locationDetailOpen) ||
+              (caseTab === 'tracking' && selectedTrackPoint) ? (
+                <div ref={caseMapDetailOverlayRef} style={mapPaneDetailOverlay}>
+                  {caseTab === 'addresses' && selected && viewMode !== 'list' && locationDetailOpen ? (
+                    <LocationDrawer
+                      key={selected.id}
+                      layout="wide"
+                      location={selected}
+                      buildingOutlineLoading={footprintLoadingIds.has(selected.id)}
+                      buildingOutlineFailed={footprintFailedIds.has(selected.id)}
+                      canEdit={canEditLocation(data, actorId, selected)}
+                      canDelete={canDeleteLocation(data, actorId, selected)}
+                      onClose={() => {
+                        setLocationDetailOpen(false)
+                        setProbativeFlow(null)
+                      }}
+                      onUpdate={(patch) => {
+                        if (patch.status != null && patch.status !== 'probativeFootage') {
+                          setProbativeFlow(null)
+                        }
+                        void updateLocation(actorId, selected.id, patch)
+                      }}
+                      onProbativeRequest={() =>
+                        setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: selected.id } })
+                      }
+                      onDelete={() => {
+                        void deleteLocation(actorId, selected.id)
+                        setSelectedId(null)
+                      }}
+                    />
+                  ) : caseTab === 'tracking' && selectedTrackPoint ? (
+                    <TrackPointDrawer
+                      key={selectedTrackPoint.id}
+                      layout="wide"
+                      point={selectedTrackPoint}
+                      trackLabel={selectedTrackLabel}
+                      stepIndex={selectedTrackPointStepIndex}
+                      canEdit={canEditTrackPoint(data, actorId, selectedTrackPoint)}
+                      canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
+                      onClose={() => setSelectedTrackPointId(null)}
+                      onUpdate={(patch) => void updateTrackPoint(actorId, selectedTrackPoint.id, patch)}
+                      onDelete={() => {
+                        void deleteTrackPoint(actorId, selectedTrackPoint.id)
+                        setSelectedTrackPointId(null)
+                        setTrackStepUndoTargetId(null)
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
       </div>
       </Layout>
 
     <Modal
       title="Add location"
-      open={pendingAdd !== null}
+      open={pendingAddQueue.length > 0}
       onClose={() => {
-        setPendingAdd(null)
+        closeAddLocationModal()
       }}
     >
       {pendingAdd ? (
         <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>Selected point</div>
+          <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
+            Selected point
+            {pendingAddQueue.length > 1 ? (
+              <span style={{ fontWeight: 600, color: '#6b7280' }}> · {pendingAddQueue.length - 1} more queued</span>
+            ) : null}
+          </div>
           <div style={{ fontWeight: 900, lineHeight: 1.2 }}>{pendingAdd.addressText}</div>
+          {isProvisionalCanvassLabel(pendingAdd.addressText) ? (
+            <div style={{ color: '#6b7280', fontSize: 12, fontWeight: 600 }}>Looking up street address…</div>
+          ) : null}
           <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>Select a category to add to the list.</div>
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -918,31 +3273,51 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
               <button
                 key={s}
                 onClick={async () => {
-                  if (pendingAddBusy) return
-                  const { lat, lon, addressText } = pendingAdd
-                  setPendingAddBusy(true)
+                  if (addLocationSaving || addCategoryInFlightRef.current) return
+                  const snapshot = pendingAdd
+                  if (s === 'probativeFootage') {
+                    setProbativeFlow({ step: 'accuracy', target: { kind: 'new', pending: snapshot } })
+                    return
+                  }
+                  addCategoryInFlightRef.current = true
+                  const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
+                  let { addressText } = snapshot
+                  setAddLocationSaving(true)
                   try {
                     const id = await createLocation({
                       caseId: props.caseId,
+                      createdByUserId: actorId,
                       addressText,
                       lat,
                       lon,
+                      bounds: bounds ?? null,
                       status: s,
                     })
-                    setPendingAdd(null)
+                    closeAddLocationModal()
+                    setLocationDetailOpen(false)
                     setSelectedId(id)
+                    enqueueOutlineForLocation(id, lat, lon, addressText, vectorTileBuildingRing ?? null)
 
-                    void fetchBuildingFootprint(lat, lon)
-                      .then((footprint) => {
-                        if (!footprint || footprint.length < 3) return
-                        void updateLocation(id, { footprint })
-                      })
-                      .catch(() => {})
+                    if (isProvisionalCanvassLabel(addressText)) {
+                      const lat0 = lat
+                      const lon0 = lon
+                      void (async () => {
+                        const signal =
+                          typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+                            ? AbortSignal.timeout(12_000)
+                            : undefined
+                        const resolved = await reverseGeocodeAddressText(lat0, lon0, signal).catch(() => null)
+                        if (resolved?.trim() && !isProvisionalCanvassLabel(resolved)) {
+                          void updateLocation(actorId, id, { addressText: resolved.trim() })
+                        }
+                      })()
+                    }
                   } finally {
-                    setPendingAddBusy(false)
+                    setAddLocationSaving(false)
+                    addCategoryInFlightRef.current = false
                   }
                 }}
-                disabled={pendingAddBusy}
+                disabled={addLocationSaving}
                 style={{
                   border: '1px solid #e5e7eb',
                   borderRadius: 999,
@@ -951,7 +3326,7 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
                   fontWeight: 900,
                   fontSize: 12,
                   borderColor: statusColor(s),
-                    background: pendingAddBusy ? 'white' : `${statusColor(s)}22`,
+                  background: addLocationSaving ? 'white' : `${statusColor(s)}22`,
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 8,
@@ -964,7 +3339,13 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
           </div>
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button style={btn} onClick={() => setPendingAdd(null)} disabled={pendingAddBusy}>
+            <button
+              type="button"
+              style={btn}
+              onClick={() => closeAddLocationModal()}
+              disabled={addLocationSaving}
+              title={addLocationSaving ? 'Saving…' : 'Close'}
+            >
               Cancel
             </button>
           </div>
@@ -973,81 +3354,205 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
       </Modal>
 
     <Modal
+      title="Add track"
+      open={showAddTrack}
+      onClose={() => setShowAddTrack(false)}
+    >
+      <div style={{ display: 'grid', gap: 12, minWidth: 0, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+        <label style={{ display: 'grid', gap: 6, minWidth: 0 }}>
+          <span style={{ fontWeight: 800, fontSize: 13 }}>Track type</span>
+          <select
+            value={addTrackKind}
+            onChange={(e) => setAddTrackKind(e.target.value as Track['kind'])}
+            style={{ ...select, width: '100%' }}
+          >
+            <option value="person">Person</option>
+            <option value="vehicle">Vehicle</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label style={{ display: 'grid', gap: 6, minWidth: 0 }}>
+          <span style={{ fontWeight: 800, fontSize: 13 }}>Name</span>
+          <input
+            value={addTrackLabel}
+            onChange={(e) => setAddTrackLabel(e.target.value)}
+            style={field}
+            placeholder="e.g. Subject A"
+            autoFocus={!isNarrow}
+            onFocus={(e) => {
+              if (!isNarrow) return
+              const el = e.currentTarget
+              window.setTimeout(() => {
+                el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+              }, 280)
+            }}
+          />
+        </label>
+        <div
+          style={{
+            display: 'flex',
+            gap: 10,
+            justifyContent: 'flex-end',
+            flexWrap: 'wrap',
+            minWidth: 0,
+            width: '100%',
+            boxSizing: 'border-box',
+          }}
+        >
+          <button type="button" style={btn} onClick={() => setShowAddTrack(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            style={{ ...btn, fontWeight: 900 }}
+            disabled={!canAddCaseContentHere}
+            onClick={() => {
+              const label = addTrackLabel.trim() || `Track ${caseTracks.length + 1}`
+              void createTrack({ caseId: props.caseId, createdByUserId: actorId, label, kind: addTrackKind }).then((id) => {
+                setShowAddTrack(false)
+                setSelectedTrackPointId(null)
+                setAutoContinuationTrackId(id)
+                setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
+              })
+            }}
+          >
+            Add track
+          </button>
+        </div>
+      </div>
+    </Modal>
+
+    <Modal
       title="Manage tracks"
       open={showManageTracks}
       onClose={() => setShowManageTracks(false)}
     >
-      <div style={{ display: 'grid', gap: 10 }}>
-        {caseTracks.map((t) => (
-          <div
-            key={t.id}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 130px 40px 52px auto',
-              gap: 10,
-              alignItems: 'center',
-            }}
-          >
-            <input
-              value={t.label}
-              onChange={(e) => void updateTrack(t.id, { label: e.target.value })}
-              style={field}
-            />
-            <select
-              value={t.kind}
-              onChange={(e) => void updateTrack(t.id, { kind: e.target.value as any })}
-              style={select}
-            >
-              <option value="person">Person (sidewalk)</option>
-              <option value="vehicle">Vehicle (street)</option>
-            </select>
+      <div style={{ display: 'grid', gap: 10, minWidth: 0, width: '100%', maxWidth: '100%' }}>
+        {caseTracks.map((t) => {
+          const canEditT = canEditTrack(data, actorId, t)
+          const canDelT = canDeleteTrack(data, actorId, t)
+          const colorInput = (
             <input
               type="color"
-              value={colorPickerValueForTrack(caseTracks, t)}
-              onChange={(e) => void updateTrack(t.id, { routeColor: e.target.value })}
-              title="Route color on map"
-              style={{ width: 40, height: 34, padding: 0, border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer' }}
+              value={resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]}
+              disabled={!canEditT}
+              onChange={(e) => void updateTrack(actorId, t.id, { routeColor: e.target.value })}
+              title="First four tracks default to blue, red, green, purple by creation order; later tracks get a unique auto color. You can pick any color, including one already in use."
+              style={{
+                width: 40,
+                height: 34,
+                padding: 0,
+                border: '1px solid #e5e7eb',
+                borderRadius: 8,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
             />
+          )
+          const kindSelect = (
+            <select
+              value={t.kind}
+              disabled={!canEditT}
+              onChange={(e) => void updateTrack(actorId, t.id, { kind: e.target.value as Track['kind'] })}
+              style={{
+                ...select,
+                width: isNarrow ? 'min(160px, 100%)' : undefined,
+                flex: isNarrow ? '1 1 140px' : undefined,
+                minWidth: 0,
+              }}
+            >
+              <option value="person">Person</option>
+              <option value="vehicle">Vehicle</option>
+              <option value="other">Other</option>
+            </select>
+          )
+          const deleteCell = canDelT ? (
             <button
               type="button"
-              style={btn}
-              title="Use automatic color from track order"
-              onClick={() => void updateTrack(t.id, { routeColor: '' })}
-            >
-              Auto
-            </button>
-            <button
-              style={btnDanger}
+              style={{ ...btnDanger, flex: isNarrow ? '1 1 120px' : undefined, minWidth: 0, boxSizing: 'border-box' }}
               onClick={() => {
-                void deleteTrack(t.id).then(() => {
+                void deleteTrack(actorId, t.id).then(() => {
                   setVisibleTrackIds((prev) => {
                     const next = { ...prev }
                     delete next[t.id]
                     return next
                   })
-                  if (activeTrackId === t.id) setActiveTrackId(caseTracks.find((x) => x.id !== t.id)?.id ?? null)
                 })
               }}
               title="Delete track and its steps"
             >
               Delete
             </button>
-          </div>
-        ))}
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          ) : (
+            <span style={{ color: '#9ca3af', fontSize: 12 }}>—</span>
+          )
+          return (
+            <div key={t.id} style={{ minWidth: 0, width: '100%', boxSizing: 'border-box' }}>
+              {isNarrow ? (
+                <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
+                  <input
+                    value={t.label}
+                    readOnly={!canEditT}
+                    onChange={(e) => void updateTrack(actorId, t.id, { label: e.target.value })}
+                    style={field}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                      alignItems: 'center',
+                      minWidth: 0,
+                      width: '100%',
+                    }}
+                  >
+                    {kindSelect}
+                    {colorInput}
+                    {deleteCell}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) minmax(88px, 120px) 40px auto',
+                    gap: 10,
+                    alignItems: 'center',
+                  }}
+                >
+                  <input
+                    value={t.label}
+                    readOnly={!canEditT}
+                    onChange={(e) => void updateTrack(actorId, t.id, { label: e.target.value })}
+                    style={field}
+                  />
+                  {kindSelect}
+                  {colorInput}
+                  {deleteCell}
+                </div>
+              )}
+            </div>
+          )
+        })}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button
             type="button"
             style={btnDanger}
-            disabled={!caseTracks.length}
-            title={caseTracks.length ? 'Remove every track and all steps for this case' : 'No tracks to remove'}
+            disabled={!caseTracks.length || !canDeleteAllTracksHere}
+            title={
+              !canDeleteAllTracksHere
+                ? 'Only the case owner can delete all tracks'
+                : caseTracks.length
+                  ? 'Remove every track and all steps for this case'
+                  : 'No tracks to remove'
+            }
             onClick={() => {
               if (!caseTracks.length) return
               if (
                 !window.confirm('Delete all tracks and every step on them for this case? This cannot be undone.')
               )
                 return
-              void deleteAllTracksForCase(props.caseId).then(() => {
-                setActiveTrackId(null)
+              void deleteAllTracksForCase(actorId, props.caseId).then(() => {
                 setAutoContinuationTrackId(null)
                 setVisibleTrackIds({})
                 setSelectedTrackPointId(null)
@@ -1056,1027 +3561,463 @@ export function CasePage(props: { caseId: string; onBack: () => void }) {
           >
             Delete all tracks
           </button>
-          <button style={btn} onClick={() => setShowManageTracks(false)}>
-            Close
+        </div>
+      </div>
+    </Modal>
+
+    <Modal
+      title="Add route marker?"
+      open={postProbativeMarkerPhase != null}
+      onClose={() => setPostProbativeMarkerPhase(null)}
+      zBase={63000}
+    >
+      {postProbativeMarkerPhase === 'ask' ? (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <p style={{ margin: 0, fontSize: 14, color: '#374151', lineHeight: 1.5 }}>
+            Add a step on a subject track for where the subject was last seen on this probative footage?
+          </p>
+          {caseTracks.length > 0 ? (
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontWeight: 800, fontSize: 13 }}>Track</span>
+              <select
+                value={postProbativeEffectiveTrackId}
+                onChange={(e) => setPostProbativePickTrackId(e.target.value)}
+                style={select}
+              >
+                {caseTracks.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {caseTracks.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 13, color: '#4b5563', lineHeight: 1.45 }}>
+              With no subject track yet, Yes creates one named “Track {caseTracks.length + 1}” first.
+            </p>
+          ) : null}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button type="button" style={btn} onClick={() => setPostProbativeMarkerPhase(null)}>
+              No
+            </button>
+            <button
+              type="button"
+              style={{ ...btn, fontWeight: 900 }}
+              onClick={() => {
+                if (caseTracks.length === 0) {
+                  const label = `Track ${caseTracks.length + 1}`
+                  void createTrack({ caseId: props.caseId, createdByUserId: actorId, label, kind: 'person' }).then((id) => {
+                    probativePlacementLockRef.current = false
+                    setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
+                    setProbativePlacementSession({ trackId: id })
+                    setAutoContinuationTrackId(id)
+                    setViewMode('map')
+                    setPostProbativeMarkerPhase(null)
+                  })
+                  return
+                }
+                const tid = postProbativeEffectiveTrackId
+                if (!tid) return
+                probativePlacementLockRef.current = false
+                setProbativePlacementSession({ trackId: tid })
+                setAutoContinuationTrackId(tid)
+                setViewMode('map')
+                setPostProbativeMarkerPhase(null)
+              }}
+            >
+              Yes
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </Modal>
+
+    <ProbativeDvrFlowModals
+      step={probativeFlow?.step ?? null}
+      onAccuracyAccurate={handleProbativeAccurate}
+      onAccuracyNotAccurate={handleProbativeNotAccurate}
+      onDismiss={handleProbativeFlowDismiss}
+      onCalcBack={handleProbativeCalcBack}
+      onCalcApply={handleProbativeCalcApply}
+    />
+
+    <Modal
+      title="Link DVR result to address"
+      open={dvrLinkLocationSession != null}
+      zBase={62500}
+      onClose={() => {
+        if (dvrLinkSaving) return
+        clearDvrLinkLocationUi()
+      }}
+    >
+      <div style={{ display: 'grid', gap: 14 }}>
+        <p style={{ margin: 0, color: '#374151', fontSize: 14, lineHeight: 1.5 }}>
+          Search for the canvass location that matches this DVR note. Then choose whether the footage there was probative or
+          not.
+        </p>
+        <div style={{ display: 'grid', gap: 6 }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: '#6b7280' }}>Address</div>
+          <input
+            value={dvrLinkAddr}
+            onChange={(e) => {
+              setDvrLinkAddr(e.target.value)
+              setDvrLinkPicked(null)
+            }}
+            placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
+            disabled={dvrLinkSaving}
+            style={{
+              ...field,
+              maxWidth: '100%',
+              boxSizing: 'border-box',
+              fontSize: isNarrow ? 16 : 13,
+            }}
+          />
+          {GEOCODE_SCOPE === 'ny' ? (
+            <div style={{ color: '#374151', fontSize: 12, lineHeight: 1.35 }}>Autocomplete is scoped to New York.</div>
+          ) : null}
+          {dvrLinkLoading ? <div style={{ color: '#374151', fontSize: 12 }}>Searching…</div> : null}
+          {dvrLinkSug.length ? (
+            <div
+              style={{
+                display: 'grid',
+                gap: 4,
+                maxHeight: 'min(200px, 32vh)',
+                overflowY: 'auto',
+                WebkitOverflowScrolling: 'touch',
+              }}
+            >
+              {dvrLinkSug.map((s) => (
+                <button
+                  key={`dvr-link-${s.lat},${s.lon},${s.label}`}
+                  type="button"
+                  style={suggestionBtn}
+                  disabled={dvrLinkSaving}
+                  onClick={() => setDvrLinkPicked(s)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          ) : dvrLinkAddr.trim().length >= 3 && !dvrLinkLoading ? (
+            /^\d{1,4}-\d{1,4}$/.test(dvrLinkAddr.trim()) ? (
+              <div style={{ color: '#374151', fontSize: 12, lineHeight: 1.35 }}>
+                Add the street name after the house number (e.g., ‘120-37 170 Street’).
+              </div>
+            ) : (
+              <div style={{ color: '#374151', fontSize: 12 }}>No suggestions. Try adding city/state.</div>
+            )
+          ) : null}
+        </div>
+        {dvrLinkPicked ? (
+          <div
+            style={{
+              border: '1px solid #e5e7eb',
+              borderRadius: 12,
+              padding: 12,
+              background: '#f9fafb',
+              display: 'grid',
+              gap: 10,
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 800, color: '#111827' }}>{dvrLinkPicked.label}</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" style={btn} disabled={dvrLinkSaving} onClick={() => setDvrLinkPicked(null)}>
+                Choose different address
+              </button>
+              <button
+                type="button"
+                style={{ ...btn, borderColor: '#7c2d12', color: '#7c2d12' }}
+                disabled={dvrLinkSaving}
+                onClick={() => void submitDvrLinkLocation(false)}
+              >
+                Not probative
+              </button>
+              <button
+                type="button"
+                style={btnPrimary}
+                disabled={dvrLinkSaving}
+                onClick={() => void submitDvrLinkLocation(true)}
+              >
+                {dvrLinkSaving ? 'Saving…' : 'Probative'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {!canAddCaseContentHere ? (
+          <div style={{ color: '#b45309', fontSize: 13, fontWeight: 700 }}>You don&apos;t have access to add locations here.</div>
+        ) : null}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button type="button" style={btn} disabled={dvrLinkSaving} onClick={() => clearDvrLinkLocationUi()}>
+            Cancel
           </button>
         </div>
       </div>
     </Modal>
-    </>
-  )
-}
 
-function TravelPathOverlay(props: { tracks: Track[]; trackPoints: TrackPoint[]; visibleTrackIds: Record<string, boolean> }) {
-  const pointsByTrack = useMemo(() => {
-    const m = new Map<string, TrackPoint[]>()
-    for (const p of props.trackPoints) {
-      const arr = m.get(p.trackId) ?? []
-      arr.push(p)
-      m.set(p.trackId, arr)
-    }
-    return m
-  }, [props.trackPoints])
-
-  if (!props.tracks.length) return null
-
-  const trackBaseColor = (track: Track): string => trackRouteColor(props.tracks, track.id)
-
-  const normalizeT = (start: number, end: number, value: number): number => {
-    const denom = end - start
-    if (!Number.isFinite(denom) || denom === 0) return 1
-    return Math.max(0, Math.min(1, (value - start) / denom))
-  }
-
-  const mixColor = (a: string, b: string, t: number): string => {
-    const parse = (hex: string) => {
-      const h = hex.replace('#', '')
-      const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
-      const n = parseInt(full, 16)
-      return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
-    }
-    const A = parse(a)
-    const B = parse(b)
-    const lerp = (x: number, y: number) => Math.round(x + (y - x) * t)
-    const r = lerp(A.r, B.r)
-    const g = lerp(A.g, B.g)
-    const bb = lerp(A.b, B.b)
-    return `#${((1 << 24) + (r << 16) + (g << 8) + bb).toString(16).slice(1)}`
-  }
-
-  const turnaroundThresholdDeg = 135
-
-  const CircleMarkerAny = CircleMarker as any
-  const MarkerAny = Marker as any
-
-  const turnMarkers: any[] = []
-  const segmentNodes: any[] = []
-  const arrowMarkers: any[] = []
-
-  for (const track of props.tracks) {
-    if (!props.visibleTrackIds[track.id]) continue
-    const pts = (pointsByTrack.get(track.id) ?? [])
-      .slice()
-      .sort(sortTrackPointsStable)
-      .filter((p) => p.showOnMap !== false)
-    if (pts.length === 0) continue
-
-    const base = trackBaseColor(track)
-    const timeValues = pts.map((p) => p.visitedAt).filter((t): t is number => t != null)
-    const useTimeGradient = timeValues.length >= 2
-    const firstT = useTimeGradient ? Math.min(...timeValues) : 0
-    const lastT = useTimeGradient ? Math.max(...timeValues) : 1
-
-    // Turnaround markers: detect sharp heading reversal at interior vertices.
-    for (let i = 1; i <= pts.length - 2; i++) {
-      const b1 = bearingDegrees(pts[i - 1]!.lat, pts[i - 1]!.lon, pts[i]!.lat, pts[i]!.lon)
-      const b2 = bearingDegrees(pts[i]!.lat, pts[i]!.lon, pts[i + 1]!.lat, pts[i + 1]!.lon)
-      const delta = Math.abs(b2 - b1)
-      const angleDiff = Math.min(delta, 360 - delta)
-      if (angleDiff >= turnaroundThresholdDeg) {
-        turnMarkers.push(
-          <CircleMarkerAny
-            key={`turn-${track.id}-${pts[i]!.id}`}
-            center={[pts[i]!.lat, pts[i]!.lon]}
-            radius={6.5}
-            pathOptions={{
-              color: base,
-              weight: 3,
-              fillColor: '#ffffff',
-              fillOpacity: 0.9,
-              opacity: 1,
+    <Modal
+      title="Add photo"
+      open={addPhotoModalOpen}
+      onClose={() => {
+        if (!refPhotoBusy) setAddPhotoModalOpen(false)
+      }}
+      zBase={photoViewerIndex != null ? 62500 : 61500}
+    >
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 800 }}>Image type</div>
+        <select
+          value={pendingAddKind}
+          onChange={(e) => setPendingAddKind(e.target.value as CaseAttachmentKind)}
+          style={{ ...select, width: '100%', boxSizing: 'border-box' }}
+          disabled={refPhotoBusy}
+          aria-label="Image type"
+        >
+          <option value="suspect_description">{caseAttachmentKindLabel('suspect_description')}</option>
+          <option value="wanted_flyer">{caseAttachmentKindLabel('wanted_flyer')}</option>
+          <option value="other">{caseAttachmentKindLabel('other')}</option>
+        </select>
+        {refPhotoErr ? (
+          <div style={{ color: '#b91c1c', fontSize: 13, fontWeight: 700 }}>{refPhotoErr}</div>
+        ) : null}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button type="button" style={btn} disabled={refPhotoBusy} onClick={() => setAddPhotoModalOpen(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            style={btnPrimary}
+            disabled={refPhotoBusy}
+            onClick={() => {
+              setRefPhotoErr(null)
+              refPhotoInputRef.current?.click()
             }}
-          />,
-        )
+          >
+            {refPhotoBusy ? 'Processing…' : 'Choose image…'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+
+    <Modal
+      wide
+      title={
+        photoViewerIndex != null && caseAttachments.length
+          ? `Photo ${photoViewerIndex + 1} of ${caseAttachments.length}`
+          : 'Photo'
       }
-    }
-
-    // Segments along true vertex coordinates (no perpendicular offset — keeps arrow aligned with the line).
-    // Color gradient by observation time when at least two steps have times; otherwise by position along route.
-    for (let i = 0; i <= pts.length - 2; i++) {
-      const start = pts[i]!
-      const end = pts[i + 1]!
-      const t = useTimeGradient
-        ? normalizeT(firstT, lastT, end.visitedAt ?? firstT)
-        : (i + 1) / Math.max(1, pts.length - 1)
-      const faded = mixColor(base, '#ffffff', 0.65)
-      const segColor = mixColor(faded, base, t)
-
-      const bearing = bearingDegrees(start.lat, start.lon, end.lat, end.lon)
-      const sPos: [number, number] = [start.lat, start.lon]
-      const ePos: [number, number] = [end.lat, end.lon]
-
-      segmentNodes.push(
-        <Polyline
-          key={`seg-${track.id}-${start.id}-${end.id}`}
-          positions={[sPos, ePos]}
-          pathOptions={{
-            color: segColor,
-            weight: 4,
-            opacity: 0.95,
-          }}
-        />,
-      )
-
-      if (i === pts.length - 2) {
-        // Sit the arrow along the last leg, slightly back from the vertex so it doesn't cover the pin.
-        const pullBack = 0.22
-        const arrLat = end.lat - pullBack * (end.lat - start.lat)
-        const arrLon = end.lon - pullBack * (end.lon - start.lon)
-        arrowMarkers.push(
-          <MarkerAny
-            key={`arr-${track.id}-${end.id}`}
-            position={[arrLat, arrLon]}
-            icon={travelArrowIcon(segColor, bearing)}
-            interactive={false}
-            zIndexOffset={7500}
-          />,
-        )
-      }
-    }
-  }
-
-  return (
-    <>
-      {segmentNodes}
-      {arrowMarkers}
-      {turnMarkers}
-    </>
-  )
-}
-
-function bearingDegrees(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const toRad = (x: number) => (x * Math.PI) / 180
-  const toDeg = (x: number) => (x * 180) / Math.PI
-  const dLon = toRad(lon2 - lon1)
-  const y = Math.sin(dLon) * Math.cos(toRad(lat2))
-  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon)
-  const brng = toDeg(Math.atan2(y, x))
-  return (brng + 360) % 360 // 0 = north, clockwise
-}
-
-function travelArrowIcon(color: string, bearingDeg: number) {
-  // Tip of the triangle sits on the last vertex; rotate around that tip (south-center of the triangle in local coords).
-  const html = `<div style="width:14px;height:14px;display:flex;align-items:flex-end;justify-content:center;">
-    <div style="
-      transform: rotate(${bearingDeg}deg);
-      transform-origin: 50% 100%;
-      width: 0; height: 0;
-      border-left: 5px solid transparent;
-      border-right: 5px solid transparent;
-      border-bottom: 11px solid ${color};
-    "></div>
-  </div>`
-  return L.divIcon({
-    className: '',
-    html,
-    iconSize: [14, 14],
-    iconAnchor: [7, 14],
-  })
-}
-
-function FitCaseMapFirstLoad(props: {
-  locations: Array<Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>>
-  pathPoints: Array<{ lat: number; lon: number }>
-}) {
-  const map = useMap()
-  const did = useRef(false)
-  useEffect(() => {
-    if (did.current) return
-    did.current = true
-    let b = extendBoundsWithLocations(null, props.locations)
-    b = extendBoundsWithPathPoints(b, props.pathPoints)
-    if (!b || !b.isValid()) return
-    map.fitBounds(b.pad(0.2))
-  }, [map, props.locations, props.pathPoints])
-  return null
-}
-
-function UnifiedMapClick(props: {
-  caseTab: 'addresses' | 'tracking'
-  locations: Location[]
-  updateLocation: (locationId: string, patch: Partial<Pick<Location, 'footprint'>>) => Promise<void>
-  onSelectLocation: (locationId: string) => void
-  canvassAddDisabled?: boolean
-  onRequestCanvassAdd: (input: { lat: number; lon: number; addressText: string }) => void
-  trackingInteraction?: {
-    trackPoints: TrackPoint[]
-    visibleTrackIds: Record<string, boolean>
-    canManipulateTrack: (trackId: string) => boolean
-    onPickPoint: (pointId: string) => void
-    onAddPoint: (lat: number, lon: number) => void
-    addDisabled: boolean
-    pickRadiusPx?: number
-  }
-}) {
-  const map = useMap()
-  const inFlight = useRef(false)
-  useMapEvents({
-    click: (e: any) => {
-      if (props.caseTab === 'tracking') {
-        const ti = props.trackingInteraction
-        if (!ti) return
-        const clickPt = map.latLngToContainerPoint(e.latlng)
-        const r = ti.pickRadiusPx ?? 28
-        const r2 = r * r
-        let bestManip: { id: string; d2: number } | null = null
-        let anyPin = false
-        for (const p of ti.trackPoints) {
-          if (p.showOnMap === false) continue
-          if (ti.visibleTrackIds[p.trackId] === false) continue
-          const lp = map.latLngToContainerPoint(L.latLng(p.lat, p.lon))
-          const dx = lp.x - clickPt.x
-          const dy = lp.y - clickPt.y
-          const d2 = dx * dx + dy * dy
-          if (d2 > r2) continue
-          anyPin = true
-          if (ti.canManipulateTrack(p.trackId) && (!bestManip || d2 < bestManip.d2)) bestManip = { id: p.id, d2 }
-        }
-        if (bestManip) {
-          ti.onPickPoint(bestManip.id)
-          return
-        }
-        if (anyPin) return
-        if (ti.addDisabled) return
-        ti.onAddPoint(e.latlng.lat, e.latlng.lng)
-        return
-      }
-      if (props.canvassAddDisabled) return
-      if (inFlight.current) return
-      inFlight.current = true
-      void (async () => {
-        const lat = e.latlng.lat
-        const lon = e.latlng.lng
-        const addressText = await reverseGeocodeAddressText(lat, lon).catch(() => null)
-        const text = addressText ?? `Lat ${lat.toFixed(5)}, Lon ${lon.toFixed(5)}`
-        const match = findLocationByAddressText(props.locations, text)
-        if (match) {
-          props.onSelectLocation(match.id)
-          if (!match.footprint || match.footprint.length < 3) {
-            void fetchBuildingFootprint(match.lat, match.lon)
-              .then((footprint) => {
-                if (!footprint || footprint.length < 3) return
-                void props.updateLocation(match.id, { footprint })
-              })
-              .catch(() => {})
-          }
-          return
-        }
-        props.onRequestCanvassAdd({ lat, lon, addressText: text })
-      })().finally(() => {
-        inFlight.current = false
-      })
-    },
-  })
-  return null
-}
-
-const TrackingPinMarkerItem = memo(function TrackingPinMarkerItem(props: {
-  pointId: string
-  position: [number, number]
-  base: string
-  stepNum: number
-  ring: string
-  zIndexOffset: number
-  interactive: boolean
-  draggable: boolean
-  onSelectPoint?: (id: string) => void
-  onDragEndPoint?: (id: string, lat: number, lon: number) => void
-}) {
-  const MarkerAny = Marker as any
-  const w = 22
-  const h = 24
-
-  const htmlContent = useMemo(
-    () =>
-      `<div style="display:flex;align-items:center;justify-content:center"><div style="width:22px;height:22px;border-radius:999px;background:${props.base};color:#fff;font-weight:900;font-size:11px;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:${props.ring},0 1px 4px rgba(0,0,0,0.25)">${props.stepNum}</div></div>`,
-    [props.base, props.ring, props.stepNum],
-  )
-
-  const icon = useMemo(
-    () => L.divIcon({ html: htmlContent, className: '', iconSize: [w, h], iconAnchor: [11, 12] }),
-    [htmlContent],
-  )
-
-  const eventHandlers = useMemo(() => {
-    const hEv: Record<string, (e: any) => void> = {}
-    if (props.onSelectPoint) {
-      hEv.click = (e: any) => {
-        e?.originalEvent?.stopPropagation?.()
-        props.onSelectPoint!(props.pointId)
-      }
-    }
-    if (props.draggable && props.onDragEndPoint) {
-      hEv.dragend = (e: any) => {
-        const ll = e?.target?.getLatLng?.()
-        if (!ll) return
-        props.onDragEndPoint!(props.pointId, ll.lat, ll.lng)
-      }
-    }
-    return Object.keys(hEv).length ? hEv : undefined
-  }, [props.onSelectPoint, props.draggable, props.onDragEndPoint, props.pointId])
-
-  return (
-    <MarkerAny
-      position={props.position}
-      icon={icon}
-      interactive={props.interactive}
-      draggable={props.draggable}
-      zIndexOffset={props.zIndexOffset}
-      eventHandlers={eventHandlers}
-    />
-  )
-})
-
-function TrackingWaypointMarkers(props: {
-  tracks: Track[]
-  trackPoints: TrackPoint[]
-  visibleTrackIds: Record<string, boolean>
-  selectedPointId?: string | null
-  canManipulatePoint?: (trackId: string) => boolean
-  onSelectPoint?: (pointId: string) => void
-  draggable?: boolean
-  onDragEndPoint?: (pointId: string, lat: number, lon: number) => void
-}) {
-  const byTrack = new Map<string, TrackPoint[]>()
-  for (const p of props.trackPoints) {
-    if (props.visibleTrackIds[p.trackId] === false) continue
-    const arr = byTrack.get(p.trackId) ?? []
-    arr.push(p)
-    byTrack.set(p.trackId, arr)
-  }
-  const nodes: ReactNode[] = []
-  for (const track of props.tracks) {
-    if (props.visibleTrackIds[track.id] === false) continue
-    const pts = (byTrack.get(track.id) ?? []).slice().sort(sortTrackPointsStable).filter((p) => p.showOnMap !== false)
-    const base = trackRouteColor(props.tracks, track.id)
-    for (let i = 0; i < pts.length; i++) {
-      const p = pts[i]!
-      const n = i + 1
-      const ring = props.selectedPointId === p.id ? '0 0 0 3px #111827' : '0 0 0 2px #fff'
-      const canManip = !props.canManipulatePoint || props.canManipulatePoint(track.id)
-      const interactive = canManip && !!(props.onSelectPoint || (props.draggable && props.onDragEndPoint))
-      const draggable = !!(canManip && props.draggable && props.onDragEndPoint)
-      nodes.push(
-        <TrackingPinMarkerItem
-          key={`wpt-${p.id}`}
-          pointId={p.id}
-          position={[p.lat, p.lon]}
-          base={base}
-          stepNum={n}
-          ring={ring}
-          zIndexOffset={props.selectedPointId === p.id ? 12000 : 8800 + i}
-          interactive={interactive}
-          draggable={draggable}
-          onSelectPoint={canManip ? props.onSelectPoint : undefined}
-          onDragEndPoint={canManip ? props.onDragEndPoint : undefined}
-        />,
-      )
-    }
-  }
-  return <>{nodes}</>
-}
-
-const TimeLabelMarkerItem = memo(function TimeLabelMarkerItem(props: {
-  pointId: string
-  pinLat: number
-  pinLon: number
-  position: [number, number]
-  base: string
-  stepNum: number
-  timeStr: string
-  labelW: number
-  labelH: number
-  zIndexOffset: number
-  interactive: boolean
-  draggable: boolean
-  onSelectPoint?: (id: string) => void
-  onDragLine: (id: string, lat: number, lng: number) => void
-  clearDragLine: () => void
-  onDragEndLabel?: (id: string, offsetX: number, offsetY: number) => void
-}) {
-  const map = useMap()
-  const MarkerAny = Marker as any
-
-  const htmlContent = useMemo(() => {
-    const { base, stepNum, timeStr } = props
-    return `<div style="display:flex;align-items:center;gap:5px;padding:3px 8px 3px 4px;border-radius:10px;background:rgba(255,255,255,0.97);border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,0.14);white-space:nowrap">
-  <div style="flex-shrink:0;width:18px;height:18px;border-radius:999px;background:${base};color:#fff;font-size:10px;font-weight:900;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.2)">${stepNum}</div>
-  <span style="color:#111827;font-size:10px;font-weight:800">${timeStr}</span>
-</div>`
-  }, [props.base, props.stepNum, props.timeStr])
-
-  const icon = useMemo(
-    () =>
-      L.divIcon({
-        html: htmlContent,
-        className: '',
-        iconSize: [props.labelW, props.labelH],
-        iconAnchor: [props.labelW / 2, props.labelH],
-      }),
-    [htmlContent, props.labelW, props.labelH],
-  )
-
-  const eventHandlers = useMemo(() => {
-    const h: Record<string, (e: any) => void> = {}
-    if (props.onSelectPoint) {
-      h.click = (e: any) => {
-        e?.originalEvent?.stopPropagation?.()
-        props.onSelectPoint!(props.pointId)
-      }
-    }
-    if (props.draggable && props.onDragEndLabel) {
-      h.drag = (e: any) => {
-        const ll = e?.target?.getLatLng?.()
-        if (!ll) return
-        props.onDragLine(props.pointId, ll.lat, ll.lng)
-      }
-      h.dragend = (e: any) => {
-        const ll = e?.target?.getLatLng?.()
-        props.clearDragLine()
-        if (!ll) return
-        const ap = map.latLngToContainerPoint(L.latLng(props.pinLat, props.pinLon))
-        const ep = map.latLngToContainerPoint(ll)
-        props.onDragEndLabel!(props.pointId, ep.x - ap.x, ep.y - ap.y)
-      }
-    }
-    return Object.keys(h).length ? h : undefined
-  }, [
-    props.onSelectPoint,
-    props.draggable,
-    props.onDragEndLabel,
-    props.pointId,
-    props.pinLat,
-    props.pinLon,
-    map,
-    props.onDragLine,
-    props.clearDragLine,
-  ])
-
-  return (
-    <MarkerAny
-      position={props.position}
-      icon={icon}
-      interactive={props.interactive}
-      draggable={props.draggable}
-      zIndexOffset={props.zIndexOffset}
-      eventHandlers={eventHandlers}
-    />
-  )
-})
-
-function WaypointTimeLabelLayer(props: {
-  tracks: Track[]
-  trackPoints: TrackPoint[]
-  visibleTrackIds: Record<string, boolean>
-  canManipulatePoint?: (trackId: string) => boolean
-  onSelectPoint?: (pointId: string) => void
-  labelDraggable?: boolean
-  onDragEndLabel?: (pointId: string, offsetX: number, offsetY: number) => void
-}) {
-  const map = useMap()
-  const [, setMapTick] = useState(0)
-  const [dragLineEnd, setDragLineEnd] = useState<null | { pointId: string; lat: number; lng: number }>(null)
-
-  const onDragLine = useCallback((id: string, lat: number, lng: number) => {
-    setDragLineEnd({ pointId: id, lat, lng })
-  }, [])
-  const clearDragLine = useCallback(() => setDragLineEnd(null), [])
-
-  useMapEvents({
-    zoomend: () => setMapTick((n) => n + 1),
-    moveend: () => setMapTick((n) => n + 1),
-  })
-
-  const byTrack = new Map<string, TrackPoint[]>()
-  for (const p of props.trackPoints) {
-    if (props.visibleTrackIds[p.trackId] === false) continue
-    const arr = byTrack.get(p.trackId) ?? []
-    arr.push(p)
-    byTrack.set(p.trackId, arr)
-  }
-
-  type LabelItem = {
-    p: TrackPoint
-    track: Track
-    i: number
-    dest: { lat: number; lng: number }
-    base: string
-    stepNum: number
-    timeStr: string
-    labelW: number
-    labelH: number
-    canManip: boolean
-  }
-  const labelItems: LabelItem[] = []
-  for (const track of props.tracks) {
-    if (props.visibleTrackIds[track.id] === false) continue
-    const pts = (byTrack.get(track.id) ?? []).slice().sort(sortTrackPointsStable).filter((p) => p.showOnMap !== false)
-    for (let i = 0; i < pts.length; i++) {
-      const p = pts[i]!
-      if (!p.displayTimeOnMap || p.visitedAt == null) continue
-      const mx = p.mapTimeLabelOffsetX ?? 0
-      const my = p.mapTimeLabelOffsetY ?? 0
-      const anchorPx = map.latLngToContainerPoint(L.latLng(p.lat, p.lon))
-      const destLl = map.containerPointToLatLng(L.point(anchorPx.x + mx, anchorPx.y + my))
-      const dest = { lat: destLl.lat, lng: destLl.lng }
-      const base = trackRouteColor(props.tracks, track.id)
-      const canManip = !props.canManipulatePoint || props.canManipulatePoint(track.id)
-      labelItems.push({
-        p,
-        track,
-        i,
-        dest,
-        base,
-        stepNum: i + 1,
-        timeStr: escapeHtmlAttr(formatSubjectTime(p.visitedAt)),
-        labelW: 132,
-        labelH: 26,
-        canManip,
-      })
-    }
-  }
-
-  const lines: ReactNode[] = labelItems.map((it) => {
-    const end =
-      dragLineEnd?.pointId === it.p.id
-        ? dragLineEnd
-        : { lat: it.dest.lat, lng: it.dest.lng }
-    const [pinEnd, chipEnd] = timeLabelTetherLatLngs(map, it.p.lat, it.p.lon, end.lat, end.lng, it.labelW, it.labelH)
-    return (
-      <Polyline
-        key={`time-conn-${it.p.id}`}
-        positions={[pinEnd, chipEnd]}
-        pathOptions={{
-          color: it.base,
-          weight: 2,
-          dashArray: '5 5',
-          opacity: 0.75,
-          lineCap: 'round',
-          lineJoin: 'round',
-          interactive: false,
-        }}
-      />
-    )
-  })
-
-  const markers: ReactNode[] = labelItems.map((it) => {
-    const { p, dest, base, stepNum, timeStr, labelW, labelH, canManip, i } = it
-    const pos: [number, number] =
-      dragLineEnd?.pointId === p.id ? [dragLineEnd.lat, dragLineEnd.lng] : [dest.lat, dest.lng]
-    const interactive = canManip && !!(props.onSelectPoint || (props.labelDraggable && props.onDragEndLabel))
-    const draggable = !!(canManip && props.labelDraggable && props.onDragEndLabel)
-    return (
-      <TimeLabelMarkerItem
-        key={`wpt-time-${p.id}`}
-        pointId={p.id}
-        pinLat={p.lat}
-        pinLon={p.lon}
-        position={pos}
-        base={base}
-        stepNum={stepNum}
-        timeStr={timeStr}
-        labelW={labelW}
-        labelH={labelH}
-        zIndexOffset={7600 + i}
-        interactive={interactive}
-        draggable={draggable}
-        onSelectPoint={props.onSelectPoint}
-        onDragLine={onDragLine}
-        clearDragLine={clearDragLine}
-        onDragEndLabel={props.onDragEndLabel}
-      />
-    )
-  })
-
-  return (
-    <>
-      {lines}
-      {markers}
-    </>
-  )
-}
-
-function findLocationByAddressText(locations: Location[], clickedAddressText: string): Location | null {
-  const clickedKey = normalizeAddressKey(clickedAddressText)
-  if (!clickedKey) return null
-  for (const l of locations) {
-    const key = normalizeAddressKey(l.addressText)
-    if (key && key === clickedKey) return l
-  }
-  return null
-}
-
-function normalizeAddressKey(addressText: string): string | null {
-  const raw = (addressText ?? '').trim()
-  if (!raw) return null
-
-  // Normalize to "first comma segment" (usually: `${housenumber} ${street}`)
-  // Example: "160-25 150th St, Queens, New York, United States" -> "160-25 150th St"
-  const first = raw.split(',')[0]?.trim() ?? ''
-  if (!first) return null
-
-  return first
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    // Make sure "160 - 23" and "160-23" match.
-    .replace(/\s*-\s*/g, '-')
-}
-
-function locationBounds(loc: Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>): any {
-  if (loc.footprint && loc.footprint.length >= 3) {
-    return L.latLngBounds(loc.footprint)
-  }
-  if (loc.bounds) {
-    return [
-      [loc.bounds.south, loc.bounds.west],
-      [loc.bounds.north, loc.bounds.east],
-    ]
-  }
-
-  // Fallback for legacy points without stored bounds.
-  // Use a larger fallback so newly added locations are clickable while footprint
-  // is loading (footprints are fetched async after save).
-  const d = 0.0004
-  return [
-    [loc.lat - d, loc.lon - d],
-    [loc.lat + d, loc.lon + d],
-  ]
-}
-
-function LegendChip(props: { label: string; color: string; on: boolean; onToggle: () => void }) {
-  return (
-    <button
-      onClick={props.onToggle}
-      style={{
-        ...chip,
-        opacity: props.on ? 1 : 0.55,
-        background: props.on ? '#f9fafb' : 'transparent',
-      }}
+      open={photoViewerIndex != null && caseAttachments.length > 0}
+      onClose={() => setPhotoViewerIndex(null)}
+      zBase={62000}
     >
-      <span style={{ width: 10, height: 10, borderRadius: 999, background: props.color, display: 'inline-block' }} />
-      <span style={{ fontWeight: 900, fontSize: 12 }}>{props.label}</span>
-    </button>
-  )
-}
-
-function visitedAtToDatetimeLocalValue(ts: number | null): string {
-  if (ts == null) return ''
-  const d = new Date(ts)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function datetimeLocalValueToVisitedAt(s: string): number | null {
-  if (!s.trim()) return null
-  const t = new Date(s).getTime()
-  return Number.isFinite(t) ? t : null
-}
-
-function TrackPointDrawer(props: {
-  point: TrackPoint
-  stepIndex: number
-  onClose: () => void
-  onUpdate: (
-    patch: Partial<
-      Pick< TrackPoint, 'addressText' | 'visitedAt' | 'notes' | 'showOnMap' | 'displayTimeOnMap'>
-    >,
-  ) => void
-  onDelete: () => void
-}) {
-  return (
-    <div style={card}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: '#64748b' }}>Step {props.stepIndex}</div>
-          <div style={{ marginTop: 4, fontWeight: 900, fontSize: 14 }}>Tracking point</div>
-        </div>
-        <button type="button" style={btn} onClick={props.onClose} aria-label="Close">
-          ✕
-        </button>
-      </div>
-
-      <div style={{ marginTop: 10 }}>
-        <div style={label}>Label</div>
-        <input
-          value={props.point.addressText}
-          onChange={(e) => props.onUpdate({ addressText: e.target.value })}
-          style={field}
-        />
-      </div>
-
-      <div style={{ marginTop: 10 }}>
-        <div style={label}>Notes</div>
-        <textarea
-          value={props.point.notes ?? ''}
-          onChange={(e) => props.onUpdate({ notes: e.target.value })}
-          placeholder="What happened here?"
-          style={{ ...field, minHeight: 120, resize: 'vertical' }}
-        />
-      </div>
-
-      <div style={{ marginTop: 10 }}>
-        <div style={label}>Subject time at this point</div>
-        <input
-          type="datetime-local"
-          value={visitedAtToDatetimeLocalValue(props.point.visitedAt)}
-          onChange={(e) => {
-            const v = datetimeLocalValueToVisitedAt(e.target.value)
-            props.onUpdate(v == null ? { visitedAt: null, displayTimeOnMap: false } : { visitedAt: v })
-          }}
-          style={field}
-        />
-        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-          Optional. When the subject was here per your investigation—not filled in automatically.
-        </div>
-      </div>
-
-      <label style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12, cursor: 'pointer', fontSize: 13 }}>
-        <input
-          type="checkbox"
-          checked={props.point.displayTimeOnMap === true}
-          disabled={props.point.visitedAt == null}
-          onChange={(e) => props.onUpdate({ displayTimeOnMap: e.target.checked })}
-        />
-        <span>Show time on map next to pin {props.point.visitedAt == null ? '(set a time first)' : ''}</span>
-      </label>
-
-      {props.point.displayTimeOnMap && props.point.visitedAt != null ? (
-        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 8, lineHeight: 1.45 }}>
-          Drag the time chip on the map the same way you drag steps—click and drag to reposition; it stays linked to this
-          step with a dashed line.
-        </div>
+      {photoViewerIndex != null && caseAttachments[photoViewerIndex] ? (
+        (() => {
+          const vAtt = caseAttachments[photoViewerIndex]!
+          const canEditV = canEditCaseAttachment(data, actorId, vAtt)
+          const canDelV = canDeleteCaseAttachment(data, actorId, vAtt)
+          const n = caseAttachments.length
+          const go = (d: number) =>
+            setPhotoViewerIndex((idx) => {
+              if (idx == null || n < 2) return idx
+              return (idx + d + n) % n
+            })
+          const narrowPhotoImgMax =
+            isNarrow && photoViewerCaptionFocused
+              ? 'min(22dvh, 130px)'
+              : isNarrow
+                ? 'min(38dvh, 280px)'
+                : 'min(52vh, 520px)'
+          return (
+            <div style={{ display: 'grid', gap: isNarrow ? 10 : 14 }}>
+              <div
+                style={{
+                  position: 'relative',
+                  borderRadius: 12,
+                  overflow: 'hidden',
+                  background: '#0f172a',
+                  flexShrink: isNarrow ? 1 : undefined,
+                  minHeight: isNarrow && photoViewerCaptionFocused ? 80 : isNarrow ? 120 : 200,
+                  maxHeight: isNarrow && photoViewerCaptionFocused ? 150 : undefined,
+                }}
+              >
+                {n > 1 ? (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Previous photo"
+                      onClick={() => go(-1)}
+                      style={casePhotoCarouselArrowStyle('left')}
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Next photo"
+                      onClick={() => go(1)}
+                      style={casePhotoCarouselArrowStyle('right')}
+                    >
+                      ›
+                    </button>
+                  </>
+                ) : null}
+                <img
+                  src={vAtt.imageDataUrl}
+                  alt=""
+                  style={{
+                    width: '100%',
+                    maxHeight: narrowPhotoImgMax,
+                    objectFit: 'contain',
+                    display: 'block',
+                    margin: '0 auto',
+                  }}
+                />
+              </div>
+              {canEditV ? (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800 }}>Description</div>
+                  <textarea
+                    ref={photoCaptionTextareaRef}
+                    placeholder="Description (optional)"
+                    value={photoViewerCaptionDraft}
+                    onChange={(e) => setPhotoViewerCaptionDraft(e.target.value)}
+                    rows={1}
+                    enterKeyHint="done"
+                    name="vc-case-photo-note"
+                    id="vc-case-photo-note"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck
+                    inputMode="text"
+                    onFocus={(e) => {
+                      setPhotoViewerCaptionFocused(true)
+                      window.requestAnimationFrame(() => {
+                        const el = e.currentTarget
+                        el.style.height = 'auto'
+                        const cap = isNarrow ? 200 : 280
+                        el.style.height = `${Math.min(el.scrollHeight, cap)}px`
+                      })
+                    }}
+                    onBlur={(e) => {
+                      setPhotoViewerCaptionFocused(false)
+                      const v = e.target.value.trim()
+                      if (v !== (vAtt.caption ?? '').trim()) {
+                        void updateCaseAttachment(actorId, vAtt.id, { caption: v })
+                      }
+                    }}
+                    style={{
+                      ...field,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      resize: 'none',
+                      overflowY: 'auto',
+                      minHeight: 44,
+                      lineHeight: 1.35,
+                    }}
+                  />
+                </div>
+              ) : (
+                <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.4 }}>
+                  {(vAtt.caption ?? '').trim() ? vAtt.caption : '—'}
+                </div>
+              )}
+              <div style={{ fontSize: 12, color: '#6b7280' }}>{caseAttachmentKindLabel(vAtt.kind)}</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 8 }}>All photos</div>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    overflowX: 'auto',
+                    paddingBottom: 6,
+                    WebkitOverflowScrolling: 'touch',
+                  }}
+                >
+                  {caseAttachments.map((a, i) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => {
+                        setPhotoViewerIndex(i)
+                        setSidebarMediaIndex(i)
+                      }}
+                      style={{
+                        flexShrink: 0,
+                        width: 64,
+                        height: 64,
+                        padding: 0,
+                        border:
+                          i === photoViewerIndex ? '3px solid #111827' : '1px solid #e5e7eb',
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        cursor: 'pointer',
+                        background: '#f9fafb',
+                        boxSizing: 'border-box',
+                      }}
+                      aria-label={`Photo ${i + 1}`}
+                      aria-current={i === photoViewerIndex ? 'true' : undefined}
+                    >
+                      <img
+                        src={a.imageDataUrl}
+                        alt=""
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {canDelV || canAddCaseContentHere ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    width: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  {canDelV ? (
+                    <button
+                      type="button"
+                      style={{
+                        ...btnDanger,
+                        flex: 1,
+                        minWidth: 0,
+                        boxSizing: 'border-box',
+                      }}
+                      onClick={() => {
+                        const len = caseAttachments.length
+                        const idx = photoViewerIndex
+                        void deleteCaseAttachment(actorId, vAtt.id).then(() => {
+                          if (len <= 1) setPhotoViewerIndex(null)
+                          else setPhotoViewerIndex(Math.min(idx ?? 0, len - 2))
+                          setSidebarMediaIndex((s) => Math.min(s, Math.max(0, len - 2)))
+                        })
+                      }}
+                    >
+                      Remove photo
+                    </button>
+                  ) : null}
+                  {canAddCaseContentHere ? (
+                    <button
+                      type="button"
+                      style={{
+                        ...btnPrimary,
+                        flex: 1,
+                        minWidth: 0,
+                        boxSizing: 'border-box',
+                      }}
+                      onClick={() => setAddPhotoModalOpen(true)}
+                    >
+                      Add photo
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          )
+        })()
       ) : null}
-
-      <label style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, cursor: 'pointer', fontSize: 13 }}>
-        <input
-          type="checkbox"
-          checked={props.point.showOnMap !== false}
-          onChange={(e) => props.onUpdate({ showOnMap: e.target.checked })}
-        />
-        <span>Show on map (path and numbered pin)</span>
-      </label>
-
-      <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
-        {props.point.lat.toFixed(6)}, {props.point.lon.toFixed(6)}
-        {props.point.locationId ? ' · linked to canvass address' : ''}
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <button type="button" style={btnDanger} onClick={props.onDelete}>
-          Delete step
-        </button>
-      </div>
-    </div>
+    </Modal>
+    </>
   )
 }
-
-function LocationDrawer(props: {
-  location: Location
-  onClose: () => void
-  onUpdate: (patch: Partial<Pick<Location, 'status' | 'notes'>>) => void
-  onDelete: () => void
-}) {
-  return (
-    <div style={card}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}>
-        <div style={{ fontWeight: 900, fontSize: 14, lineHeight: 1.2, flex: 1 }}>{props.location.addressText}</div>
-        <button style={btn} onClick={props.onClose} aria-label="Close">
-          ✕
-        </button>
-      </div>
-
-      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <StatusPill
-          label="No cameras"
-          color={statusColor('noCameras')}
-          active={props.location.status === 'noCameras'}
-          onClick={() => props.onUpdate({ status: 'noCameras' })}
-        />
-        <StatusPill
-          label="No answer"
-          color={statusColor('camerasNoAnswer')}
-          active={props.location.status === 'camerasNoAnswer'}
-          onClick={() => props.onUpdate({ status: 'camerasNoAnswer' })}
-        />
-        <StatusPill
-          label="Not probative"
-          color={statusColor('notProbativeFootage')}
-          active={props.location.status === 'notProbativeFootage'}
-          onClick={() => props.onUpdate({ status: 'notProbativeFootage' })}
-        />
-        <StatusPill
-          label="Probative"
-          color={statusColor('probativeFootage')}
-          active={props.location.status === 'probativeFootage'}
-          onClick={() => props.onUpdate({ status: 'probativeFootage' })}
-        />
-      </div>
-
-      {(!props.location.footprint || props.location.footprint.length < 3) && (
-        <div style={{ marginTop: 10, color: '#374151', fontSize: 12, fontWeight: 800 }}>
-          Loading building outline…
-        </div>
-      )}
-
-      <div style={{ marginTop: 10, color: statusColor(props.location.status), fontWeight: 900, fontSize: 12 }}>
-        {statusLabel(props.location.status)}
-      </div>
-
-      <div style={{ marginTop: 10, color: '#374151', fontSize: 12, lineHeight: 1.4 }}>
-        Subject movement paths are edited under the <strong>Subject tracking</strong> tab.
-      </div>
-
-      <div style={{ marginTop: 10 }}>
-        <div style={label}>Notes</div>
-        <textarea
-          value={props.location.notes}
-          onChange={(e) => props.onUpdate({ notes: e.target.value })}
-          placeholder="What did you observe?"
-          style={{ ...field, minHeight: 120, resize: 'vertical' }}
-        />
-      </div>
-
-      <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
-        <button style={btnDanger} onClick={props.onDelete}>
-          Delete address
-        </button>
-      </div>
-
-      <div style={{ marginTop: 10, color: '#374151', fontSize: 12 }}>
-        Updated {new Date(props.location.updatedAt).toLocaleString()}
-      </div>
-    </div>
-  )
-}
-
-function StatusPill(props: { label: string; color: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={props.onClick}
-      style={{
-        ...pill,
-        borderColor: props.active ? props.color : '#e5e7eb',
-        background: props.active ? `${props.color}33` : 'white',
-      }}
-    >
-      <span style={{ width: 10, height: 10, borderRadius: 999, background: props.color, display: 'inline-block' }} />
-      <span style={{ fontWeight: 900, fontSize: 12 }}>{props.label}</span>
-    </button>
-  )
-}
-
-function RowStatusButton(props: { label: string; color: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={props.onClick}
-      style={{
-        ...rowStatusBtn,
-        borderColor: props.active ? props.color : '#e5e7eb',
-        background: props.active ? `${props.color}33` : 'white',
-      }}
-    >
-      {props.label}
-    </button>
-  )
-}
-
-function viewModeBtn(active: boolean): React.CSSProperties {
-  return {
-    ...btn,
-    borderColor: active ? '#111827' : '#e5e7eb',
-    background: active ? '#111827' : 'white',
-    color: active ? 'white' : '#111827',
-  }
-}
-
-const card: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 16,
-  padding: 14,
-  background: 'white',
-}
-
-const mapTopBar: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  gap: 12,
-  padding: 12,
-  borderBottom: '1px solid #e5e7eb',
-  background: '#ffffff',
-  alignItems: 'center',
-  flexWrap: 'wrap',
-}
-
-const btn: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 10,
-  padding: '8px 10px',
-  background: 'white',
-  cursor: 'pointer',
-  fontWeight: 800,
-}
-
-const btnDanger: React.CSSProperties = {
-  ...btn,
-  borderColor: '#fecaca',
-  background: '#fff1f2',
-  color: '#9f1239',
-}
-
-const label: React.CSSProperties = {
-  fontSize: 12,
-  color: '#111827',
-  fontWeight: 800,
-  marginBottom: 6,
-}
-
-const field: React.CSSProperties = {
-  width: '100%',
-  border: '1px solid #e5e7eb',
-  borderRadius: 12,
-  padding: '10px 12px',
-  background: 'white',
-}
-
-const select: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 12,
-  padding: '10px 12px',
-  background: 'white',
-  fontWeight: 800,
-}
-
-const suggestionBtn: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 12,
-  padding: '10px 12px',
-  background: '#f9fafb',
-  cursor: 'pointer',
-  textAlign: 'left',
-  fontWeight: 700,
-}
-
-const chip: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 999,
-  padding: '6px 10px',
-  background: 'white',
-  cursor: 'pointer',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 8,
-}
-
-const pill: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 999,
-  padding: '8px 10px',
-  background: 'white',
-  cursor: 'pointer',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 8,
-}
-
-const listHeaderRow: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '12px 14px',
-}
-
-const listRow: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '1fr auto',
-  gap: 12,
-  alignItems: 'center',
-  padding: '12px 14px',
-  borderBottom: '1px solid #f3f4f6',
-}
-
-const listRowMainBtn: React.CSSProperties = {
-  border: 'none',
-  background: 'transparent',
-  padding: 0,
-  margin: 0,
-  textAlign: 'left',
-  cursor: 'pointer',
-}
-
-const rowStatusBtn: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 999,
-  padding: '6px 8px',
-  background: 'white',
-  cursor: 'pointer',
-  fontWeight: 800,
-  fontSize: 11,
-}
-
-const statusBadge: React.CSSProperties = {
-  padding: '3px 8px',
-  borderRadius: 999,
-  fontSize: 11,
-  fontWeight: 800,
-}
-

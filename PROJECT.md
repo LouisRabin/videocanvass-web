@@ -36,7 +36,7 @@ Collaboration/auth will come later (likely Microsoft/Entra ID).
 
 ## Tech stack
 - **Vite** + **React 19** + **TypeScript**
-- **Leaflet** + `react-leaflet`
+- **MapLibre** (`react-map-gl`) + **leaflet** package for lat/lng helper APIs only (no react-leaflet)
 - **localforage** for offline persistence
 - **zod** for basic runtime validation
 

@@ -15,6 +15,7 @@ type SearchOpts = {
 }
 
 export type GeocodeScope = 'ny' | 'us'
+/** Search scope + UI copy hooks; full retrieval stack (Photon first, caches, debounce) is summarized in `HANDOFF.md`. */
 export const GEOCODE_SCOPE: GeocodeScope = 'us'
 
 const PhotonFeatureSchema = z.object({
@@ -26,11 +27,9 @@ const PhotonFeatureSchema = z.object({
     state: z.string().optional(),
     country: z.string().optional(),
     name: z.string().optional(),
-    // Photon sometimes returns a bbox via `extent`.
     extent: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(), // [west, south, east, north]
   }),
   geometry: z.object({
-    // [lon, lat]
     coordinates: z.tuple([z.number(), z.number()]),
   }),
 })
@@ -41,6 +40,8 @@ const PhotonResponseSchema = z.object({
 
 const memCache = new Map<string, { at: number; value: PlaceSuggestion[] }>()
 const TTL_MS = 10 * 60 * 1000
+
+export { reverseGeocodeAddressText } from './reverseGeocodeAddressTextStable'
 
 export async function searchPlaces(query: string, opts?: SearchOpts): Promise<PlaceSuggestion[]> {
   const q = normalizeQuery(query)
@@ -59,7 +60,6 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
   url.searchParams.set('limit', String(limit))
   url.searchParams.set('lang', 'en')
   if (opts?.bias) {
-    // Location biasing can improve relevance.
     url.searchParams.set('lat', String(opts.bias.lat))
     url.searchParams.set('lon', String(opts.bias.lon))
   }
@@ -76,17 +76,14 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
       const [lon, lat] = f.geometry.coordinates
       const p = f.properties
 
-      const parts = [
-        [p.housenumber, p.street].filter(Boolean).join(' '),
-        p.city,
-        p.state,
-        p.postcode,
-        p.country,
-      ]
+      const streetLine = [p.housenumber, p.street].filter(Boolean).join(' ').trim()
+      const poiName = (p.name ?? '').trim()
+      const head = streetLine || poiName
+      const parts = [head, p.city, p.state, p.postcode, p.country]
         .map((x) => (x ?? '').trim())
         .filter(Boolean)
 
-      const label = parts.join(', ') || p.name || q
+      const label = parts.join(', ') || q
 
       const bounds = p.extent
         ? {
@@ -101,7 +98,6 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
     })
     .filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon))
 
-  // Cache only non-empty results.
   if (value.length) memCache.set(cacheKey, { at: Date.now(), value })
   return value
 }

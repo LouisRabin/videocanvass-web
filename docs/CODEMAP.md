@@ -1,0 +1,47 @@
+# Code map
+
+Short orientation for humans and tooling. **Policy and tuning** for geocoding, footprints, and retrieval live in [HANDOFF.md](../HANDOFF.md); this file only points to code locations.
+
+## Entry points
+
+- [`src/main.tsx`](../src/main.tsx) — React root, global styles.
+- [`src/App.tsx`](../src/App.tsx) — Mock login, routing, `hasCaseAccess`, top-level navigation.
+
+## Screens and layout
+
+- [`src/app/CasesPage.tsx`](../src/app/CasesPage.tsx) — Case list.
+- [`src/app/CasePage.tsx`](../src/app/CasePage.tsx) — Single case: map, list, tracking, modals, attachments.
+- [`src/app/Layout.tsx`](../src/app/Layout.tsx) — App chrome / shell.
+
+## Map
+
+- [`src/app/AddressesMapLibre.tsx`](../src/app/AddressesMapLibre.tsx) — Case map: MapLibre via `react-map-gl`, layers, markers, interactions.
+- **Leaflet `L`** is used for **bounds/helpers** in [`CasePage.tsx`](../src/app/CasePage.tsx) (via [`casePageHelpers.ts`](../src/app/casePageHelpers.ts)) and related map code, not as the primary map renderer.
+
+## Data and types
+
+- [`src/lib/store.tsx`](../src/lib/store.tsx) — React context: loads and mutates persisted case data.
+- [`src/lib/db.ts`](../src/lib/db.ts) — Local persistence layer.
+- [`src/lib/types.ts`](../src/lib/types.ts) — Shared domain types and small UI helpers (e.g. status labels/colors).
+- [`src/lib/supabase.ts`](../src/lib/supabase.ts) — Supabase client and remote sync.
+
+## Permissions
+
+- [`src/lib/casePermissions.ts`](../src/lib/casePermissions.ts) — Who can edit/delete locations, tracks, attachments, etc.
+
+## Geocode and building outlines
+
+- [`src/lib/geocode.ts`](../src/lib/geocode.ts) — Forward/reverse geocode and place search.
+- [`src/lib/reverseGeocodeAddressTextStable.ts`](../src/lib/reverseGeocodeAddressTextStable.ts) — Stable address text from coordinates where relevant.
+- [`src/lib/building.ts`](../src/lib/building.ts) — Building footprint fetch.
+- Tune endpoints, debounces, and concurrency in **HANDOFF.md** tables — do not duplicate long policy here.
+
+## Native (Capacitor)
+
+- [`capacitor.config.ts`](../capacitor.config.ts) — App id, web dir, plugins.
+- **`npm run cap:sync`** — Builds the web app and copies `dist/` into `android/` and `ios/` (uses [`scripts/cap-copy-web.cjs`](../scripts/cap-copy-web.cjs) when the Capacitor CLI is awkward).
+
+## Case screen splits (readability)
+
+- [`src/app/casePageHelpers.ts`](../src/app/casePageHelpers.ts) — Pure helpers used by `CasePage` (bounds, map focus storage, hit testing, etc.).
+- [`src/app/case/CasePageChrome.tsx`](../src/app/case/CasePageChrome.tsx) — Presentational widgets and shared style objects for the case UI.

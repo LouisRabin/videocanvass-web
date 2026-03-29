@@ -14,7 +14,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [1/4] Staging all changes...
+echo [1/5] Staging all changes...
 git add .
 if errorlevel 1 (
   echo.
@@ -32,7 +32,7 @@ if "%MSG%"=="" (
 )
 
 echo.
-echo [2/4] Committing...
+echo [2/5] Committing...
 git commit -m "%MSG%"
 if errorlevel 1 (
   echo.
@@ -43,7 +43,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/4] Pushing...
+echo [3/5] Pushing branch...
 git push
 if errorlevel 1 (
   echo.
@@ -53,8 +53,35 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Final status:
+echo [4/5] Final status:
 git status
+
+echo.
+echo [5/5] Optional version tag
+echo   Tags a snapshot of this exact commit on GitHub so you can restore it later
+echo   ^(e.g. after more pushes^). Use a simple name like address-working-v1 — no spaces is safest.
+echo.
+set /p TAGNAME=Version tag name ^(leave blank to skip^): 
+if "!TAGNAME!"=="" (
+  echo [SKIP] No tag created.
+) else (
+  echo.
+  echo Creating annotated tag "!TAGNAME!"...
+  git tag -a "!TAGNAME!" -m "EndGit snapshot: !TAGNAME!"
+  if errorlevel 1 (
+    echo [ERROR] git tag failed. That name may already exist — pick another or delete the old tag.
+    pause
+    exit /b 1
+  )
+  echo Pushing tag to origin...
+  git push origin "!TAGNAME!"
+  if errorlevel 1 (
+    echo [ERROR] git push of tag failed.
+    pause
+    exit /b 1
+  )
+  echo [OK] Tag "!TAGNAME!" is on GitHub. Restore later with: git checkout "!TAGNAME!"
+)
 
 echo.
 echo [DONE] Work saved to GitHub.

@@ -10,7 +10,12 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-appetize
+ios/.appetize-derived
 *.local
+
+# Samsung TV experimental variant (broken / not maintained — do not track)
+*SamsungTV*
 
 # Editor directories and files
 .vscode/*

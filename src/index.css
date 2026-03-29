@@ -4,21 +4,66 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Fluid type + spacing so UI scales consistently across phones, tablets, and desktop. */
+  --vc-fs-xs: clamp(11px, 0.68rem + 0.2vw, 12px);
+  --vc-fs-sm: clamp(12px, 0.74rem + 0.28vw, 13px);
+  --vc-fs-base: clamp(13px, 0.8rem + 0.35vw, 15px);
+  --vc-fs-md: clamp(14px, 0.86rem + 0.42vw, 16px);
+  --vc-fs-lg: clamp(15px, 0.92rem + 0.48vw, 18px);
+  /* Inputs: minimum 16px for legibility and iOS zoom behavior */
+  --vc-fs-control: clamp(16px, 0.9rem + 0.4vw, 17px);
+
+  --vc-space-2xs: clamp(4px, 0.45vw, 6px);
+  --vc-space-xs: clamp(6px, 0.65vw, 8px);
+  --vc-space-sm: clamp(8px, 0.85vw, 10px);
+  --vc-space-md: clamp(10px, 1.1vw, 14px);
+  --vc-space-lg: clamp(12px, 1.35vw, 16px);
+  --vc-space-xl: clamp(14px, 1.6vw, 18px);
+
+  --vc-radius-sm: clamp(8px, 0.9vw, 10px);
+  --vc-radius-md: clamp(10px, 1.1vw, 13px);
+  --vc-radius-lg: clamp(12px, 1.25vw, 16px);
+  --vc-radius-xl: clamp(14px, 1.4vw, 18px);
+
+  --vc-pad-header-y: clamp(8px, 1.3vw, 12px);
+  --vc-pad-header-x: clamp(10px, 1.9vw, 18px);
+  --vc-pad-header-dense-y: clamp(6px, 1vw, 10px);
+  --vc-pad-header-dense-x: clamp(8px, 1.4vw, 12px);
+  --vc-pad-main-y: clamp(6px, 1.2vw, 12px);
+  --vc-pad-main-x: clamp(8px, 1.7vw, 14px);
+  --vc-pad-main-dense-y: clamp(4px, 1vw, 6px);
+  --vc-pad-main-dense-x: clamp(6px, 1.25vw, 10px);
 }
 
 html,
 body {
   height: 100%;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 body {
   margin: 0;
+  font-size: var(--vc-fs-base);
   background: #f3f4f6; /* slate-100 */
   color: #111827; /* gray-900 */
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
+  padding-top: env(safe-area-inset-top, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  box-sizing: border-box;
 }
 
 #root {
   min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Set on document.documentElement from App (useMediaQuery). */
+[data-layout='narrow'] .case-control-pane .case-pane-actions-row button[type='button'],
+[data-layout='narrow'] .case-control-pane .case-pane-tracks-row > button[type='button'] {
+  min-height: 44px;
 }
 
 button:disabled {
@@ -26,15 +71,52 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Leaflet tile images only (keeps our colored building overlays readable). */
-.leaflet-tile-container img {
-  /* Closer to the original "base grayscale" look (less washed out). */
-  filter: grayscale(1) contrast(1.05) brightness(1.05);
-}
-
 input,
 textarea,
 select,
 button {
   font: inherit;
+}
+
+/* Canvass map: footprint loading = small dot + spinning ring (no bbox preview). */
+.canvass-footprint-loading-wrap {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvass-footprint-loading-core {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+
+.canvass-footprint-loading-dot {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-bottom-color: transparent;
+  box-sizing: border-box;
+  animation: canvass-footprint-spin 0.65s linear infinite;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+@keyframes canvass-footprint-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

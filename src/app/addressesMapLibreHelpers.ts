@@ -1,0 +1,275 @@
+import type { GeoJSONSource, Map as GlMap } from 'maplibre-gl'
+import type { Feature, FeatureCollection, Position } from 'geojson'
+import L from 'leaflet'
+
+import type { Location, Track, TrackPoint } from '../lib/types'
+import { statusColor } from '../lib/types'
+
+export const CARTO_VOYAGER_STYLE = 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json'
+
+/** Must match `CasePage.tsx`; see `HANDOFF.md` (Address & footprint retrieval). */
+export const VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS = 480
+export const VIEWPORT_OUTLINE_PRELOAD_BOUNDS_PAD = 0.14
+export const VIEWPORT_OUTLINE_PRELOAD_MAX = 24
+
+/** At zoom &lt; this: clustered pins for tracks + canvass sites; per-pin markers and time chips hidden. */
+export const MAP_DETAIL_MIN_ZOOM = 14
+/** Opening the case map on the last selected canvass pin or track step (localStorage). */
+export const MAP_RESUME_FOCUS_ZOOM = 17
+export const CLUSTER_MAX_ZOOM = 13
+export const CLUSTER_RADIUS_PX = 52
+
+export function easeClusterExpansion(
+  map: GlMap,
+  sourceId: string,
+  feature: { geometry?: Feature['geometry']; properties?: Record<string, unknown> | null },
+): boolean {
+  const raw = feature.properties?.cluster_id
+  const clusterId = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(clusterId)) return false
+  const g = feature.geometry
+  if (!g || g.type !== 'Point') return false
+  const center = g.coordinates as [number, number]
+  const src = map.getSource(sourceId) as GeoJSONSource | undefined
+  if (!src?.getClusterExpansionZoom) return false
+  void src
+    .getClusterExpansionZoom(clusterId)
+    .then((targetZ: number) => {
+      map.easeTo({ center, zoom: Math.min(targetZ + 0.25, 18) })
+    })
+    .catch(() => {})
+  return true
+}
+
+export function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
+  const ds = a.sequence - b.sequence
+  if (ds !== 0) return ds
+  const dt = (a.visitedAt ?? a.createdAt) - (b.visitedAt ?? b.createdAt)
+  if (dt !== 0) return dt
+  return a.id.localeCompare(b.id)
+}
+
+function locationBounds(loc: Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>): [[number, number], [number, number]] {
+  if (loc.footprint && loc.footprint.length >= 3) {
+    const b = L.latLngBounds(loc.footprint as [number, number][])
+    const sw = b.getSouthWest()
+    const ne = b.getNorthEast()
+    return [
+      [sw.lat, sw.lng],
+      [ne.lat, ne.lng],
+    ]
+  }
+  if (loc.bounds) {
+    return [
+      [loc.bounds.south, loc.bounds.west],
+      [loc.bounds.north, loc.bounds.east],
+    ]
+  }
+  const d = 0.0004
+  return [
+    [loc.lat - d, loc.lon - d],
+    [loc.lat + d, loc.lon + d],
+  ]
+}
+
+export function extendBoundsWithLocations(
+  b: InstanceType<typeof L.LatLngBounds> | null,
+  locs: Array<Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>>,
+): InstanceType<typeof L.LatLngBounds> | null {
+  let out: InstanceType<typeof L.LatLngBounds> | null = b
+  for (const p of locs) {
+    const [s, n] = locationBounds(p)
+    const lb = L.latLngBounds(s, n)
+    out = out ? out.extend(lb) : lb
+  }
+  return out
+}
+
+export function extendBoundsWithPathPoints(
+  b: InstanceType<typeof L.LatLngBounds> | null,
+  pts: Array<{ lat: number; lon: number }>,
+): InstanceType<typeof L.LatLngBounds> | null {
+  let out = b
+  for (const p of pts) {
+    const ll = L.latLng(p.lat, p.lon)
+    out = out ? out.extend(ll) : L.latLngBounds(ll, ll)
+  }
+  return out
+}
+
+function rectRingLngLat(loc: Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>): Position[] {
+  const [[sLat, wLon], [nLat, eLon]] = locationBounds(loc)
+  return [
+    [wLon, sLat],
+    [eLon, sLat],
+    [eLon, nLat],
+    [wLon, nLat],
+    [wLon, sLat],
+  ]
+}
+
+export function buildCanvassCollection(
+  mapPins: Location[],
+  selectedId: string | null,
+  footprintLoadingIds: Set<string>,
+): FeatureCollection {
+  const features: FeatureCollection['features'] = []
+  for (const l of mapPins) {
+    const sel = l.id === selectedId
+    const c = statusColor(l.status)
+    const outlineBusy = footprintLoadingIds.has(l.id)
+    const hasFootprint = !!(l.footprint && l.footprint.length >= 3)
+
+    if (hasFootprint) {
+      const ring: Position[] = l.footprint!.map(([lat, lon]) => [lon, lat])
+      if (ring[0]![0] !== ring[ring.length - 1]![0] || ring[0]![1] !== ring[ring.length - 1]![1]) {
+        ring.push([...ring[0]!])
+      }
+      features.push({
+        type: 'Feature',
+        id: l.id,
+        properties: {
+          id: l.id,
+          kind: 'footprint',
+          fill: c,
+          fillOpacity: sel ? 0.72 : 0.38,
+          line: sel ? c : '#ffffff',
+          lineWidth: sel ? 3.5 : 2,
+          lineOpacity: sel ? 0.95 : 0.75,
+        },
+        geometry: { type: 'Polygon', coordinates: [ring] },
+      })
+      continue
+    }
+
+    if (outlineBusy) {
+      continue
+    }
+
+    const ring = rectRingLngLat(l)
+    const fillOpacity = sel ? 0.35 : 0
+    const lineColor = sel ? c : '#ffffff'
+
+    features.push({
+      type: 'Feature',
+      id: l.id,
+      properties: {
+        id: l.id,
+        kind: 'bounds',
+        fill: c,
+        fillOpacity,
+        line: lineColor,
+        lineWidth: sel ? 3.5 : 1,
+        lineOpacity: sel ? 0.95 : 0,
+      },
+      geometry: { type: 'Polygon', coordinates: [ring] },
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
+export function buildPinCollection(
+  mapPins: Location[],
+  selectedId: string | null,
+  footprintLoadingIds: Set<string>,
+): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: mapPins
+      .filter((l) => {
+        if (l.footprint && l.footprint.length >= 3) return false
+        const loading = footprintLoadingIds.has(l.id)
+        if (loading) return false
+        return true
+      })
+      .map((l) => ({
+        type: 'Feature' as const,
+        id: `${l.id}-pin`,
+        properties: {
+          id: l.id,
+          color: statusColor(l.status),
+          radius: l.id === selectedId ? 8 : 5.5,
+          strokeW: l.id === selectedId ? 2.5 : 2,
+        },
+        geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
+      })),
+  }
+}
+
+export function buildTrackWaypointClusterCollection(
+  tracks: Track[],
+  trackPoints: TrackPoint[],
+  visibleTrackIds: Record<string, boolean>,
+  getRouteColor: (trackId: string) => string,
+): FeatureCollection {
+  const byTrack = new Map<string, TrackPoint[]>()
+  for (const p of trackPoints) {
+    if (visibleTrackIds[p.trackId] === false) continue
+    const arr = byTrack.get(p.trackId) ?? []
+    arr.push(p)
+    byTrack.set(p.trackId, arr)
+  }
+  const features: FeatureCollection['features'] = []
+  for (const track of tracks) {
+    if (visibleTrackIds[track.id] === false) continue
+    const pts = (byTrack.get(track.id) ?? []).slice().sort(sortTrackPointsStable).filter((p) => p.showOnMap !== false)
+    const base = getRouteColor(track.id)
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i]!
+      features.push({
+        type: 'Feature',
+        properties: { pid: p.id, color: base, stepNum: i + 1 },
+        geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+      })
+    }
+  }
+  return { type: 'FeatureCollection', features }
+}
+
+/** One point per canvass location (centroid) for low-zoom count clusters. Footprints stay as polygons. */
+export function buildCanvassLocationClusterCollection(mapPins: Location[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: mapPins.map((l) => ({
+      type: 'Feature' as const,
+      properties: { locId: l.id, color: statusColor(l.status) },
+      geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
+    })),
+  }
+}
+
+export function buildTracksData(
+  tracks: Track[],
+  trackPoints: TrackPoint[],
+  visibleTrackIds: Record<string, boolean>,
+  getRouteColor: (trackId: string) => string,
+): { lines: FeatureCollection } {
+  const lineFeatures: FeatureCollection['features'] = []
+
+  const byTrack = new Map<string, TrackPoint[]>()
+  for (const p of trackPoints) {
+    const arr = byTrack.get(p.trackId) ?? []
+    arr.push(p)
+    byTrack.set(p.trackId, arr)
+  }
+
+  for (const t of tracks) {
+    if (visibleTrackIds[t.id] === false) continue
+    const pts = (byTrack.get(t.id) ?? [])
+      .slice()
+      .sort(sortTrackPointsStable)
+      .filter((p) => p.showOnMap !== false)
+    if (pts.length < 2) continue
+    const color = getRouteColor(t.id)
+    const coords = pts.map((p) => [p.lon, p.lat] as Position)
+    lineFeatures.push({
+      type: 'Feature',
+      properties: { color },
+      geometry: { type: 'LineString', coordinates: coords },
+    })
+  }
+
+  return {
+    lines: { type: 'FeatureCollection', features: lineFeatures },
+  }
+}
