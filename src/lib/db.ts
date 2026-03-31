@@ -42,6 +42,16 @@ function normalizeTrackPointSequences(data: AppData): AppData {
 }
 
 /** Backfill empty createdByUserId to the case owner (legacy rows). */
+function migrateTrackUpdatedAtField(data: AppData): AppData {
+  return {
+    ...data,
+    tracks: data.tracks.map((t) => ({
+      ...t,
+      updatedAt: t.updatedAt ?? t.createdAt,
+    })),
+  }
+}
+
 function migrateCreatedByUserIds(data: AppData): AppData {
   const ownerByCase = new Map<string, string>()
   for (const c of data.cases) {
@@ -76,7 +86,9 @@ function migrateCreatedByUserIds(data: AppData): AppData {
 }
 
 export function normalizeAppData(data: AppData): AppData {
-  return migrateCreatedByUserIds(normalizeTrackPointSequences(migrateTrackPointUpdatedAt(data)))
+  return migrateCreatedByUserIds(
+    migrateTrackUpdatedAtField(normalizeTrackPointSequences(migrateTrackPointUpdatedAt(data))),
+  )
 }
 
 localforage.config({
@@ -175,7 +187,7 @@ function mergeTombstoneIds(a: string[] | undefined, b: string[] | undefined): st
   return [...new Set([...(a ?? []), ...(b ?? [])])]
 }
 
-function mergeAppData(local: AppData, remote: AppData): AppData {
+export function mergeAppData(local: AppData, remote: AppData): AppData {
   const delCases = new Set(mergeTombstoneIds(local.deletedCaseIds, remote.deletedCaseIds))
   const delLocs = new Set(mergeTombstoneIds(local.deletedLocationIds, remote.deletedLocationIds))
   const delTracks = new Set(mergeTombstoneIds(local.deletedTrackIds, remote.deletedTrackIds))
@@ -210,7 +222,7 @@ function mergeAppData(local: AppData, remote: AppData): AppData {
     deletedCaseAttachmentIds: [...delAtt],
     cases: mergeById(locCases, remCases, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     locations: mergeById(locLocs, remLocs, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
-    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.createdAt),
+    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     trackPoints: mergeById(locPts, remPts, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     users: mergeById(local.users, remote.users, (x) => x.id, (x) => x.createdAt),
     caseCollaborators: mergeCollaborators(locCollab, remCollab),

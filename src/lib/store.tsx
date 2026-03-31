@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import {
   fetchRemotePayloadUpdatedAt,
   loadData,
+  mergeAppData,
+  normalizeAppData,
   pullAndMergeWithLocal,
   REMOTE_SYNC_POLL_MS,
   saveData,
@@ -167,6 +169,9 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   })
   /** Last seen Supabase `vc_app_state.updated_at` to skip redundant full pulls. */
   const lastRemoteUpdatedAtRef = useRef<string | null>(null)
+  /** Debounce full `saveData` (remote fetch + merge + upsert) after local edits — avoids one round-trip per track point tap. */
+  const remotePersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const remotePersistChainRef = useRef(Promise.resolve())
 
   useEffect(() => {
     let alive = true
@@ -192,12 +197,43 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   }, [])
 
   const persist = useCallback(async (next: AppData) => {
-    const canonical = await saveData(next)
-    dataRef.current = canonical
-    setData(canonical)
-    if (hasSupabaseConfig && supabase) {
-      const t = await fetchRemotePayloadUpdatedAt()
-      if (t) lastRemoteUpdatedAtRef.current = t
+    const local = normalizeAppData(next)
+    dataRef.current = local
+    setData(local)
+    await writeLocalDataCache(local)
+
+    if (!hasSupabaseConfig || !supabase) return
+
+    if (remotePersistTimerRef.current) clearTimeout(remotePersistTimerRef.current)
+      remotePersistTimerRef.current = setTimeout(() => {
+      remotePersistTimerRef.current = null
+      remotePersistChainRef.current = remotePersistChainRef.current
+        .then(async () => {
+          try {
+            // Snapshotted: `saveData` awaits network I/O; the user may keep editing meanwhile.
+            const snapshot = dataRef.current
+            const merged = await saveData(snapshot)
+            const latest = dataRef.current
+            const final = mergeAppData(latest, merged)
+            dataRef.current = final
+            setData(final)
+            await writeLocalDataCache(final)
+            const t = await fetchRemotePayloadUpdatedAt()
+            if (t) lastRemoteUpdatedAtRef.current = t
+          } catch (e) {
+            console.warn('Debounced Supabase persist failed:', e)
+          }
+        })
+        .catch((e) => console.warn('Remote persist chain:', e))
+    }, 400)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (remotePersistTimerRef.current) {
+        clearTimeout(remotePersistTimerRef.current)
+        remotePersistTimerRef.current = null
+      }
     }
   }, [])
 
@@ -221,10 +257,12 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         const cur = dataRef.current
         const merged = await pullAndMergeWithLocal(cur)
         if (cancelled || !merged) return
-        if (JSON.stringify(merged) === JSON.stringify(cur)) return
-        dataRef.current = merged
-        setData(merged)
-        await writeLocalDataCache(merged)
+        const latest = dataRef.current
+        const final = mergeAppData(latest, merged)
+        if (JSON.stringify(final) === JSON.stringify(latest)) return
+        dataRef.current = final
+        setData(final)
+        await writeLocalDataCache(final)
         setSyncStatus({ mode: 'supabase_ok', message: 'Updated from shared workspace' })
       } catch (e) {
         console.warn('Collaborative sync pull failed:', e)
@@ -533,6 +571,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         routeColor,
         createdByUserId: input.createdByUserId.trim(),
         createdAt: now,
+        updatedAt: now,
       }
 
       const next: AppData = {
@@ -564,6 +603,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
                 ...patch,
                 label: (patch.label ?? t.label).trim() || 'Track',
                 routeColor: typeof patch.routeColor === 'string' ? patch.routeColor.trim().slice(0, 32) : t.routeColor ?? '',
+                updatedAt: now,
               }
             : t,
         ),

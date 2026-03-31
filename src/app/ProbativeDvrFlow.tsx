@@ -64,6 +64,13 @@ type Props = {
   onCalcApply: (notesAppend: string) => void
 }
 
+/** Inline DVR calculator (e.g. web map-tools rail). Same UI as the modal calculator step. */
+export function DvrCalculatorPanel(props: { onBack: () => void; onCancel: () => void; onApply: (notes: string) => void }) {
+  return (
+    <CalculatorStep onBack={props.onBack} onCancel={props.onCancel} onApply={props.onApply} />
+  )
+}
+
 export function ProbativeDvrFlowModals(props: Props) {
   const open = props.step != null
   const title =

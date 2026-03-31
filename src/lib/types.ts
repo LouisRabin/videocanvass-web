@@ -45,6 +45,8 @@ export const TrackSchema = z.object({
   routeColor: z.string().default(''),
   createdByUserId: z.string().default(''),
   createdAt: z.number(),
+  /** Last metadata edit (label/kind/color); defaults to createdAt for legacy rows. Used for sync merge. */
+  updatedAt: z.number().optional(),
 })
 export type Track = z.infer<typeof TrackSchema>
 

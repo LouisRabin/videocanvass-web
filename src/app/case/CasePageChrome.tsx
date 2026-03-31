@@ -667,14 +667,26 @@ export function LocationDrawer(props: {
   const canDelete = props.canDelete !== false
   const wide = props.layout === 'wide'
   const [addressDetailsOpen, setAddressDetailsOpen] = useState(false)
-  const ta: CSSProperties = {
-    ...field,
-    minHeight: wide ? 'clamp(88px, 22vh, 120px)' : 'clamp(104px, 26vh, 140px)',
-    resize: 'vertical',
-    maxWidth: '100%',
-    boxSizing: 'border-box',
-    minWidth: 0,
-  }
+  const notesTrimWide = wide ? props.location.notes.trim() : ''
+  const ta: CSSProperties = wide
+    ? {
+        ...field,
+        minHeight: notesTrimWide ? 72 : 44,
+        maxHeight: 220,
+        overflowY: 'auto',
+        resize: 'none',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+        minWidth: 0,
+      }
+    : {
+        ...field,
+        minHeight: 'clamp(104px, 26vh, 140px)',
+        resize: 'vertical',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+        minWidth: 0,
+      }
 
   const addressOnly = (
     <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, minWidth: 0 }}>{props.location.addressText}</div>
@@ -689,16 +701,17 @@ export function LocationDrawer(props: {
     </div>
   )
 
-  const canvassResultsPills = (twoRows: boolean) => {
+  const canvassResultsPills = (twoRows: boolean, omitTopMargin?: boolean) => {
+    const top = omitTopMargin ? {} : { marginTop: 'var(--vc-space-md)' as const }
     const wrap: CSSProperties = twoRows
       ? {
-          marginTop: 'var(--vc-space-md)',
+          ...top,
           display: 'grid',
           gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
           gap: 'var(--vc-space-sm)',
         }
       : {
-          marginTop: 'var(--vc-space-md)',
+          ...top,
           display: 'flex',
           gap: 'var(--vc-space-sm)',
           flexWrap: 'wrap',
@@ -833,7 +846,7 @@ export function LocationDrawer(props: {
         </div>
         <div style={{ padding: '12px 14px 14px', boxSizing: 'border-box' }}>
           {addressOnly}
-          {canvassResultsPills(true)}
+          {buildingBlock}
           <div
             style={{
               display: 'flex',
@@ -843,10 +856,8 @@ export function LocationDrawer(props: {
               marginTop: 'var(--vc-space-md)',
             }}
           >
-            <div style={{ flex: '2 1 min(300px, 100%)', minWidth: 0 }}>
-              {buildingBlock}
-            </div>
-            <div style={{ flex: '1 1 min(260px, 100%)', minWidth: 0 }}>{notesOnly}</div>
+            <div style={{ flex: '0 1 280px', minWidth: 'min(200px, 100%)', maxWidth: '100%' }}>{notesOnly}</div>
+            <div style={{ flex: '1 1 260px', minWidth: 0 }}>{canvassResultsPills(true, true)}</div>
           </div>
         </div>
       </div>
