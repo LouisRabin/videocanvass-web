@@ -1,6 +1,8 @@
 import type { CSSProperties } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
+import { getNativeCapabilities } from './lib/nativeCapabilities'
+import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
 import { CasesPage } from './app/CasesPage'
@@ -9,10 +11,14 @@ import { CasePage } from './app/CasePage'
 import type { AppUser } from './lib/types'
 
 function App() {
-  const narrowLayout = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
+  const targetMode = useTargetMode()
+  const isNarrowLayout = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
   useEffect(() => {
-    document.documentElement.dataset.layout = narrowLayout ? 'narrow' : 'wide'
-  }, [narrowLayout])
+    const caps = getNativeCapabilities(targetMode)
+    document.documentElement.dataset.layout = isNarrowLayout ? 'narrow' : 'wide'
+    document.documentElement.dataset.target = targetMode
+    document.documentElement.dataset.nativePlatform = caps.platform
+  }, [isNarrowLayout, targetMode])
 
   return (
     <StoreProvider>

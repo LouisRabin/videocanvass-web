@@ -14,7 +14,9 @@
     "cap:open": "npx cap open ios",
     "cap:open:android": "npx cap open android",
     "appetize:android": "powershell -ExecutionPolicy Bypass -File scripts/build-android-appetize.ps1",
-    "appetize:ios": "bash scripts/build-ios-simulator-appetize.sh"
+    "appetize:ios": "bash scripts/build-ios-simulator-appetize.sh",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.0",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.58.2",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
