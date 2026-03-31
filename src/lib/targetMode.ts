@@ -17,7 +17,6 @@ export function resolveTargetModeFromWidth(viewportWidthPx: number): TargetMode 
 }
 
 export function useTargetMode(): TargetMode {
-  useMediaQuery(MOBILE_BREAKPOINT_QUERY)
-  // Temporary unification: run a single browser-first experience on all web viewports.
-  return 'web'
+  const isNarrowLayout = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
+  return resolveTargetMode(isNarrowLayout)
 }

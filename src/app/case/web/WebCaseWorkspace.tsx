@@ -4,9 +4,14 @@ type WebCaseWorkspaceProps = {
   caseShellMaxH?: number
   workspaceGridStyle: CSSProperties
   children: ReactNode
+  /** Mobile layout: skip extra bottom inset (full web mirrors side padding at bottom). */
+  isNarrow?: boolean
 }
 
+const workspacePad = 'clamp(0px, 0.6vw, 6px)'
+
 export function WebCaseWorkspace(props: WebCaseWorkspaceProps) {
+  const narrow = props.isNarrow === true
   return (
     <div
       style={{
@@ -17,8 +22,9 @@ export function WebCaseWorkspace(props: WebCaseWorkspaceProps) {
         minHeight: 0,
         maxHeight: props.caseShellMaxH,
         overflow: 'hidden',
-        paddingLeft: 'clamp(4px, 1.2vw, 12px)',
-        paddingRight: 'clamp(4px, 1.2vw, 12px)',
+        paddingLeft: narrow ? 0 : workspacePad,
+        paddingRight: narrow ? 0 : workspacePad,
+        paddingBottom: narrow ? 0 : workspacePad,
         boxSizing: 'border-box',
       }}
     >

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Location, TrackPoint } from '../../lib/types'
 import { statusColor } from '../../lib/types'
 import { reverseGeocodeAddressText } from '../../lib/geocode'
@@ -169,79 +169,179 @@ const pill: CSSProperties = {
   gap: 8,
 }
 
-/** 3-col row: [spacer][centered arrow][Remove] — keeps arrow visually centered. */
-const mapDrawerBarGrid: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)',
-  alignItems: 'center',
-  gap: 6,
-  width: '100%',
-  boxSizing: 'border-box',
-}
-
-const mapDrawerPeekBar: CSSProperties = {
-  ...mapDrawerBarGrid,
-  padding: '3px 10px',
-  background: 'rgba(255,255,255,0.45)',
-  backdropFilter: 'blur(6px)',
-  WebkitBackdropFilter: 'blur(6px)',
-  borderRadius: 10,
-  boxShadow: '0 1px 6px rgba(0,0,0,0.05)',
-}
-
-/** Inner bar (expanded): background on sticky parent. */
-const mapDrawerExpandedBarInner: CSSProperties = {
-  ...mapDrawerBarGrid,
-  padding: '4px 10px',
-}
-
-/** Stays under map overlay padding; pins arrow+Remove while sheet content scrolls. */
-const mapDrawerStickyControls: CSSProperties = {
-  position: 'sticky',
-  top: 0,
-  zIndex: 6,
-  background: 'rgba(249,250,251,0.97)',
-  backdropFilter: 'blur(10px)',
-  WebkitBackdropFilter: 'blur(10px)',
-  borderBottom: '1px solid #e5e7eb',
-  margin: 0,
-}
-
-const mapDrawerPeekArrowBtn: CSSProperties = {
-  margin: 0,
-  border: 'none',
-  background: 'transparent',
-  padding: '4px 18px',
-  cursor: 'pointer',
-  fontSize: 10,
-  fontWeight: 800,
-  color: '#64748b',
-  lineHeight: 1,
-  letterSpacing: '0.02em',
-  borderRadius: 6,
-  boxSizing: 'border-box',
-}
-
-const mapDrawerCollapseArrowBtn: CSSProperties = {
-  margin: 0,
-  border: 'none',
-  background: 'transparent',
-  padding: '6px 22px',
-  cursor: 'pointer',
-  fontSize: 10,
-  fontWeight: 800,
-  color: '#64748b',
-  lineHeight: 1,
-  letterSpacing: '0.02em',
-  borderRadius: 6,
-  boxSizing: 'border-box',
-}
-
 const mapDrawerRemoveBtnStyle: CSSProperties = {
   ...btnDanger,
   fontSize: 11,
   padding: '5px 10px',
   fontWeight: 800,
+}
+
+/** Shared chrome for full-web map-edge collapse/expand control. */
+const mapPaneEdgeToggleBase: CSSProperties = {
+  border: '1px solid #d1d5db',
+  background: 'rgba(255,255,255,0.92)',
+  color: '#6b7280',
+  width: 18,
+  height: 38,
+  padding: 0,
+  cursor: 'pointer',
+  fontSize: 14,
+  fontWeight: 700,
+  lineHeight: 1,
+  borderRadius: '0 9px 9px 0',
+  boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
+
+/** Bottom map / notes seam: flat edge on bottom (flush with seam), rounded top into map — same 9px radius language as vertical tab, dimensions swapped vs `mapPaneEdgeToggleBase`. */
+const mapPaneEdgeToggleDrawerBottomSeam: CSSProperties = {
+  ...mapPaneEdgeToggleBase,
+  width: 38,
+  height: 18,
+  borderRadius: '9px 9px 0 0',
+}
+
+/** Wide map notes expanded: flat top flush with map above sheet, rounded bottom into the white panel. */
+const mapPaneEdgeToggleDrawerSheetTopSeam: CSSProperties = {
+  ...mapPaneEdgeToggleBase,
+  width: 38,
+  height: 18,
+  borderRadius: '0 0 9px 9px',
+}
+
+/** Collapse tools: straight edge toward map (`right`), curve into tools column (`left`) — only when tools are expanded. */
+const mapPaneEdgeToggleVerticalRailCollapse: CSSProperties = {
+  ...mapPaneEdgeToggleBase,
+  borderRadius: '9px 0 0 9px',
+}
+
+export type MapPaneEdgeTogglePlacement =
+  | 'verticalRail'
+  | 'drawerTopSeam'
+  | 'drawerSheetTopSeam'
+  | 'toolbarOverMap'
+const mapPaneEdgeAnchorVerticalRail: CSSProperties = {
+  position: 'absolute',
+  zIndex: 60,
+  pointerEvents: 'auto',
+  // Pull past the pane edge by the case workspace grid gap so the straight side meets the map column.
+  right: 'calc(-1 * clamp(4px, 0.9vw, 10px))',
+  top: '50%',
+  transform: 'translateY(-50%)',
+}
+/**
+ * Bottom drawer seam: horizontally centered; `translate(-50%, -100%)` so the tab’s flat bottom edge
+ * is flush with the map/drawer boundary and the rounded top sits on the map.
+ */
+const mapPaneEdgeAnchorDrawerTop: CSSProperties = {
+  position: 'absolute',
+  zIndex: 55,
+  pointerEvents: 'auto',
+  left: '50%',
+  top: 0,
+  transform: 'translate(-50%, -100%)',
+}
+/** Top of expanded notes/track sheet (inside overlay): tab hangs below map seam into the sheet. */
+const mapPaneEdgeAnchorDrawerSheetTop: CSSProperties = {
+  position: 'absolute',
+  zIndex: 55,
+  pointerEvents: 'auto',
+  left: '50%',
+  top: 0,
+  transform: 'translateX(-50%)',
+}
+/** Collapsed map tools: left map edge, vertically centered (mirror of verticalRail but `left` instead of `right`). */
+const mapPaneEdgeAnchorToolbarOverMap: CSSProperties = {
+  position: 'absolute',
+  zIndex: 55,
+  pointerEvents: 'auto',
+  left: 0,
+  top: '50%',
+  transform: 'translateY(-50%)',
+}
+
+/** Shared edge anchor contract so toggles remain visible regardless of parent overflow behavior. */
+export function MapPaneEdgeAnchor(props: {
+  placement: MapPaneEdgeTogglePlacement
+  children: ReactNode
+}) {
+  const placementStyle =
+    props.placement === 'verticalRail'
+      ? mapPaneEdgeAnchorVerticalRail
+      : props.placement === 'toolbarOverMap'
+        ? mapPaneEdgeAnchorToolbarOverMap
+        : props.placement === 'drawerSheetTopSeam'
+          ? mapPaneEdgeAnchorDrawerSheetTop
+          : mapPaneEdgeAnchorDrawerTop
+  return (
+    <div style={placementStyle}>
+      <div style={{ pointerEvents: 'auto' }}>{props.children}</div>
+    </div>
+  )
+}
+
+/**
+ * Universal full-web edge toggle: same chrome for rail + drawer seam; only arrow orientation differs.
+ * - verticalRail: › / ‹ (sideways). When expanded (collapse tools), flat edge faces the map (`borderRadius` 9px 0 0 9px); compact expand uses default pill.
+ * - drawerTopSeam: compact / bottom seam only — flat bottom, rounded top (38×18).
+ * - drawerSheetTopSeam: expanded sheet — flat top toward map, rounded bottom into sheet (38×18); same chevrons as drawerTopSeam.
+ * - toolbarOverMap: vertical D-tab (flat edge on the left); › / ‹; left map edge, vertically centered.
+ */
+export function MapPaneEdgeToggle(props: {
+  /** True when the panel/sheet content is open (shows “collapse” arrow). */
+  expanded: boolean
+  onClick: () => void
+  ariaLabel: string
+  placement: MapPaneEdgeTogglePlacement
+}) {
+  const toggleStyle = (() => {
+    if (props.placement === 'verticalRail') {
+      return props.expanded ? mapPaneEdgeToggleVerticalRailCollapse : mapPaneEdgeToggleBase
+    }
+    if (props.placement === 'drawerSheetTopSeam') {
+      return mapPaneEdgeToggleDrawerSheetTopSeam
+    }
+    if (props.placement === 'drawerTopSeam') {
+      return mapPaneEdgeToggleDrawerBottomSeam
+    }
+    return mapPaneEdgeToggleBase
+  })()
+
+  const drawerChevron = (
+    <span
+      style={{
+        display: 'inline-block',
+        lineHeight: 1,
+        fontSize: 12,
+        transform: props.expanded ? 'rotate(90deg)' : 'rotate(-90deg)',
+      }}
+      aria-hidden
+    >
+      ›
+    </span>
+  )
+
+  return (
+    <button
+      type="button"
+      aria-label={props.ariaLabel}
+      aria-expanded={props.expanded}
+      onClick={props.onClick}
+      style={toggleStyle}
+    >
+      {props.placement === 'verticalRail' || props.placement === 'toolbarOverMap' ? (
+        props.expanded ? (
+          '‹'
+        ) : (
+          '›'
+        )
+      ) : (
+        drawerChevron
+      )}
+    </button>
+  )
 }
 
 export const listHeaderRow: CSSProperties = {
@@ -420,11 +520,13 @@ export function TrackPointDrawer(props: {
     patch: Partial<Pick<TrackPoint, 'addressText' | 'visitedAt' | 'notes' | 'displayTimeOnMap'>>,
   ) => void
   onDelete: () => void
+  /** Optional controlled open state for wide map drawer details. */
+  detailsOpen?: boolean
+  onDetailsOpenChange?: (open: boolean) => void
 }) {
   const canEdit = props.canEdit !== false
   const canDelete = props.canDelete !== false
   const wide = props.layout === 'wide'
-  const [detailsOpen, setDetailsOpen] = useState(false)
   const [mapAddressLine, setMapAddressLine] = useState<string | null>(null)
   const [mapAddressLoading, setMapAddressLoading] = useState(true)
   const fieldBox: CSSProperties = { ...field, maxWidth: '100%', boxSizing: 'border-box', minWidth: 0 }
@@ -493,8 +595,18 @@ export function TrackPointDrawer(props: {
   ) : null
 
   const wideHeaderOnly = (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', width: '100%', boxSizing: 'border-box', padding: '12px 14px 0' }}>
+    <div
+      style={{
+        display: 'flex',
+        gap: 8,
+        alignItems: 'flex-start',
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '12px 14px 0',
+      }}
+    >
       {headerCore}
+      {removeStepBtn ? <div style={{ flexShrink: 0, alignSelf: 'flex-start' }}>{removeStepBtn}</div> : null}
     </div>
   )
 
@@ -534,7 +646,13 @@ export function TrackPointDrawer(props: {
         readOnly={!canEdit}
         onChange={(e) => props.onUpdate({ notes: e.target.value })}
         placeholder="What happened here?"
-        style={{ ...fieldBox, minHeight: wide ? 80 : 120, resize: 'vertical' }}
+        style={{
+          ...fieldBox,
+          minHeight: wide ? 44 : 120,
+          maxHeight: wide ? 72 : undefined,
+          resize: 'vertical',
+        }}
+        rows={wide ? 2 : undefined}
       />
     </div>
   )
@@ -574,64 +692,64 @@ export function TrackPointDrawer(props: {
   )
 
   if (wide) {
-    if (!detailsOpen) {
-      return (
-        <div style={mapDrawerPeekBar}>
-          <div />
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <button
-              type="button"
-              style={mapDrawerPeekArrowBtn}
-              onClick={() => setDetailsOpen(true)}
-              aria-label="Expand step details"
-            >
-              ▲
-            </button>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', minWidth: 0 }}>
-            {removeStepBtn}
-          </div>
-        </div>
-      )
+    if (!(props.detailsOpen ?? false)) {
+      return null
     }
     return (
-      <div style={{ ...card, width: '100%', boxSizing: 'border-box', padding: 0, overflow: 'visible' }}>
-        <div style={mapDrawerStickyControls}>
-          <div style={mapDrawerExpandedBarInner}>
-            <div />
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <button
-                type="button"
-                style={mapDrawerCollapseArrowBtn}
-                onClick={() => setDetailsOpen(false)}
-                aria-expanded
-                aria-label="Collapse step details"
-              >
-                ▼
-              </button>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', minWidth: 0 }}>
-              {removeStepBtn}
-            </div>
-          </div>
-        </div>
-        {wideHeaderOnly}
+      <div
+        style={{
+          ...card,
+          width: '100%',
+          maxHeight: 'min(272px, 33svh)',
+          boxSizing: 'border-box',
+          padding: 0,
+          overflow: 'hidden',
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <div style={{ flexShrink: 0, background: 'white' }}>{wideHeaderOnly}</div>
         <div
           style={{
-            marginTop: 12,
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 16,
-            alignItems: 'flex-start',
-            padding: '0 14px 14px',
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            WebkitOverflowScrolling: 'touch',
+            background: 'white',
+            borderBottomLeftRadius: 'var(--vc-radius-xl)',
+            borderBottomRightRadius: 'var(--vc-radius-xl)',
+            padding: '12px 14px 14px',
             boxSizing: 'border-box',
           }}
         >
-          <div style={{ flex: '1 1 200px', minWidth: 0, display: 'grid', gap: 12 }}>{labelBlock}</div>
-          <div style={{ flex: '2 1 280px', minWidth: 0, display: 'grid', gap: 12 }}>{notesBlock}</div>
-          <div style={{ flex: '1 1 240px', minWidth: 0, display: 'grid', gap: 12 }}>
-            {timeBlock}
-            {toggles}
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 16,
+              alignItems: 'flex-start',
+              width: '100%',
+              boxSizing: 'border-box',
+            }}
+          >
+            <div
+              style={{
+                flex: '2 1 300px',
+                maxWidth: 'min(520px, 100%)',
+                minWidth: 0,
+                display: 'grid',
+                gap: 12,
+              }}
+            >
+              {notesBlock}
+            </div>
+            <div style={{ flex: '1 1 160px', minWidth: 0, display: 'grid', gap: 12 }}>{labelBlock}</div>
+            <div style={{ flex: '1 1 200px', minWidth: 0, display: 'grid', gap: 12 }}>
+              {timeBlock}
+              {toggles}
+            </div>
           </div>
         </div>
       </div>
@@ -662,31 +780,22 @@ export function LocationDrawer(props: {
   /** When set, choosing Probative (from another status) runs the DVR time flow instead of an immediate update. */
   onProbativeRequest?: () => void
   onDelete: () => void
+  /** Optional controlled open state for wide map drawer details. */
+  detailsOpen?: boolean
+  onDetailsOpenChange?: (open: boolean) => void
 }) {
   const canEdit = props.canEdit !== false
   const canDelete = props.canDelete !== false
   const wide = props.layout === 'wide'
-  const [addressDetailsOpen, setAddressDetailsOpen] = useState(false)
-  const notesTrimWide = wide ? props.location.notes.trim() : ''
-  const ta: CSSProperties = wide
-    ? {
-        ...field,
-        minHeight: notesTrimWide ? 72 : 44,
-        maxHeight: 220,
-        overflowY: 'auto',
-        resize: 'none',
-        maxWidth: '100%',
-        boxSizing: 'border-box',
-        minWidth: 0,
-      }
-    : {
-        ...field,
-        minHeight: 'clamp(104px, 26vh, 140px)',
-        resize: 'vertical',
-        maxWidth: '100%',
-        boxSizing: 'border-box',
-        minWidth: 0,
-      }
+  const ta: CSSProperties = {
+    ...field,
+    minHeight: wide ? 44 : 'clamp(104px, 26vh, 140px)',
+    maxHeight: wide ? 72 : undefined,
+    resize: 'vertical',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    minWidth: 0,
+  }
 
   const addressOnly = (
     <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, minWidth: 0 }}>{props.location.addressText}</div>
@@ -701,22 +810,30 @@ export function LocationDrawer(props: {
     </div>
   )
 
-  const canvassResultsPills = (twoRows: boolean, omitTopMargin?: boolean) => {
-    const top = omitTopMargin ? {} : { marginTop: 'var(--vc-space-md)' as const }
+  const canvassResultsPills = (twoRows: boolean, compact?: boolean) => {
     const wrap: CSSProperties = twoRows
-      ? {
-          ...top,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-          gap: 'var(--vc-space-sm)',
-        }
+      ? compact
+        ? {
+            marginTop: 0,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, max-content)',
+            gap: 6,
+            justifyContent: 'start',
+            alignContent: 'start',
+          }
+        : {
+            marginTop: 'var(--vc-space-md)',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: 'var(--vc-space-sm)',
+          }
       : {
-          ...top,
+          marginTop: 'var(--vc-space-md)',
           display: 'flex',
           gap: 'var(--vc-space-sm)',
           flexWrap: 'wrap',
         }
-    const fw = twoRows
+    const fw = twoRows && !compact
     return (
       <div style={wrap}>
         <StatusPill
@@ -788,6 +905,7 @@ export function LocationDrawer(props: {
         readOnly={!canEdit}
         onChange={(e) => props.onUpdate({ notes: e.target.value })}
         placeholder="What did you observe?"
+        rows={wide ? 2 : undefined}
         style={ta}
       />
       <div style={{ marginTop: 'var(--vc-space-md)', color: '#374151', fontSize: 'var(--vc-fs-sm)' }}>
@@ -803,62 +921,68 @@ export function LocationDrawer(props: {
   ) : null
 
   if (wide) {
-    if (!addressDetailsOpen) {
-      return (
-        <div style={mapDrawerPeekBar}>
-          <div />
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <button
-              type="button"
-              style={mapDrawerPeekArrowBtn}
-              onClick={() => setAddressDetailsOpen(true)}
-              aria-label="Expand address details"
-            >
-              ▲
-            </button>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', minWidth: 0 }}>
-            {removeAddressBarBtn}
-          </div>
-        </div>
-      )
+    if (!(props.detailsOpen ?? false)) {
+      return null
     }
     return (
-      <div style={{ ...card, position: 'relative', width: '100%', boxSizing: 'border-box', padding: 0, overflow: 'visible' }}>
-        <div style={mapDrawerStickyControls}>
-          <div style={mapDrawerExpandedBarInner}>
-            <div />
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <button
-                type="button"
-                style={mapDrawerCollapseArrowBtn}
-                onClick={() => setAddressDetailsOpen(false)}
-                aria-expanded
-                aria-label="Collapse address details"
-              >
-                ▼
-              </button>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', minWidth: 0 }}>
-              {removeAddressBarBtn}
-            </div>
-          </div>
+      <div
+        style={{
+          ...card,
+          position: 'relative',
+          width: '100%',
+          maxHeight: 'min(272px, 33svh)',
+          boxSizing: 'border-box',
+          padding: 0,
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <div
+          style={{
+            flexShrink: 0,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'flex-start',
+            padding: '12px 14px 0',
+            boxSizing: 'border-box',
+            background: 'white',
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>{addressOnly}</div>
+          {removeAddressBarBtn ? <div style={{ flexShrink: 0, alignSelf: 'flex-start' }}>{removeAddressBarBtn}</div> : null}
         </div>
-        <div style={{ padding: '12px 14px 14px', boxSizing: 'border-box' }}>
-          {addressOnly}
-          {buildingBlock}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            WebkitOverflowScrolling: 'touch',
+            padding: '12px 14px 14px',
+            boxSizing: 'border-box',
+            background: 'white',
+            borderBottomLeftRadius: 'var(--vc-radius-xl)',
+            borderBottomRightRadius: 'var(--vc-radius-xl)',
+          }}
+        >
           <div
             style={{
               display: 'flex',
-              flexWrap: 'wrap',
-              gap: 'var(--vc-space-lg)',
+              flexDirection: 'row',
+              gap: 12,
               alignItems: 'flex-start',
-              marginTop: 'var(--vc-space-md)',
+              width: '100%',
+              minWidth: 0,
+              boxSizing: 'border-box',
             }}
           >
-            <div style={{ flex: '0 1 280px', minWidth: 'min(200px, 100%)', maxWidth: '100%' }}>{notesOnly}</div>
-            <div style={{ flex: '1 1 260px', minWidth: 0 }}>{canvassResultsPills(true, true)}</div>
+            <div style={{ flex: '0 0 auto', minWidth: 0 }}>{canvassResultsPills(true, true)}</div>
+            <div style={{ flex: '1 1 0', minWidth: 0 }}>{notesOnly}</div>
           </div>
+          {buildingBlock ? (
+            <div style={{ marginTop: 'var(--vc-space-sm)', width: '100%', minWidth: 0 }}>{buildingBlock}</div>
+          ) : null}
         </div>
       </div>
     )
