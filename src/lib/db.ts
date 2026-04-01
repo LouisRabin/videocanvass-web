@@ -1,12 +1,20 @@
 import localforage from 'localforage'
-import { AppDataSchema, DEFAULT_DATA, type AppData, type CaseCollaborator, type TrackPoint } from './types'
+import {
+  AppDataSchema,
+  DEFAULT_DATA,
+  type AppData,
+  type CaseCollaborator,
+  type Location,
+  type TrackPoint,
+} from './types'
+import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
 import { setSyncStatus } from './syncStatus'
 
 const STORE_KEY = 'videocanvass:data:v1'
 
-/** How often to pull shared state when Supabase is configured (Realtime also triggers pulls). */
-export const REMOTE_SYNC_POLL_MS = 12_000
+/** Fallback pull when Realtime is slow or missed (mobile WebViews / background tabs often throttle WS). */
+export const REMOTE_SYNC_POLL_MS = 8_000
 
 function migrateTrackPointUpdatedAt(data: AppData): AppData {
   return {
@@ -75,8 +83,145 @@ function migrateCreatedByUserIds(data: AppData): AppData {
   return { ...data, locations, tracks, trackPoints, caseAttachments }
 }
 
+/** Geocode jitter / double-click: same doorway should be one Location row for sync. */
+const SAME_PLACE_MAX_METERS = 12
+/** Same normalized address string but coords differ slightly (providers, clicks). */
+const SAME_LABEL_MAX_METERS = 95
+
+function normalizeAddressKey(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6_371_000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLon = toRad(lon2 - lon1)
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
+
+type PlaceLike = { addressText: string; lat: number; lon: number }
+
+export function locationsAreSamePlace(a: Location | PlaceLike, b: Location | PlaceLike, caseIdA: string, caseIdB: string): boolean {
+  if (caseIdA !== caseIdB) return false
+  const d = haversineMeters(a.lat, a.lon, b.lat, b.lon)
+  if (d <= SAME_PLACE_MAX_METERS) return true
+  const ka = normalizeAddressKey(a.addressText)
+  const kb = normalizeAddressKey(b.addressText)
+  if (ka.length > 0 && ka === kb && d <= SAME_LABEL_MAX_METERS) return true
+  return false
+}
+
+function locationPickWinnerLoser(a: Location, b: Location): [Location, Location] {
+  const ta = a.updatedAt ?? a.createdAt
+  const tb = b.updatedAt ?? b.createdAt
+  if (ta !== tb) return ta >= tb ? [a, b] : [b, a]
+  const ca = a.createdAt
+  const cb = b.createdAt
+  if (ca !== cb) return ca <= cb ? [a, b] : [b, a]
+  return a.id.localeCompare(b.id) <= 0 ? [a, b] : [b, a]
+}
+
+function mergeLocationAbsorbLoser(winner: Location, loser: Location): Location {
+  let m: Location = { ...winner }
+  if (!m.notes.trim() && loser.notes.trim()) m = { ...m, notes: loser.notes }
+  if (!m.bounds && loser.bounds) m = { ...m, bounds: loser.bounds }
+  if (!(m.footprint?.length ?? 0) && (loser.footprint?.length ?? 0)) m = { ...m, footprint: loser.footprint }
+  const tw = m.addressText.trim()
+  const tl = loser.addressText.trim()
+  if (tl.length > tw.length) m = { ...m, addressText: tl }
+  const mv = m.lastVisitedAt
+  const lv = loser.lastVisitedAt
+  if (lv != null && (mv == null || lv > mv)) m = { ...m, lastVisitedAt: lv }
+  const u = Math.max(m.updatedAt ?? m.createdAt, loser.updatedAt ?? loser.createdAt, m.createdAt, loser.createdAt)
+  m = { ...m, updatedAt: u }
+  return m
+}
+
+function pushTombstoneDedupe(ids: string[], id: string): string[] {
+  return ids.includes(id) ? ids : [...ids, id]
+}
+
+/**
+ * Collapses concurrent duplicate locations (same case, same place, different row IDs) so merge-by-id
+ * cannot leave overlapping pins. Repoints track step locationId references.
+ */
+export function dedupeNearbyCaseLocations(data: AppData): AppData {
+  let locations = data.locations.slice()
+  let trackPoints = data.trackPoints.slice()
+  let deletedLocationIds = data.deletedLocationIds.slice()
+  let anyChange = false
+
+  let changed = true
+  while (changed) {
+    changed = false
+    outer: for (let i = 0; i < locations.length; i++) {
+      for (let j = i + 1; j < locations.length; j++) {
+        const a = locations[i]!
+        const b = locations[j]!
+        if (!locationsAreSamePlace(a, b, a.caseId, b.caseId)) continue
+        const [winnerBase, loser] = locationPickWinnerLoser(a, b)
+        const merged = mergeLocationAbsorbLoser(winnerBase, loser)
+        locations = locations.map((l) => (l.id === winnerBase.id ? merged : l)).filter((l) => l.id !== loser.id)
+        deletedLocationIds = pushTombstoneDedupe(deletedLocationIds, loser.id)
+        trackPoints = trackPoints.map((p) => (p.locationId === loser.id ? { ...p, locationId: winnerBase.id } : p))
+        anyChange = true
+        changed = true
+        break outer
+      }
+    }
+  }
+
+  if (!anyChange) return data
+  return { ...data, locations, trackPoints, deletedLocationIds }
+}
+
+/** First matching row in the same case (for create-before-save dedupe). */
+export function findDuplicateLocationForCase(
+  locations: Location[],
+  caseId: string,
+  addressText: string,
+  lat: number,
+  lon: number,
+): Location | null {
+  const t = addressText.trim()
+  const stub: PlaceLike = { addressText: t, lat, lon }
+  for (const loc of locations) {
+    if (loc.caseId !== caseId) continue
+    if (locationsAreSamePlace(loc, stub, loc.caseId, caseId)) return loc
+  }
+  return null
+}
+
+function migrateCaseOrgAndAttachments(data: AppData): AppData {
+  return {
+    ...data,
+    deletedCaseCollaboratorKeys: data.deletedCaseCollaboratorKeys ?? [],
+    cases: data.cases.map((c) => ({
+      ...c,
+      organizationId: c.organizationId ?? null,
+      unitId: c.unitId ?? null,
+      lifecycle: c.lifecycle ?? 'open',
+    })),
+    caseAttachments: data.caseAttachments.map((a) => ({
+      ...a,
+      imageDataUrl: a.imageDataUrl ?? '',
+      imageStoragePath: a.imageStoragePath ?? null,
+      contentType: a.contentType ?? '',
+    })),
+  }
+}
+
 export function normalizeAppData(data: AppData): AppData {
-  return migrateCreatedByUserIds(normalizeTrackPointSequences(migrateTrackPointUpdatedAt(data)))
+  return dedupeNearbyCaseLocations(
+    migrateCreatedByUserIds(
+      normalizeTrackPointSequences(migrateTrackPointUpdatedAt(migrateCaseOrgAndAttachments(data))),
+    ),
+  )
 }
 
 localforage.config({
@@ -162,11 +307,15 @@ function mergeById<T>(
   return Array.from(merged.values())
 }
 
+export function caseCollaboratorTombstoneKey(caseId: string, userId: string): string {
+  return `${caseId}::${userId}`
+}
+
 function mergeCollaborators(local: CaseCollaborator[], remote: CaseCollaborator[]): CaseCollaborator[] {
   return mergeById(
     local,
     remote,
-    (c) => `${c.caseId}::${c.userId}`,
+    (c) => caseCollaboratorTombstoneKey(c.caseId, c.userId),
     (c) => c.createdAt,
   )
 }
@@ -175,12 +324,54 @@ function mergeTombstoneIds(a: string[] | undefined, b: string[] | undefined): st
   return [...new Set([...(a ?? []), ...(b ?? [])])]
 }
 
+/**
+ * Compact signature for comparing two AppData snapshots without stringifying huge fields
+ * (e.g. base64 `imageDataUrl`). Used to skip redundant React state / IndexedDB writes after sync pulls.
+ */
+export function appDataSyncFingerprint(d: AppData): string {
+  const sortStrs = (xs: string[]) => xs.slice().sort().join('\n')
+  const caseKey = (c: CaseCollaborator) => caseCollaboratorTombstoneKey(c.caseId, c.userId)
+  const rows = <T,>(items: T[], key: (t: T) => string, ts: (t: T) => number) =>
+    items
+      .map((x) => `${key(x)}\t${ts(x)}`)
+      .sort()
+      .join('\n')
+
+  const attRows = d.caseAttachments
+    .map((a) => {
+      const img = a.imageDataUrl?.trim() ?? ''
+      return `${a.id}\t${a.updatedAt ?? a.createdAt}\t${img.length}\t${(a.imageStoragePath ?? '').trim()}`
+    })
+    .sort()
+    .join('\n')
+
+  return JSON.stringify({
+    v: d.version,
+    dc: sortStrs(d.deletedCaseIds),
+    dl: sortStrs(d.deletedLocationIds),
+    dt: sortStrs(d.deletedTrackIds),
+    dp: sortStrs(d.deletedTrackPointIds),
+    da: sortStrs(d.deletedCaseAttachmentIds),
+    dk: sortStrs(d.deletedCaseCollaboratorKeys),
+    cases: rows(d.cases, (c) => c.id, (c) => c.updatedAt ?? c.createdAt),
+    locs: rows(d.locations, (l) => l.id, (l) => l.updatedAt ?? l.createdAt),
+    tracks: rows(d.tracks, (t) => t.id, (t) => (t.updatedAt ?? t.createdAt)),
+    pts: rows(d.trackPoints, (p) => p.id, (p) => p.updatedAt ?? p.createdAt),
+    users: rows(d.users, (u) => u.id, (u) => u.createdAt),
+    collab: rows(d.caseCollaborators, caseKey, (c) => c.createdAt),
+    att: attRows,
+  })
+}
+
 export function mergeAppData(local: AppData, remote: AppData): AppData {
   const delCases = new Set(mergeTombstoneIds(local.deletedCaseIds, remote.deletedCaseIds))
   const delLocs = new Set(mergeTombstoneIds(local.deletedLocationIds, remote.deletedLocationIds))
   const delTracks = new Set(mergeTombstoneIds(local.deletedTrackIds, remote.deletedTrackIds))
   const delPoints = new Set(mergeTombstoneIds(local.deletedTrackPointIds, remote.deletedTrackPointIds))
   const delAtt = new Set(mergeTombstoneIds(local.deletedCaseAttachmentIds, remote.deletedCaseAttachmentIds))
+  const delCollabKeys = new Set(
+    mergeTombstoneIds(local.deletedCaseCollaboratorKeys, remote.deletedCaseCollaboratorKeys),
+  )
 
   const locCases = local.cases.filter((c) => !delCases.has(c.id))
   const remCases = remote.cases.filter((c) => !delCases.has(c.id))
@@ -195,8 +386,13 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
     (p) => !delPoints.has(p.id) && !delCases.has(p.caseId) && !delTracks.has(p.trackId),
   )
 
-  const locCollab = local.caseCollaborators.filter((c) => !delCases.has(c.caseId))
-  const remCollab = remote.caseCollaborators.filter((c) => !delCases.has(c.caseId))
+  const collabKey = (c: CaseCollaborator) => caseCollaboratorTombstoneKey(c.caseId, c.userId)
+  const locCollab = local.caseCollaborators.filter(
+    (c) => !delCases.has(c.caseId) && !delCollabKeys.has(collabKey(c)),
+  )
+  const remCollab = remote.caseCollaborators.filter(
+    (c) => !delCases.has(c.caseId) && !delCollabKeys.has(collabKey(c)),
+  )
 
   const locAtt = local.caseAttachments.filter((a) => !delAtt.has(a.id) && !delCases.has(a.caseId))
   const remAtt = remote.caseAttachments.filter((a) => !delAtt.has(a.id) && !delCases.has(a.caseId))
@@ -208,6 +404,7 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
     deletedTrackIds: [...delTracks],
     deletedTrackPointIds: [...delPoints],
     deletedCaseAttachmentIds: [...delAtt],
+    deletedCaseCollaboratorKeys: [...delCollabKeys],
     cases: mergeById(locCases, remCases, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     locations: mergeById(locLocs, remLocs, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.createdAt),
@@ -219,6 +416,27 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
 }
 
 export async function loadData(): Promise<AppData> {
+  if (relationalBackendEnabled() && supabase) {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    if (session?.user) {
+      const { loadAppDataFromRelational } = await import('./relational/sync')
+      const remote = await loadAppDataFromRelational()
+      if (remote) {
+        await localforage.setItem(STORE_KEY, remote)
+        setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
+        return remote
+      }
+      setSyncStatus({ mode: 'local_fallback', message: 'Database load failed or empty' })
+      const local = await loadLocalData()
+      return local ?? DEFAULT_DATA
+    }
+    setSyncStatus({ mode: 'local_fallback', message: 'Sign in to load cloud data' })
+    const local = await loadLocalData()
+    return local ?? DEFAULT_DATA
+  }
+
   if (!hasSupabaseConfig || !supabase) {
     setSyncStatus({ mode: 'local_fallback', message: 'Supabase env missing; using local storage' })
   }
@@ -244,6 +462,30 @@ export async function loadData(): Promise<AppData> {
  * Callers must replace in-memory state with the return value so the UI matches what was stored (union of peers’ rows).
  */
 export async function saveData(data: AppData): Promise<AppData> {
+  if (relationalBackendEnabled() && supabase) {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const payloadToSave = normalizeAppData(data)
+    if (!session?.user) {
+      await localforage.setItem(STORE_KEY, payloadToSave)
+      setSyncStatus({ mode: 'local_fallback', message: 'Not signed in; saved locally only' })
+      return payloadToSave
+    }
+    try {
+      const { pushAppDataToRelational } = await import('./relational/sync')
+      await pushAppDataToRelational(payloadToSave)
+      await localforage.setItem(STORE_KEY, payloadToSave)
+      setSyncStatus({ mode: 'supabase_ok', message: 'Saved to database' })
+      return payloadToSave
+    } catch (e) {
+      console.warn('Relational save failed:', e)
+      await localforage.setItem(STORE_KEY, payloadToSave)
+      setSyncStatus({ mode: 'local_fallback', message: 'Database save failed; keeping local copy' })
+      return payloadToSave
+    }
+  }
+
   let payloadToSave: AppData
   if (hasSupabaseConfig && supabase) {
     const remote = await loadSharedData()
@@ -280,6 +522,7 @@ async function loadLocalData(): Promise<AppData | null> {
 
 /** Server row `updated_at` for change detection (avoids downloading full payload every poll when unchanged). */
 export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
+  if (relationalBackendEnabled()) return null
   if (!hasSupabaseConfig || !supabase) return null
   try {
     const { data, error } = await supabase
@@ -302,6 +545,16 @@ export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
 
 /** Merge latest remote JSON blob into the current in-memory dataset (per-entity LWW). */
 export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | null> {
+  if (relationalBackendEnabled() && supabase) {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    if (!session?.user) return null
+    const { loadAppDataFromRelational } = await import('./relational/sync')
+    const remote = await loadAppDataFromRelational()
+    if (!remote) return null
+    return mergeAppData(local, remote)
+  }
   const remote = await loadSharedData()
   if (!remote) return null
   return mergeAppData(local, remote)

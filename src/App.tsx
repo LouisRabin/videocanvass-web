@@ -1,13 +1,17 @@
 import type { CSSProperties } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
+import { relationalBackendEnabled } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
+import { supabase } from './lib/supabase'
 import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
 import { CasesPage } from './app/CasesPage'
-import { Layout } from './app/Layout'
 import { CasePage } from './app/CasePage'
+import { Layout } from './app/Layout'
+import { LoginPage } from './app/LoginPage'
+import { GlobalCanvassAdminPage } from './app/GlobalCanvassAdminPage'
 import type { AppUser } from './lib/types'
 
 function App() {
@@ -29,8 +33,59 @@ function App() {
 
 function SessionGate() {
   const { ready, data } = useStore()
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
-  const currentUser = useMemo(() => data.users.find((u) => u.id === currentUserId) ?? null, [data.users, currentUserId])
+  const [mockUserId, setMockUserId] = useState<string | null>(null)
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null)
+  const [sessionMeta, setSessionMeta] = useState<{
+    email: string
+    displayName: string
+    taxNumber: string
+  } | null>(null)
+
+  const applySession = useCallback(
+    (session: import('@supabase/supabase-js').Session | null) => {
+      const u = session?.user
+      setSessionUserId(u?.id ?? null)
+      if (!u) {
+        setSessionMeta(null)
+        return
+      }
+      const meta = u.user_metadata as { display_name?: string; tax_number?: string } | undefined
+      setSessionMeta({
+        email: u.email ?? '',
+        displayName: meta?.display_name?.trim() || u.email?.split('@')[0] || 'User',
+        taxNumber: meta?.tax_number?.trim() || '',
+      })
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!relationalBackendEnabled() || !supabase) return
+    void supabase.auth.getSession().then(({ data: { session } }) => applySession(session))
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => applySession(session))
+    return () => subscription.unsubscribe()
+  }, [applySession])
+
+  const relationalUser = useMemo((): AppUser | null => {
+    if (!sessionUserId) return null
+    const fromStore = data.users.find((u) => u.id === sessionUserId)
+    if (fromStore) return fromStore
+    if (!sessionMeta) return null
+    return {
+      id: sessionUserId,
+      displayName: sessionMeta.displayName,
+      email: sessionMeta.email,
+      taxNumber: sessionMeta.taxNumber,
+      createdAt: Date.now(),
+    }
+  }, [data.users, sessionMeta, sessionUserId])
+
+  const mockUser = useMemo(
+    () => (mockUserId ? (data.users.find((u) => u.id === mockUserId) ?? null) : null),
+    [data.users, mockUserId],
+  )
 
   if (!ready) {
     return (
@@ -40,11 +95,42 @@ function SessionGate() {
     )
   }
 
-  if (!currentUser) {
-    return <MockLogin users={data.users} onSelectUser={(userId) => setCurrentUserId(userId)} />
+  if (relationalBackendEnabled()) {
+    if (!sessionUserId) {
+      return (
+        <LoginPage
+          onAuthed={async () => {
+            if (!supabase) return
+            const { data: s } = await supabase.auth.getSession()
+            applySession(s.session)
+          }}
+        />
+      )
+    }
+    if (!relationalUser) {
+      return (
+        <Layout title="VideoCanvass">
+          <div style={{ color: '#6b7280' }}>Loading profile…</div>
+        </Layout>
+      )
+    }
+    return (
+      <Router
+        currentUser={relationalUser}
+        onLogout={async () => {
+          if (supabase) await supabase.auth.signOut()
+          applySession(null)
+        }}
+        allowAdminGlobal={relationalUser.appRole === 'admin'}
+      />
+    )
   }
 
-  return <Router currentUser={currentUser} onLogout={() => setCurrentUserId(null)} />
+  if (!mockUser) {
+    return <MockLogin users={data.users} onSelectUser={(userId) => setMockUserId(userId)} />
+  }
+
+  return <Router currentUser={mockUser} onLogout={() => setMockUserId(null)} allowAdminGlobal={false} />
 }
 
 function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => void }) {
@@ -148,17 +234,30 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
   )
 }
 
-function Router(props: { currentUser: AppUser; onLogout: () => void }) {
+function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminGlobal: boolean }) {
   const { data } = useStore()
-  const [route, setRoute] = useState<{ name: 'cases' } | { name: 'case'; id: string }>({ name: 'cases' })
+  const [route, setRoute] = useState<
+    { name: 'cases' } | { name: 'case'; id: string } | { name: 'admin_global' }
+  >({ name: 'cases' })
 
   const currentCase = useMemo(() => {
     if (route.name !== 'case') return null
     return data.cases.find((c) => c.id === route.id && hasCaseAccess(data, c.id, props.currentUser.id)) ?? null
   }, [data, route, props.currentUser.id])
 
+  if (route.name === 'admin_global') {
+    return <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
+  }
+
   if (route.name === 'cases') {
-    return <CasesPage onOpenCase={(id) => setRoute({ name: 'case', id })} currentUser={props.currentUser} onLogout={props.onLogout} />
+    return (
+      <CasesPage
+        onOpenCase={(id) => setRoute({ name: 'case', id })}
+        currentUser={props.currentUser}
+        onLogout={props.onLogout}
+        onOpenAdminGlobal={props.allowAdminGlobal ? () => setRoute({ name: 'admin_global' }) : undefined}
+      />
+    )
   }
 
   if (!currentCase) {

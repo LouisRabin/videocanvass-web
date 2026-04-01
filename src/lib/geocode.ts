@@ -15,20 +15,26 @@ type SearchOpts = {
 }
 
 export type GeocodeScope = 'ny' | 'us'
-/** Search scope + UI copy hooks; full retrieval stack (Photon first, caches, debounce) is summarized in `HANDOFF.md`. */
+/** Search scope + UI copy hooks; USA restriction + Photon details: `docs/GEOCODE_USA.md`. */
 export const GEOCODE_SCOPE: GeocodeScope = 'us'
 
+/** Continental US — Photon `bbox=minLon,minLat,maxLon,maxLat`. AK/HI rely on country filter / coord fallback. */
+export const US_PHOTON_BBOX = '-125,24,-66,49.5'
+
+const PhotonPropertiesSchema = z.object({
+  street: z.string().optional(),
+  housenumber: z.string().optional(),
+  postcode: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  country: z.string().optional(),
+  countrycode: z.string().optional(),
+  name: z.string().optional(),
+  extent: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(), // [west, south, east, north]
+})
+
 const PhotonFeatureSchema = z.object({
-  properties: z.object({
-    street: z.string().optional(),
-    housenumber: z.string().optional(),
-    postcode: z.string().optional(),
-    city: z.string().optional(),
-    state: z.string().optional(),
-    country: z.string().optional(),
-    name: z.string().optional(),
-    extent: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(), // [west, south, east, north]
-  }),
+  properties: PhotonPropertiesSchema,
   geometry: z.object({
     coordinates: z.tuple([z.number(), z.number()]),
   }),
@@ -38,30 +44,78 @@ const PhotonResponseSchema = z.object({
   features: z.array(PhotonFeatureSchema),
 })
 
+type PhotonProperties = z.infer<typeof PhotonPropertiesSchema>
+
 const memCache = new Map<string, { at: number; value: PlaceSuggestion[] }>()
 const TTL_MS = 10 * 60 * 1000
 
+/** Max Photon rows per request when US-filtering (then we cap to caller `limit`). */
+const PHOTON_US_FETCH_MIN = 18
+
 export { reverseGeocodeAddressText } from './reverseGeocodeAddressTextStable'
+
+function restrictForwardSearchToUnitedStates(): boolean {
+  return GEOCODE_SCOPE === 'us' || GEOCODE_SCOPE === 'ny'
+}
+
+/** When Photon omits country fields, keep hits only inside rough US boxes (continental + AK + HI). */
+function latLonLikelyUnitedStates(lat: number, lon: number): boolean {
+  if (lat >= 24 && lat <= 50 && lon >= -125 && lon <= -66) return true
+  if (lat >= 51 && lat <= 72 && lon >= -170 && lon <= -130) return true
+  if (lat >= 18 && lat <= 23 && lon >= -161 && lon <= -154) return true
+  return false
+}
+
+function isUnitedStatesPhotonProperties(p: PhotonProperties, lat: number, lon: number): boolean {
+  const cc = (p.countrycode ?? '').trim().toLowerCase()
+  if (cc === 'us') return true
+  const c = (p.country ?? '').trim().toLowerCase()
+  if (
+    c === 'united states' ||
+    c === 'united states of america' ||
+    c === 'usa' ||
+    c === 'u.s.' ||
+    c === 'u.s.' ||
+    c === 'u.s.a.' ||
+    c === 'u.s.a'
+  ) {
+    return true
+  }
+  if (!cc && !c) return latLonLikelyUnitedStates(lat, lon)
+  return false
+}
 
 export async function searchPlaces(query: string, opts?: SearchOpts): Promise<PlaceSuggestion[]> {
   const q = normalizeQuery(query)
   if (q.length < 3) return []
 
   const limit = opts?.limit ?? 6
-  const cacheKey = `${q.toLowerCase()}|${limit}`
+  const usOnly = restrictForwardSearchToUnitedStates()
+  const bias = opts?.bias
+  const biasKey =
+    bias && Number.isFinite(bias.lat) && Number.isFinite(bias.lon)
+      ? `@${bias.lat.toFixed(3)},${bias.lon.toFixed(3)}`
+      : ''
+  const cacheKey = usOnly ? `${q.toLowerCase()}|${limit}|us${biasKey}` : `${q.toLowerCase()}|${limit}${biasKey}`
   const cached = memCache.get(cacheKey)
   if (cached && Date.now() - cached.at < TTL_MS) {
-    // Don't cache empties.
     if (cached.value.length) return cached.value
   }
 
+  const fetchLimit = usOnly ? Math.min(50, Math.max(PHOTON_US_FETCH_MIN, limit * 3)) : limit
+
   const url = new URL('https://photon.komoot.io/api/')
   url.searchParams.set('q', q)
-  url.searchParams.set('limit', String(limit))
+  url.searchParams.set('limit', String(fetchLimit))
   url.searchParams.set('lang', 'en')
-  if (opts?.bias) {
-    url.searchParams.set('lat', String(opts.bias.lat))
-    url.searchParams.set('lon', String(opts.bias.lon))
+  if (bias) {
+    url.searchParams.set('lat', String(bias.lat))
+    url.searchParams.set('lon', String(bias.lon))
+    /** Stronger preference for results near bias point (Photon default is weak). */
+    url.searchParams.set('location_bias_scale', '0.32')
+  }
+  if (usOnly && GEOCODE_SCOPE === 'us') {
+    url.searchParams.set('bbox', US_PHOTON_BBOX)
   }
 
   const res = await fetch(url.toString(), { signal: opts?.signal })
@@ -71,7 +125,17 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
   const parsed = PhotonResponseSchema.safeParse(json)
   if (!parsed.success) return []
 
-  const value = parsed.data.features
+  let features = parsed.data.features
+  if (usOnly) {
+    features = features.filter((f) => {
+      const [lon, lat] = f.geometry.coordinates
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
+      return isUnitedStatesPhotonProperties(f.properties, lat, lon)
+    })
+  }
+
+  const value = features
+    .slice(0, limit)
     .map((f) => {
       const [lon, lat] = f.geometry.coordinates
       const p = f.properties
@@ -105,4 +169,3 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
 function normalizeQuery(query: string): string {
   return query.replace(/\s+/g, ' ').trim()
 }
-

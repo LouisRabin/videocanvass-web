@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import type { Location, TrackPoint } from '../../lib/types'
 import { statusColor } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
+import { DvrSingleDateTimePicker } from '../ProbativeDvrFlow'
 
 const btn: CSSProperties = {
   border: '1px solid #e5e7eb',
@@ -724,69 +725,27 @@ export function TrackPointDrawer(props: {
     </div>
   )
 
-  const openSubjectTimePicker = () => {
-    if (!canEdit) return
-    const el = document.getElementById(`track-point-time-${props.point.id}`) as
-      | (HTMLInputElement & { showPicker?: () => void })
-      | null
-    if (!el) return
-    if (typeof el.showPicker === 'function') {
-      el.showPicker()
-    } else {
-      el.focus()
-      el.click()
-    }
-  }
-
   const timeBlock = (
     <div>
-      <div style={label}>Subject time at this point</div>
-      <button
-        type="button"
-        onClick={openSubjectTimePicker}
-        disabled={!canEdit}
-        style={{
-          ...fieldBox,
-          width: 'auto',
-          maxWidth: '100%',
-          textAlign: 'left',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'flex-start',
-          gap: 6,
-          padding: '6px 10px',
-          borderRadius: 999,
-          minHeight: 0,
-          fontSize: 13,
-          lineHeight: 1.2,
-          cursor: canEdit ? 'pointer' : 'default',
-          color: props.point.visitedAt == null ? '#6b7280' : '#111827',
-          fontWeight: props.point.visitedAt == null ? 600 : 700,
-        }}
-      >
-        <span>{props.point.visitedAt == null ? 'Pick date and time' : formatAppDateTime(props.point.visitedAt)}</span>
-        <span aria-hidden style={{ opacity: 0.7, fontSize: 12 }}>📅</span>
-      </button>
-      <input
-        id={`track-point-time-${props.point.id}`}
-        type="datetime-local"
-        step={1}
-        value={timestampToDatetimeLocalValue(props.point.visitedAt)}
-        readOnly={!canEdit}
-        onChange={(e) => {
-          const v = parseDatetimeLocalToTimestamp(e.target.value)
-          props.onUpdate(v == null ? { visitedAt: null, displayTimeOnMap: false } : { visitedAt: v })
-        }}
-        style={{
-          position: 'absolute',
-          opacity: 0,
-          width: 0,
-          height: 0,
-          pointerEvents: 'none',
-        }}
-        tabIndex={-1}
-        aria-hidden
-      />
+      {canEdit ? (
+        <DvrSingleDateTimePicker
+          legend="Subject time at this point"
+          value={timestampToDatetimeLocalValue(props.point.visitedAt)}
+          onChange={(s) => {
+            const v = parseDatetimeLocalToTimestamp(s)
+            props.onUpdate(v == null ? { visitedAt: null, displayTimeOnMap: false } : { visitedAt: v })
+          }}
+          isNarrow={!wide}
+          clearable
+        />
+      ) : (
+        <>
+          <div style={label}>Subject time at this point</div>
+          <div style={{ ...fieldBox, fontSize: 13, color: props.point.visitedAt == null ? '#6b7280' : '#111827' }}>
+            {props.point.visitedAt == null ? '—' : formatAppDateTime(props.point.visitedAt)}
+          </div>
+        </>
+      )}
       <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
         Optional. When the subject was here per your investigation—not filled in automatically.
       </div>

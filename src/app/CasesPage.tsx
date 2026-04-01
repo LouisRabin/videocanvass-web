@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState, type CSSProperties } from 'react'
 import { Layout } from './Layout'
 import { useStore } from '../lib/store'
+import { caseLastActivityMs, caseQuickCounts, casesAccessibleToUser } from '../lib/caseDashboard'
+import { canEditCaseMeta } from '../lib/casePermissions'
 import { Modal } from './Modal'
 import type { AppData, AppUser, CaseFile } from '../lib/types'
 import { formatAppDateTime } from '../lib/timeFormat'
@@ -70,10 +72,23 @@ function TeamMembersModalBody(props: {
   )
 }
 
-type ListTab = 'mine' | 'team'
+type ListTab = 'mine' | 'team' | 'all'
 
-export function CasesPage(props: { onOpenCase: (caseId: string) => void; currentUser: AppUser; onLogout: () => void }) {
-  const { ready, data, createCase, deleteCase, updateCase, addCaseCollaborator, removeCaseCollaborator } = useStore()
+export function CasesPage(props: {
+  onOpenCase: (caseId: string) => void
+  currentUser: AppUser
+  onLogout: () => void
+  onOpenAdminGlobal?: () => void
+}) {
+  const {
+    ready,
+    data,
+    createCase,
+    deleteCase,
+    updateCase,
+    addCaseCollaborator,
+    removeCaseCollaborator,
+  } = useStore()
   const [listTab, setListTab] = useState<ListTab>('mine')
   const [q, setQ] = useState('')
   const [showNewCaseForm, setShowNewCaseForm] = useState(false)
@@ -100,17 +115,58 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
     )
   }, [data.cases, data.caseCollaborators, props.currentUser.id])
 
+  const accessibleCases = useMemo(() => casesAccessibleToUser(data, props.currentUser.id), [data, props.currentUser.id])
+
+  const [ownerFilter, setOwnerFilter] = useState<'all' | 'me' | string>('all')
+  const [unitFilter, setUnitFilter] = useState<'all' | 'none' | string>('all')
+  const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'open' | 'closed'>('all')
+
+  const ownerOptions = useMemo(() => {
+    const ids = new Set<string>()
+    for (const c of accessibleCases) {
+      if (c.ownerUserId) ids.add(c.ownerUserId)
+    }
+    return [...ids].sort()
+  }, [accessibleCases])
+
+  const unitOptions = useMemo(() => {
+    const ids = new Set<string>()
+    for (const c of accessibleCases) {
+      const u = c.unitId?.trim()
+      if (u) ids.add(u)
+    }
+    return [...ids].sort()
+  }, [accessibleCases])
+
   const filtered = useMemo(() => {
-    const base = listTab === 'mine' ? mineCases : teamMemberCases
+    const base = listTab === 'mine' ? mineCases : listTab === 'team' ? teamMemberCases : accessibleCases
+    let rows = base
+    if (lifecycleFilter === 'open') rows = rows.filter((c) => c.lifecycle !== 'closed')
+    if (lifecycleFilter === 'closed') rows = rows.filter((c) => c.lifecycle === 'closed')
+    if (unitFilter === 'none') rows = rows.filter((c) => !(c.unitId?.trim()))
+    else if (unitFilter !== 'all') rows = rows.filter((c) => c.unitId === unitFilter)
+    if (ownerFilter === 'me') rows = rows.filter((c) => c.ownerUserId === props.currentUser.id)
+    else if (ownerFilter !== 'all') rows = rows.filter((c) => c.ownerUserId === ownerFilter)
+
     const needle = q.trim().toLowerCase()
-    if (!needle) return base
-    return base.filter((c) => {
+    if (!needle) return rows
+    return rows.filter((c) => {
       return (
         c.caseNumber.toLowerCase().includes(needle) ||
         (c.description ?? '').toLowerCase().includes(needle)
       )
     })
-  }, [listTab, mineCases, teamMemberCases, q])
+  }, [
+    listTab,
+    mineCases,
+    teamMemberCases,
+    accessibleCases,
+    lifecycleFilter,
+    unitFilter,
+    ownerFilter,
+    props.currentUser.id,
+    q,
+  ])
 
   const beginEditCase = useCallback((row: CaseFile) => {
     setEditingCaseId(row.id)
@@ -161,6 +217,11 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
           <button onClick={() => setShowNewCaseForm(true)} style={btnPrimary}>
             + New case
           </button>
+          {props.onOpenAdminGlobal ? (
+            <button type="button" onClick={props.onOpenAdminGlobal} style={btn}>
+              Global results
+            </button>
+          ) : null}
           <button onClick={props.onLogout} style={btn}>
             Sign out
           </button>
@@ -192,6 +253,16 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
             >
               Team member
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setListTab('all')
+                setEditingCaseId(null)
+              }}
+              style={{ ...btn, fontWeight: listTab === 'all' ? 800 : 600 }}
+            >
+              All accessible
+            </button>
           </div>
           <input
             value={q}
@@ -199,6 +270,63 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
             placeholder="Search case names…"
             style={search}
           />
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 10,
+              alignItems: 'center',
+              marginBottom: 12,
+              fontSize: 13,
+            }}
+          >
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, color: '#4b5563' }}>Owner</span>
+              <select
+                value={ownerFilter}
+                onChange={(e) => setOwnerFilter(e.target.value as 'all' | 'me' | string)}
+                style={filterSelect}
+              >
+                <option value="all">All</option>
+                <option value="me">Me</option>
+                {ownerOptions
+                  .filter((id) => id !== props.currentUser.id)
+                  .map((id) => (
+                    <option key={id} value={id}>
+                      {data.users.find((u) => u.id === id)?.displayName ?? id}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, color: '#4b5563' }}>Unit</span>
+              <select
+                value={unitFilter}
+                onChange={(e) => setUnitFilter(e.target.value as 'all' | 'none' | string)}
+                style={filterSelect}
+              >
+                <option value="all">All</option>
+                <option value="none">Unassigned</option>
+                {unitOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, color: '#4b5563' }}>Status</span>
+              <select
+                value={lifecycleFilter}
+                onChange={(e) => setLifecycleFilter(e.target.value as 'all' | 'open' | 'closed')}
+                style={filterSelect}
+              >
+                <option value="all">Open + closed</option>
+                <option value="open">Open only</option>
+                <option value="closed">Closed only</option>
+              </select>
+            </label>
+          </div>
 
           <Modal
             title="Create case"
@@ -280,13 +408,15 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
             <div style={empty}>
               {listTab === 'mine'
                 ? 'No cases for this profile yet. Create one to start tracking addresses.'
-                : 'No shared cases yet. When another detective adds you to a case, it appears here.'}
+                : listTab === 'team'
+                  ? 'No shared cases yet. When another detective adds you to a case, it appears here.'
+                  : 'No cases match these filters, or you have no accessible cases.'}
             </div>
           ) : (
             <div style={{ display: 'grid', gap: 8 }}>
               {filtered.map((c) => (
                 <div key={c.id} style={card}>
-                  {listTab === 'team' ? (
+                  {listTab === 'team' || (listTab === 'all' && c.ownerUserId !== props.currentUser.id) ? (
                     <div style={{ display: 'grid', gap: 6, minWidth: 0, width: '100%' }}>
                       {isNarrow ? (
                         <>
@@ -351,9 +481,19 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
                       )}
                       <div style={{ color: '#6b7280', fontSize: 11, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
                         Owner:{' '}
-                        {data.users.find((u) => u.id === c.ownerUserId)?.displayName ?? c.ownerUserId} · Updated{' '}
-                        {formatAppDateTime(c.updatedAt)}
+                        {data.users.find((u) => u.id === c.ownerUserId)?.displayName ?? c.ownerUserId} ·{' '}
+                        {c.lifecycle === 'closed' ? 'Closed' : 'Open'} · Updated {formatAppDateTime(c.updatedAt)}
                       </div>
+                      {(() => {
+                        const q = caseQuickCounts(data, c.id)
+                        const last = caseLastActivityMs(data, c.id)
+                        return (
+                          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                            {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks · Last activity{' '}
+                            {formatAppDateTime(last)}
+                          </div>
+                        )
+                      })()}
                     </div>
                   ) : editingCaseId === c.id ? (
                     <div style={{ display: 'grid', gap: 8, minWidth: 0, width: '100%' }}>
@@ -615,9 +755,45 @@ export function CasesPage(props: { onOpenCase: (caseId: string) => void; current
                           </div>
                         </div>
                       )}
-                      <div style={{ color: '#6b7280', fontSize: 11, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
-                        Updated {formatAppDateTime(c.updatedAt)}
+                      <div
+                        style={{
+                          color: '#6b7280',
+                          fontSize: 11,
+                          overflowWrap: 'anywhere',
+                          wordBreak: 'break-word',
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 8,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <span>
+                          {c.lifecycle === 'closed' ? 'Closed' : 'Open'} · Updated {formatAppDateTime(c.updatedAt)}
+                        </span>
+                        {canEditCaseMeta(data, c.id, props.currentUser.id) ? (
+                          <button
+                            type="button"
+                            style={{ ...btn, fontSize: 11, padding: '4px 8px' }}
+                            onClick={() =>
+                              void updateCase(props.currentUser.id, c.id, {
+                                lifecycle: c.lifecycle === 'closed' ? 'open' : 'closed',
+                              })
+                            }
+                          >
+                            {c.lifecycle === 'closed' ? 'Reopen' : 'Close case'}
+                          </button>
+                        ) : null}
                       </div>
+                      {(() => {
+                        const q = caseQuickCounts(data, c.id)
+                        const last = caseLastActivityMs(data, c.id)
+                        return (
+                          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                            {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks · Last activity{' '}
+                            {formatAppDateTime(last)}
+                          </div>
+                        )
+                      })()}
                     </div>
                   )}
                 </div>
@@ -649,8 +825,17 @@ const search: React.CSSProperties = {
   border: '1px solid #e5e7eb',
   borderRadius: 12,
   padding: '10px 12px',
-  marginBottom: 12,
+  marginBottom: 8,
   fontSize: 16,
+}
+
+const filterSelect: React.CSSProperties = {
+  border: '1px solid #e5e7eb',
+  borderRadius: 8,
+  padding: '6px 8px',
+  fontSize: 14,
+  maxWidth: '100%',
+  boxSizing: 'border-box',
 }
 
 const empty: React.CSSProperties = {

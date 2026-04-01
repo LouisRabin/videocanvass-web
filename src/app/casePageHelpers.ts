@@ -42,6 +42,27 @@ export function isProvisionalCanvassLabel(text: string | undefined | null): bool
   return false
 }
 
+/** Trailing country names after the last comma (common geocoder tails). */
+const ADDRESS_LIST_COUNTRY_TAIL =
+  /,\s*(United States(?:\s+of\s+America)?|USA|U\.S\.A\.?|U\.S\.?|Canada|Mexico|United Kingdom|UK)\s*$/i
+
+/**
+ * Shorter label for map list rows: remove trailing postal/ZIP and country when clearly present.
+ * Does not change stored `addressText`; display-only.
+ */
+export function formatAddressLineForMapList(addressText: string): string {
+  let s = (addressText ?? '').trim()
+  if (!s) return s
+  let prev = ''
+  while (s !== prev) {
+    prev = s
+    s = s.replace(ADDRESS_LIST_COUNTRY_TAIL, '').trim()
+    s = s.replace(/,\s*\d{5}(?:-\d{4})?\s*$/i, '').trim()
+    s = s.replace(/,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$/i, '').trim()
+  }
+  return s
+}
+
 export function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
   const ds = a.sequence - b.sequence
   if (ds !== 0) return ds

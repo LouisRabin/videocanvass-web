@@ -1,6 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  appDataSyncFingerprint,
   fetchRemotePayloadUpdatedAt,
+  caseCollaboratorTombstoneKey,
+  findDuplicateLocationForCase,
   loadData,
   mergeAppData,
   normalizeAppData,
@@ -9,8 +12,11 @@ import {
   saveData,
   writeLocalDataCache,
 } from './db'
+import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
-import { setSyncStatus } from './syncStatus'
+import { logVcAudit } from './relational/auditLog'
+import { deleteCaseAttachmentFromStorage, uploadCaseAttachmentFromDataUrl } from './relational/storageAttachment'
+import { adjustPendingRemoteSaves, setSyncStatus } from './syncStatus'
 import { newId } from './id'
 import { pickRouteColorForNewTrack } from './trackColors'
 import {
@@ -52,7 +58,7 @@ type StoreState = {
   updateCase: (
     actorUserId: string,
     caseId: string,
-    patch: Partial<Pick<CaseFile, 'caseNumber' | 'title' | 'description'>>,
+    patch: Partial<Pick<CaseFile, 'caseNumber' | 'title' | 'description' | 'lifecycle'>>,
   ) => Promise<void>
   addCaseAttachment: (
     actorUserId: string,
@@ -119,6 +125,7 @@ function pushTombstone(ids: string[], id: string): string[] {
 }
 
 function ensurePocUsers(data: AppData): AppData {
+  if (relationalBackendEnabled()) return data
   if (data.users.length > 0) return data
   const now = Date.now()
   const users: AppUser[] = [
@@ -151,6 +158,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     deletedTrackIds: [],
     deletedTrackPointIds: [],
     deletedCaseAttachmentIds: [],
+    deletedCaseCollaboratorKeys: [],
   })
   const dataRef = useRef<AppData>({
     version: 1,
@@ -166,9 +174,12 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     deletedTrackIds: [],
     deletedTrackPointIds: [],
     deletedCaseAttachmentIds: [],
+    deletedCaseCollaboratorKeys: [],
   })
   /** Last seen Supabase `vc_app_state.updated_at` to skip redundant full pulls. */
   const lastRemoteUpdatedAtRef = useRef<string | null>(null)
+  /** Avoid overlapping pull/merge work (poll + realtime can stack and freeze the UI). */
+  const syncPullInFlightRef = useRef(false)
   /** Serialize remote commits so save completions apply in order. */
   const remoteCommitChainRef = useRef(Promise.resolve())
 
@@ -193,6 +204,21 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     return () => {
       alive = false
     }
+  }, [])
+
+  /** Auth session changes reload the dataset (relational backend only). */
+  useEffect(() => {
+    if (!relationalBackendEnabled() || !supabase) return
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async () => {
+      const d = await loadData()
+      const next = ensurePocUsers(d)
+      dataRef.current = next
+      setData(next)
+      await writeLocalDataCache(next)
+    })
+    return () => subscription.unsubscribe()
   }, [])
 
   /**
@@ -223,42 +249,131 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       dataRef.current = optimistic
       setData(optimistic)
       void writeLocalDataCache(optimistic)
+      adjustPendingRemoteSaves(1)
       remoteCommitChainRef.current = remoteCommitChainRef.current
         .then(() => commitOptimisticToRemote(optimistic))
         .catch((e) => {
           console.warn('Remote commit chain failed:', e)
         })
+        .finally(() => {
+          adjustPendingRemoteSaves(-1)
+        })
     },
     [commitOptimisticToRemote],
   )
 
-  /** Supabase Realtime + periodic pull so multiple detectives on the same workspace see each other's changes. */
+  /** Supabase Realtime + periodic pull: relational tables or legacy shared JSON blob. */
   useEffect(() => {
     if (!ready || !hasSupabaseConfig || !supabase) return
     const sb = supabase
 
     let cancelled = false
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    let resumeTimer: ReturnType<typeof setTimeout> | null = null
 
-    const applyRemoteMerge = async (fromRealtime: boolean) => {
-      if (cancelled) return
+    if (relationalBackendEnabled()) {
+      const applyRelationalMerge = async () => {
+        if (cancelled || syncPullInFlightRef.current) return
+        syncPullInFlightRef.current = true
+        try {
+          const {
+            data: { session },
+          } = await sb.auth.getSession()
+          if (!session?.user) return
+          const cur = dataRef.current
+          const merged = await pullAndMergeWithLocal(cur)
+          if (cancelled || !merged) return
+          if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) return
+          dataRef.current = merged
+          setData(merged)
+          await writeLocalDataCache(merged)
+          setSyncStatus({
+            mode: 'supabase_ok',
+            message: 'Updated from database',
+            remoteMergeNotice:
+              'Some entries were updated from the server. Re-check open cases if something looks unexpected.',
+          })
+        } catch (e) {
+          console.warn('Relational sync pull failed:', e)
+        } finally {
+          syncPullInFlightRef.current = false
+        }
+      }
+
+      const scheduleRelationalMerge = () => {
+        if (debounceTimer) clearTimeout(debounceTimer)
+        debounceTimer = window.setTimeout(() => {
+          debounceTimer = null
+          void applyRelationalMerge()
+        }, 120)
+      }
+
+      const scheduleResumeRelational = () => {
+        if (document.visibilityState !== 'visible') return
+        if (resumeTimer) clearTimeout(resumeTimer)
+        resumeTimer = window.setTimeout(() => {
+          resumeTimer = null
+          void applyRelationalMerge()
+        }, 80)
+      }
+
+      const tables = [
+        'vc_cases',
+        'vc_locations',
+        'vc_tracks',
+        'vc_track_points',
+        'vc_case_collaborators',
+        'vc_case_attachments',
+        'vc_profiles',
+      ] as const
+      const channel = sb.channel('vc_relational_changes')
+      for (const table of tables) {
+        channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => scheduleRelationalMerge())
+      }
+      void channel.subscribe()
+      const pollTimer = window.setInterval(() => void applyRelationalMerge(), REMOTE_SYNC_POLL_MS)
+      void applyRelationalMerge()
+
+      document.addEventListener('visibilitychange', scheduleResumeRelational)
+      window.addEventListener('pageshow', scheduleResumeRelational)
+      window.addEventListener('online', scheduleResumeRelational)
+
+      return () => {
+        cancelled = true
+        window.clearInterval(pollTimer)
+        if (debounceTimer) window.clearTimeout(debounceTimer)
+        if (resumeTimer) window.clearTimeout(resumeTimer)
+        document.removeEventListener('visibilitychange', scheduleResumeRelational)
+        window.removeEventListener('pageshow', scheduleResumeRelational)
+        window.removeEventListener('online', scheduleResumeRelational)
+        void sb.removeChannel(channel)
+      }
+    }
+
+    const applyRemoteMerge = async (fromRealtime: boolean, force = false) => {
+      if (cancelled || syncPullInFlightRef.current) return
+      syncPullInFlightRef.current = true
       try {
         const ts = await fetchRemotePayloadUpdatedAt()
-        if (cancelled || ts == null) return
-        // Realtime can fire for a new payload while `updated_at` still matches our last poll (same-ms writes);
-        // skipping would leave route steps out of sync across devices.
-        if (!fromRealtime && ts === lastRemoteUpdatedAtRef.current) return
-        lastRemoteUpdatedAtRef.current = ts
+        if (!force) {
+          if (cancelled || ts == null) return
+          if (!fromRealtime && ts === lastRemoteUpdatedAtRef.current) return
+        } else if (cancelled) {
+          return
+        }
+        if (ts != null) lastRemoteUpdatedAtRef.current = ts
         const cur = dataRef.current
         const merged = await pullAndMergeWithLocal(cur)
         if (cancelled || !merged) return
-        if (JSON.stringify(merged) === JSON.stringify(cur)) return
+        if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) return
         dataRef.current = merged
         setData(merged)
         await writeLocalDataCache(merged)
         setSyncStatus({ mode: 'supabase_ok', message: 'Updated from shared workspace' })
       } catch (e) {
         console.warn('Collaborative sync pull failed:', e)
+      } finally {
+        syncPullInFlightRef.current = false
       }
     }
 
@@ -267,7 +382,16 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
         void applyRemoteMerge(fromRealtime)
-      }, 400)
+      }, 120)
+    }
+
+    const scheduleResumeMerge = () => {
+      if (document.visibilityState !== 'visible') return
+      if (resumeTimer) clearTimeout(resumeTimer)
+      resumeTimer = window.setTimeout(() => {
+        resumeTimer = null
+        void applyRemoteMerge(false, true)
+      }, 80)
     }
 
     const pollTimer = window.setInterval(() => void applyRemoteMerge(false), REMOTE_SYNC_POLL_MS)
@@ -289,13 +413,20 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     void fetchRemotePayloadUpdatedAt().then((t) => {
       if (!cancelled && t) lastRemoteUpdatedAtRef.current = t
     })
-    // Local-first boot can skip remote on first paint; do one immediate merge pass.
     void applyRemoteMerge(false)
+
+    document.addEventListener('visibilitychange', scheduleResumeMerge)
+    window.addEventListener('pageshow', scheduleResumeMerge)
+    window.addEventListener('online', scheduleResumeMerge)
 
     return () => {
       cancelled = true
       window.clearInterval(pollTimer)
       if (debounceTimer) window.clearTimeout(debounceTimer)
+      if (resumeTimer) window.clearTimeout(resumeTimer)
+      document.removeEventListener('visibilitychange', scheduleResumeMerge)
+      window.removeEventListener('pageshow', scheduleResumeMerge)
+      window.removeEventListener('online', scheduleResumeMerge)
       void sb.removeChannel(channel)
     }
   }, [ready])
@@ -309,11 +440,14 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       const c: CaseFile = {
         id,
         ownerUserId: input.ownerUserId.trim(),
+        organizationId: null,
+        unitId: null,
         caseNumber: caseName,
         title: caseName,
         description: (input.description ?? '').trim(),
         createdAt: now,
         updatedAt: now,
+        lifecycle: 'open',
       }
       const next: AppData = {
         ...current,
@@ -329,6 +463,15 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     async (actorUserId: string, caseId: string) => {
       const current = dataRef.current
       assertPermission(canDeleteCase(current, caseId, actorUserId))
+      if (relationalBackendEnabled() && supabase) {
+        void logVcAudit(supabase, {
+          actorUserId: actorUserId.trim(),
+          action: 'case.delete',
+          entityType: 'case',
+          entityId: caseId,
+          caseId,
+        })
+      }
       const next: AppData = {
         ...current,
         deletedCaseIds: pushTombstone(current.deletedCaseIds, caseId),
@@ -348,7 +491,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     async (
       actorUserId: string,
       caseId: string,
-      patch: Partial<Pick<CaseFile, 'caseNumber' | 'title' | 'description'>>,
+      patch: Partial<Pick<CaseFile, 'caseNumber' | 'title' | 'description' | 'lifecycle'>>,
     ) => {
       const now = Date.now()
       const current = dataRef.current
@@ -382,12 +525,27 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       const current = dataRef.current
       const actor = actorUserId.trim()
       assertPermission(canAddCaseContent(current, input.caseId, actor))
+      let imageDataUrl = url
+      let imageStoragePath: string | null = null
+      let contentType = ''
+      if (relationalBackendEnabled() && supabase) {
+        try {
+          const up = await uploadCaseAttachmentFromDataUrl(supabase, input.caseId, id, url)
+          imageStoragePath = up.path
+          contentType = up.contentType
+          imageDataUrl = ''
+        } catch (e) {
+          console.warn('Attachment upload failed; storing data URL only:', e)
+        }
+      }
       const row: CaseAttachment = {
         id,
         caseId: input.caseId,
         kind: input.kind,
         caption: (input.caption ?? '').trim().slice(0, 200),
-        imageDataUrl: url,
+        imageDataUrl,
+        imageStoragePath,
+        contentType,
         createdByUserId: actor,
         createdAt: now,
         updatedAt: now,
@@ -439,6 +597,18 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       if (!att) return
       assertPermission(canDeleteCaseAttachment(current, actorUserId, att))
       const caseId = att.caseId
+      if (relationalBackendEnabled() && supabase && att.imageStoragePath?.trim()) {
+        void deleteCaseAttachmentFromStorage(supabase, att.imageStoragePath)
+      }
+      if (relationalBackendEnabled() && supabase) {
+        void logVcAudit(supabase, {
+          actorUserId: actorUserId.trim(),
+          action: 'attachment.delete',
+          entityType: 'case_attachment',
+          entityId: attachmentId,
+          caseId,
+        })
+      }
       const next: AppData = {
         ...current,
         deletedCaseAttachmentIds: pushTombstone(current.deletedCaseAttachmentIds, attachmentId),
@@ -469,6 +639,16 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         ...current,
         caseCollaborators: [...current.caseCollaborators, row],
       }
+      if (relationalBackendEnabled() && supabase) {
+        void logVcAudit(supabase, {
+          actorUserId: actorUserId.trim(),
+          action: 'case_collaborator.add',
+          entityType: 'case_collaborator',
+          entityId: uid,
+          caseId: input.caseId,
+          meta: { collaboratorUserId: uid },
+        })
+      }
       await persist(next)
     },
     [persist],
@@ -479,9 +659,21 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       const current = dataRef.current
       assertPermission(canManageCollaborators(current, input.caseId, actorUserId))
       const uid = input.collaboratorUserId.trim()
+      const collabKey = caseCollaboratorTombstoneKey(input.caseId, uid)
       const next: AppData = {
         ...current,
+        deletedCaseCollaboratorKeys: pushTombstone(current.deletedCaseCollaboratorKeys, collabKey),
         caseCollaborators: current.caseCollaborators.filter((cc) => !(cc.caseId === input.caseId && cc.userId === uid)),
+      }
+      if (relationalBackendEnabled() && supabase) {
+        void logVcAudit(supabase, {
+          actorUserId: actorUserId.trim(),
+          action: 'case_collaborator.remove',
+          entityType: 'case_collaborator',
+          entityId: uid,
+          caseId: input.caseId,
+          meta: { collaboratorUserId: uid },
+        })
       }
       await persist(next)
     },
@@ -500,9 +692,35 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       notes?: string
     }) => {
       const now = Date.now()
-      const id = newId('loc')
       const current = dataRef.current
       assertPermission(canAddCaseContent(current, input.caseId, input.createdByUserId.trim()))
+      const dup = findDuplicateLocationForCase(
+        current.locations,
+        input.caseId,
+        input.addressText.trim(),
+        input.lat,
+        input.lon,
+      )
+      if (dup) {
+        const inNotes = (input.notes ?? '').trim()
+        const mergedLoc: Location = {
+          ...dup,
+          status: input.status,
+          notes: inNotes || dup.notes,
+          bounds: dup.bounds ?? input.bounds ?? null,
+          addressText:
+            input.addressText.trim().length > dup.addressText.trim().length ? input.addressText.trim() : dup.addressText,
+          updatedAt: now,
+        }
+        const next: AppData = {
+          ...current,
+          locations: current.locations.map((l) => (l.id === dup.id ? mergedLoc : l)),
+          cases: current.cases.map((c) => (c.id === input.caseId ? { ...c, updatedAt: now } : c)),
+        }
+        persist(next)
+        return dup.id
+      }
+      const id = newId('loc')
       const loc: Location = {
         id,
         caseId: input.caseId,

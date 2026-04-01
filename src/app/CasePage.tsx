@@ -32,8 +32,15 @@ import { GEOCODE_SCOPE, reverseGeocodeAddressText, type PlaceSuggestion } from '
 import { fetchBuildingFootprint } from '../lib/building'
 import { buildResolvedTrackColorMap, TRACK_DEFAULT_COLORS_FIRST_FOUR } from '../lib/trackColors'
 import { formatAppDateTime } from '../lib/timeFormat'
-import { ProbativeDvrFlowModals } from './ProbativeDvrFlow'
+import { DvrCalculatorStep, ProbativeDvrFlowModals } from './ProbativeDvrFlow'
 import { CASE_DESCRIPTION_MAX_CHARS, clampCaseDescription } from '../lib/caseMeta'
+import {
+  getMobileOS,
+  nativeMobileSearchInputProps,
+  nativeMobileTextInputProps,
+  nativeMobileTextareaProps,
+} from '../lib/mobilePlatform'
+import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
 import { useTargetMode } from '../lib/targetMode'
 
 // See docs/CODEMAP.md; geocode/footprint policy in HANDOFF.md.
@@ -45,6 +52,7 @@ import {
   extendBoundsWithPathPoints,
   findLocationByAddressText,
   findLocationHitByMapClick,
+  formatAddressLineForMapList,
   isProvisionalCanvassLabel,
   LIST_STATUS_SORT_ORDER,
   OUTLINE_CONCURRENCY,
@@ -54,6 +62,8 @@ import {
   sortTrackPointsStable,
   writeStoredCaseMapFocus,
 } from './casePageHelpers'
+
+import { buildVisitDensityHeatmapCollection } from './addressesMapLibreHelpers'
 
 import {
   LegendChip,
@@ -84,138 +94,16 @@ import {
 import { useCaseGeocodeSearch } from './case/hooks/useCaseGeocodeSearch'
 import { useMapPaneOutsideDismiss } from './case/hooks/useMapPaneOutsideDismiss'
 import { WebCaseWorkspace } from './case/web/WebCaseWorkspace'
+import { CaseAttachmentImage } from './CaseAttachmentImage'
 
 /** Longer than AddressesMapLibre SINGLE_TAP_DEFER_MS (270) so open + deferred map tap don't dismiss the dock. */
 const MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS = 350
 /** Ignore the very next map press after dismissing address search so it does not select/add. */
 const ADDR_DISMISS_GRACE_MS = 360
+/** After closing floating address search, block map click handling this long (longer than SINGLE_TAP_DEFER_MS). */
+const ADDR_MAP_INTERACTION_FREEZE_MS = 450
 /** Default inset below map canvas (attribution / breathing room). */
 const MAP_CANVAS_BOTTOM_RESERVE = 'clamp(8px, 1.2vw, 14px)'
-
-const listNotesPeekRow: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  width: '100%',
-  boxSizing: 'border-box',
-  background: 'rgba(249,250,251,0.95)',
-  padding: '8px 10px',
-  borderRadius: 8,
-}
-
-function CaseListSelectedLocationPanel(props: {
-  location: Location
-  canEdit: boolean
-  canDelete: boolean
-  footprintLoading: boolean
-  footprintFailed: boolean
-  onNotesChange: (notes: string) => void
-  onRemove: () => void
-}) {
-  const [notesOpen, setNotesOpen] = useState(false)
-  const l = props.location
-  const removeBtn =
-    props.canDelete ? (
-      <button
-        type="button"
-        style={{ ...btnDanger, fontSize: 12, flexShrink: 0 }}
-        onClick={() => props.onRemove()}
-        aria-label="Remove address from case"
-      >
-        Remove
-      </button>
-    ) : null
-  if (!notesOpen) {
-    return (
-      <div style={{ gridColumn: '1 / -1' }} onClick={(e) => e.stopPropagation()}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '8px 0',
-            background: '#f9fafb',
-            borderRadius: 8,
-          }}
-        >
-          <MapPaneEdgeToggle
-            expanded={false}
-            placement="drawerTopSeam"
-            ariaLabel="Expand notes and details"
-            onClick={() => setNotesOpen(true)}
-          />
-        </div>
-        {removeBtn ? (
-          <div style={{ ...listNotesPeekRow, justifyContent: 'flex-end', marginTop: 6 }}>{removeBtn}</div>
-        ) : null}
-      </div>
-    )
-  }
-  return (
-    <div
-      style={{
-        gridColumn: '1 / -1',
-        paddingTop: 12,
-        marginTop: 4,
-        borderTop: '1px solid #e5e7eb',
-        display: 'grid',
-        gap: 10,
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '8px 0',
-          background: '#f9fafb',
-          borderRadius: 8,
-        }}
-      >
-        <MapPaneEdgeToggle
-          expanded
-          placement="drawerTopSeam"
-          ariaLabel="Collapse notes and details"
-          onClick={() => setNotesOpen(false)}
-        />
-      </div>
-      {removeBtn ? (
-        <div
-          style={{
-            ...listNotesPeekRow,
-            background: '#f9fafb',
-            border: '1px solid #e5e7eb',
-            justifyContent: 'flex-end',
-            marginTop: 6,
-          }}
-        >
-          {removeBtn}
-        </div>
-      ) : null}
-      {props.footprintLoading ? (
-        <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
-          Loading building outline in background…
-        </div>
-      ) : null}
-      {props.footprintFailed ? (
-        <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
-          Building outline unavailable for this point (notes still save normally).
-        </div>
-      ) : null}
-      <div>
-        <div style={label}>Notes</div>
-        <textarea
-          value={l.notes}
-          readOnly={!props.canEdit}
-          onChange={(e) => props.onNotesChange(e.target.value)}
-          placeholder="What did you observe?"
-          style={{ ...field, minHeight: 96, resize: 'vertical', maxWidth: '100%', boxSizing: 'border-box' }}
-        />
-      </div>
-    </div>
-  )
-}
 
 /** Wide web: notes seam expanded with no map selection — no full white “dead” bar; only this sheet when opened. */
 function WideMapNotesPlaceholder(props: { onDismiss: () => void }) {
@@ -297,6 +185,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   } =
     useStore()
   const actorId = props.currentUser.id
+  const canUseVisitHeatmap = props.currentUser.appRole === 'admin'
   const c = data.cases.find((x) => x.id === props.caseId) ?? null
   const canEditCaseMetaHere = useMemo(
     () => (c ? canEditCaseMeta(data, c.id, actorId) : false),
@@ -327,10 +216,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [photoViewerIndex, setPhotoViewerIndex] = useState<number | null>(null)
   const targetMode = useTargetMode()
   const isNarrow = targetMode === 'mobile'
+  const mobileOS = useMemo(() => (targetMode === 'mobile' ? getMobileOS() : null), [targetMode])
   const [geoBias, setGeoBias] = useState<{ lat: number; lon: number } | null>(null)
+  const mapRef = useRef<UnifiedCaseMapHandle | null>(null)
+  const mapSearchCenterFallback = useCallback(() => mapRef.current?.getCenter() ?? null, [])
   const [mapLeftToolDockOpen, setMapLeftToolDockOpen] = useState(false)
-  const [mapLeftToolSection, setMapLeftToolSection] = useState<null | 'filters' | 'views' | 'photos' | 'tracks'>(null)
-  const { clear: clearQuickMenuSearch } = useCaseGeocodeSearch('', { bias: geoBias })
+  type MapToolsDockSection = 'filters' | 'views' | 'photos' | 'tracks' | 'dvr'
+  const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
+  /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
+  const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
+  const { clear: clearQuickMenuSearch } = useCaseGeocodeSearch('', {
+    bias: geoBias,
+    mapCenterFallback: mapSearchCenterFallback,
+  })
   const [dvrLinkLocationSession, setDvrLinkLocationSession] = useState<null | { notesAppend: string }>(null)
   const {
     query: dvrLinkAddr,
@@ -338,7 +236,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     results: dvrLinkSug,
     setResults: setDvrLinkSug,
     loading: dvrLinkLoading,
-  } = useCaseGeocodeSearch('', { enabled: !!dvrLinkLocationSession, bias: geoBias })
+  } = useCaseGeocodeSearch('', {
+    enabled: !!dvrLinkLocationSession,
+    bias: geoBias,
+    mapCenterFallback: mapSearchCenterFallback,
+  })
   const [dvrLinkPicked, setDvrLinkPicked] = useState<null | PlaceSuggestion>(null)
   const [dvrLinkSaving, setDvrLinkSaving] = useState(false)
   const [detailOverlayHeightPx, setDetailOverlayHeightPx] = useState(0)
@@ -346,6 +248,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     if (isNarrow) {
       setMapLeftToolDockOpen(false)
       setMapLeftToolSection(null)
+      setWideSidebarListReveal(false)
     }
   }, [isNarrow])
 
@@ -359,6 +262,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const mapDrawerSeamToggleRef = useRef<HTMLDivElement>(null)
   const mapToolbarExpandToggleRef = useRef<HTMLDivElement>(null)
   const addrSearchInputRef = useRef<HTMLInputElement>(null)
+  /** After address search dismiss, `performance.now()` deadline for ignoring map taps (see ADDR_MAP_INTERACTION_FREEZE_MS). */
+  const addrMapInteractionFreezeUntilRef = useRef(0)
   /** Keep latest UI flags for document/window capture handler (avoids stale `menuOpen` / `addrMapDismiss` closures). */
   const mapLeftToolDockOpenRef = useRef(false)
   const addrFieldFocusedRef = useRef(false)
@@ -490,11 +395,34 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [locationDetailOpen, setLocationDetailOpen] = useState(false)
+  /** Mobile list: notes in a modal instead of expanding the row. */
+  const [listAddressNotesForId, setListAddressNotesForId] = useState<string | null>(null)
+  /** Map list: one row expanded at a time for actions + status (collapsed shows address + badge + updated only). */
+  const [listRowExpandedId, setListRowExpandedId] = useState<string | null>(null)
+  const listNotesLocation = useMemo(
+    () =>
+      listAddressNotesForId
+        ? data.locations.find((lo) => lo.id === listAddressNotesForId) ?? null
+        : null,
+    [data.locations, listAddressNotesForId],
+  )
   const selected = useMemo(() => (selectedId ? locations.find((l) => l.id === selectedId) ?? null : null), [locations, selectedId])
 
   useEffect(() => {
     if (!selectedId) setLocationDetailOpen(false)
   }, [selectedId])
+
+  useEffect(() => {
+    setListAddressNotesForId(null)
+    setListRowExpandedId(null)
+  }, [props.caseId])
+
+  useEffect(() => {
+    if (!listAddressNotesForId) return
+    if (!data.locations.some((l) => l.id === listAddressNotesForId)) {
+      setListAddressNotesForId(null)
+    }
+  }, [data.locations, listAddressNotesForId])
 
   /** Map tap: always select the location and open the notes/drawer (one click). */
   const onMapLocationPress = useCallback((id: string) => {
@@ -526,7 +454,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   })
   const caseTab = workspaceMode.caseTab
   const viewMode = workspaceMode.viewMode
+  useEffect(() => {
+    if (caseTab !== 'addresses') setWideSidebarListReveal(false)
+  }, [caseTab])
   const [webToolsCollapsed, setWebToolsCollapsed] = useState(true)
+
+  useEffect(() => {
+    if (caseTab !== 'addresses' || viewMode !== 'list') {
+      setListRowExpandedId(null)
+    }
+  }, [caseTab, viewMode])
+
+  useEffect(() => {
+    setListRowExpandedId((exp) => {
+      if (exp == null) return null
+      if (selectedId == null) return null
+      return exp === selectedId ? exp : null
+    })
+  }, [selectedId])
 
   const setWorkspaceViewMode = useCallback(
     (nextViewMode: 'map' | 'list') => {
@@ -535,8 +480,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         const next = prev.caseTab === 'tracking' ? { caseTab: prev.caseTab, viewMode: 'map' as const } : { ...prev, viewMode: nextViewMode }
         return prev.caseTab === next.caseTab && prev.viewMode === next.viewMode ? prev : next
       })
+      if (!isNarrow && resolvedView === 'map') {
+        setWideSidebarListReveal(false)
+      }
       if (resolvedView === 'list') {
         setLocationDetailOpen(false)
+        if (!isNarrow && caseTab === 'addresses') {
+          setWebToolsCollapsed(false)
+        }
       }
       if (isNarrow && resolvedView === 'list') {
         closeMapToolsDock()
@@ -577,6 +528,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }, [webToolsCanCollapse, webToolsCollapsed])
 
   const [filterLegendOpen, setFilterLegendOpen] = useState(false)
+  const [visitHeatmapOn, setVisitHeatmapOn] = useState(false)
+
+  useEffect(() => {
+    if (!canUseVisitHeatmap) setVisitHeatmapOn(false)
+  }, [canUseVisitHeatmap])
   const [caseMetaEditing, setCaseMetaEditing] = useState(false)
   const [caseNameDraft, setCaseNameDraft] = useState('')
   const [caseDescDraft, setCaseDescDraft] = useState('')
@@ -623,6 +579,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [autoContinuationTrackId, setAutoContinuationTrackId] = useState<string | null>(null)
   const [visibleTrackIds, setVisibleTrackIds] = useState<Record<string, boolean>>({})
   const caseTrackPoints = useMemo(() => data.trackPoints.filter((p) => p.caseId === props.caseId), [data.trackPoints, props.caseId])
+
+  const visitHeatmapGeojson = useMemo(
+    () =>
+      canUseVisitHeatmap
+        ? buildVisitDensityHeatmapCollection(locations, caseTrackPoints, props.caseId)
+        : null,
+    [canUseVisitHeatmap, locations, caseTrackPoints, props.caseId],
+  )
   const [trackLabelDrafts, setTrackLabelDrafts] = useState<Record<string, string>>({})
   const trackLabelFocusRef = useRef<Record<string, boolean>>({})
   const trackLabelDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
@@ -780,7 +744,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setResults: setSuggestions,
     loading: loadingSug,
     setLoading: setLoadingSug,
-  } = useCaseGeocodeSearch('', { bias: geoBias })
+  } = useCaseGeocodeSearch('', { bias: geoBias, mapCenterFallback: mapSearchCenterFallback })
   const [addrFieldFocused, setAddrFieldFocused] = useState(false)
   const addrBlurClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearAddrFieldFocusSoon = useCallback(() => {
@@ -791,8 +755,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }, 180)
   }, [])
   const addrAutocompleteEngaged = addrFieldFocused || loadingSug || suggestions.length > 0
-  const suppressCanvassMapAdd = caseTab === 'addresses' && addrAutocompleteEngaged
   const dismissAddressSearch = useCallback(() => {
+    addrMapInteractionFreezeUntilRef.current = performance.now() + ADDR_MAP_INTERACTION_FREEZE_MS
+    mapRef.current?.clearPendingMapTap()
     setAddrFieldFocused(false)
     setSuggestions([])
     setLoadingSug(false)
@@ -825,6 +790,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [probativePlacementSession, setProbativePlacementSession] = useState<null | { trackId: string }>(null)
   /** Blocks duplicate map taps before React re-renders after probative single-shot placement. */
   const probativePlacementLockRef = useRef(false)
+
+  const addrSearchMapShieldActive =
+    addrAutocompleteEngaged && !probativePlacementSession && (caseTab === 'tracking' || caseTab === 'addresses')
 
   const postProbativeEffectiveTrackId = useMemo(() => {
     if (postProbativeMarkerPhase !== 'ask' || !caseTracks.length) return ''
@@ -1088,6 +1056,15 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setProbativeFlow((pf) => (pf && pf.step === 'accuracy' ? { ...pf, step: 'calc' } : pf))
   }, [])
 
+  const finalizeDvrOnlyCalculatorApply = useCallback((notesAppend: string) => {
+    setProbativeFlow(null)
+    setDvrLinkPicked(null)
+    setDvrLinkAddr('')
+    setDvrLinkSug([])
+    setDvrLinkSaving(false)
+    setDvrLinkLocationSession({ notesAppend })
+  }, [])
+
   const handleProbativeCalcBack = useCallback(() => {
     setProbativeFlow((pf) => {
       if (!pf) return pf
@@ -1113,12 +1090,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       const f = probativeFlowRef.current
       if (!f) return
       if (f.target.kind === 'dvr_only') {
-        setProbativeFlow(null)
-        setDvrLinkPicked(null)
-        setDvrLinkAddr('')
-        setDvrLinkSug([])
-        setDvrLinkSaving(false)
-        setDvrLinkLocationSession({ notesAppend })
+        finalizeDvrOnlyCalculatorApply(notesAppend)
         return
       }
       const t = f.target
@@ -1134,8 +1106,20 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         void completePendingLocation(t.pending, 'probativeFootage', notesAppend)
       }
     },
-    [completePendingLocation, data.locations, updateLocation],
+    [completePendingLocation, data.locations, finalizeDvrOnlyCalculatorApply, updateLocation],
   )
+
+  useEffect(() => {
+    if (probativeFlow != null) {
+      setMapLeftToolSection((s) => (s === 'dvr' ? null : s))
+    }
+  }, [probativeFlow])
+
+  useEffect(() => {
+    if (mapLeftToolSection === 'dvr' && !isNarrow && webToolsCanCollapse) {
+      setWebToolsCollapsed(false)
+    }
+  }, [mapLeftToolSection, isNarrow, webToolsCanCollapse])
 
   useEffect(() => {
     const available = OUTLINE_CONCURRENCY - outlineInFlightRef.current.size
@@ -1215,14 +1199,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }, [selectedId, enqueueOutlineForLocation])
 
   useEffect(() => {
-    if (!navigator.geolocation) return
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setGeoBias({ lat: pos.coords.latitude, lon: pos.coords.longitude })
-      },
-      () => {},
-      { enableHighAccuracy: false, timeout: 4000, maximumAge: 5 * 60 * 1000 },
-    )
+    let cancelled = false
+    void (async () => {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) return
+      const perm = await getGeolocationPermissionState()
+      if (cancelled || perm === 'denied') return
+      const res = await requestCurrentPosition({
+        enableHighAccuracy: false,
+        timeout: 8000,
+        maximumAge: 5 * 60 * 1000,
+      })
+      if (cancelled || !res.ok) return
+      setGeoBias({ lat: res.position.coords.latitude, lon: res.position.coords.longitude })
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const defaultCenter = useMemo(() => {
@@ -1284,8 +1276,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     addressDrawerDetailsOpen,
     trackDrawerDetailsOpen,
   ])
-
-  const mapRef = useRef<UnifiedCaseMapHandle | null>(null)
 
   const clearDvrLinkLocationUi = useCallback(() => {
     setDvrLinkLocationSession(null)
@@ -1451,6 +1441,21 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     if (b && b.isValid()) m.fitBounds(b.pad(0.2))
   }, [filtered, locations, trackingMapPoints])
 
+  const focusLocationOnMap = useCallback(
+    (l: Location) => {
+      setWorkspaceCaseTab('addresses')
+      setWorkspaceViewMode('map')
+      setSelectedId(l.id)
+      setLocationDetailOpen(true)
+      closeMapToolsDock()
+      window.setTimeout(() => {
+        const m = mapRef.current
+        if (m) m.flyTo(l.lat, l.lon, Math.max(m.getZoom(), 16), { duration: 0.55 })
+      }, 50)
+    },
+    [closeMapToolsDock, setWorkspaceCaseTab, setWorkspaceViewMode],
+  )
+
   const canManipulateTrackPointFn = useCallback(
     (pointId: string) => {
       const p = caseTrackPoints.find((x) => x.id === pointId)
@@ -1508,13 +1513,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             if (placeTid) probativePlacementLockRef.current = false
           })
       },
-      addDisabled: !(probativePlacementSession?.trackId ?? trackForMapAdd),
+      addDisabled: !(probativePlacementSession?.trackId ?? trackForMapAdd) || addrSearchMapShieldActive,
     }),
     [
       caseTrackPoints,
       visibleTrackIds,
       trackForMapAdd,
       probativePlacementSession,
+      addrSearchMapShieldActive,
       props.caseId,
       createTrackPoint,
       onSelectTrackPointMap,
@@ -1586,30 +1592,25 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const wideMapDetailCollapsed =
     !isNarrow && caseTab === 'tracking' && !trackDrawerDetailsOpen
   /** Wide web: seam on addresses map; on tracking whenever the tab is active (same flush expand control as canvassing). */
-  const showWideMapDrawerSeam =
-    !isNarrow &&
-    ((caseTab === 'addresses' && viewMode !== 'list') || caseTab === 'tracking')
+  const showWideMapDrawerSeam = !isNarrow && (caseTab === 'addresses' || caseTab === 'tracking')
   /** Bottom-center tab (compact): hidden while sheet is expanded — handle moves to top of sheet. */
   const wideMapDrawerSeamBottomTab =
     showWideMapDrawerSeam &&
     !(
-      (caseTab === 'addresses' && viewMode !== 'list' && addressDrawerDetailsOpen) ||
+      (caseTab === 'addresses' && addressDrawerDetailsOpen) ||
       (caseTab === 'tracking' && trackDrawerDetailsOpen)
     )
   /** Wide: white notes/track sheet should paint (collapsed ⇒ display none on overlay). */
   const wideMapDetailPanelOpen =
     !isNarrow &&
     showWideMapDrawerSeam &&
-    (caseTab === 'addresses'
-      ? viewMode !== 'list' && addressDrawerDetailsOpen
-      : trackDrawerDetailsOpen)
+    (caseTab === 'addresses' ? addressDrawerDetailsOpen : trackDrawerDetailsOpen)
   /** Flush map canvas to card bottom on wide map views — removes idle white strip from bottom inset. */
-  const wideMapUsesFullBleedMapCanvas =
-    !isNarrow && (caseTab === 'tracking' || (caseTab === 'addresses' && viewMode !== 'list'))
+  const wideMapUsesFullBleedMapCanvas = !isNarrow && (caseTab === 'tracking' || caseTab === 'addresses')
   const mapStackBottom: CSSProperties['bottom'] = wideMapUsesFullBleedMapCanvas ? 0 : MAP_CANVAS_BOTTOM_RESERVE
   const showMapDetailOverlayShell =
     (caseTab === 'tracking' && (!isNarrow || !!selectedTrackPoint)) ||
-    (caseTab === 'addresses' && viewMode !== 'list' && (!isNarrow || (!!selected && locationDetailOpen)))
+    (caseTab === 'addresses' && (!isNarrow || (!!selected && locationDetailOpen)))
   const mapPaneDetailOverlayStyle: CSSProperties = {
     ...(wideMapDetailCollapsed
       ? {
@@ -1684,6 +1685,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         }}
         onBlur={() => clearAddrFieldFocusSoon()}
         placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
+        {...(isNarrow ? nativeMobileSearchInputProps(mobileOS) : {})}
         style={{
           ...field,
           maxWidth: '100%',
@@ -1863,6 +1865,47 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </div>
   )
 
+  const runLocateMe = useCallback(async () => {
+    if (isNarrow) closeMapToolsDock()
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      window.alert('Location is not available in this browser.')
+      return
+    }
+    const perm = await getGeolocationPermissionState()
+    if (perm === 'denied') {
+      window.alert(
+        'Location is turned off for this site. Allow location in your browser or site settings, then tap Locate me again.',
+      )
+      return
+    }
+    const res = await requestCurrentPosition()
+    if (!res.ok) {
+      const msg =
+        res.code === 'denied'
+          ? 'Location permission was denied.'
+          : res.code === 'timeout'
+            ? 'Location timed out. Try again with GPS/Wi‑Fi location on.'
+            : res.code === 'unavailable'
+              ? 'Your device could not determine a position.'
+              : 'Could not get your location.'
+      window.alert(msg)
+      return
+    }
+    const m = mapRef.current
+    if (m) {
+      m.flyTo(
+        res.position.coords.latitude,
+        res.position.coords.longitude,
+        Math.max(m.getZoom(), 16),
+        { duration: 0.6 },
+      )
+      if (!isNarrow) {
+        setMapLeftToolSection(null)
+        setWideSidebarListReveal(false)
+      }
+    }
+  }, [closeMapToolsDock, isNarrow])
+
   const mapViewFitLocateButtons = (
     <>
       <button
@@ -1880,7 +1923,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         }
         onClick={() => {
           setWorkspaceViewMode('map')
-          closeMapToolsDock()
+          if (isNarrow) closeMapToolsDock()
+          else setMapLeftToolSection(null)
         }}
       >
         Map view
@@ -1900,7 +1944,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         }
         onClick={() => {
           setWorkspaceViewMode('list')
-          closeMapToolsDock()
+          if (isNarrow) closeMapToolsDock()
+          else {
+            setMapLeftToolSection(null)
+            setWideSidebarListReveal(true)
+          }
         }}
       >
         List view
@@ -1910,7 +1958,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         style={{ ...btn, width: '100%' }}
         onClick={() => {
           fitMapToCanvass()
-          closeMapToolsDock()
+          if (isNarrow) closeMapToolsDock()
+          else {
+            setMapLeftToolSection(null)
+            setWideSidebarListReveal(false)
+          }
         }}
         disabled={!locations.length}
         title="Zoom to canvass pins"
@@ -1922,7 +1974,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         style={{ ...btn, width: '100%' }}
         onClick={() => {
           fitMapToPaths()
-          closeMapToolsDock()
+          if (isNarrow) closeMapToolsDock()
+          else {
+            setMapLeftToolSection(null)
+            setWideSidebarListReveal(false)
+          }
         }}
         disabled={!trackingMapPoints.length}
         title="Zoom to visible tracks"
@@ -1934,30 +1990,18 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         style={{ ...btn, width: '100%' }}
         onClick={() => {
           fitMapToAll()
-          closeMapToolsDock()
+          if (isNarrow) closeMapToolsDock()
+          else {
+            setMapLeftToolSection(null)
+            setWideSidebarListReveal(false)
+          }
         }}
         disabled={!locations.length && !trackingMapPoints.length}
         title="Zoom to show everything"
       >
         Fit all
       </button>
-      <button
-        type="button"
-        style={{ ...btn, width: '100%' }}
-        onClick={() => {
-          closeMapToolsDock()
-          if (!navigator.geolocation) return
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              const m = mapRef.current
-              if (!m) return
-              m.flyTo(pos.coords.latitude, pos.coords.longitude, Math.max(m.getZoom(), 16), { duration: 0.6 })
-            },
-            () => {},
-            { enableHighAccuracy: true, timeout: 8000 },
-          )
-        }}
-      >
+      <button type="button" style={{ ...btn, width: '100%' }} onClick={() => void runLocateMe()}>
         Locate me
       </button>
     </>
@@ -2058,8 +2102,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 onClick={() => setPhotoViewerIndex(sidebarMediaIndex)}
                 style={{ padding: 0, border: 'none', cursor: 'pointer', display: 'block', width: '100%' }}
               >
-                <img
-                  src={caseAttachments[sidebarMediaIndex]!.imageDataUrl}
+                <CaseAttachmentImage
+                  attachment={caseAttachments[sidebarMediaIndex]!}
                   alt=""
                   style={{
                     width: '100%',
@@ -2153,6 +2197,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ? `calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${detailOverlayHeightPx}px - clamp(8px, 1.2vw, 14px))`
         : undefined,
     position: 'relative',
+    /** Above narrowFloatingAddressCard inner stack (z-index 8) so ☰ / Views / Map view receive taps on small screens. */
+    zIndex: 12,
     pointerEvents: 'auto',
     boxSizing: 'border-box',
   }
@@ -2246,15 +2292,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
     flexShrink: 0,
   }
-  const renderDockSectionButton = (section: 'views' | 'filters' | 'tracks' | 'photos', label: string) => (
+  const renderDockSectionButton = (section: MapToolsDockSection, label: string) => (
     <button
       type="button"
-      onClick={() =>
-        setMapLeftToolSection((s) => {
-          const next = s === section ? null : section
-          return next
-        })
-      }
+      onClick={() => {
+        if (section === 'dvr') setProbativeFlow(null)
+        setMapLeftToolSection((s) => (s === section ? null : section))
+      }}
       style={{
         ...mapDockNavBtnBase,
         textAlign: 'left',
@@ -2272,15 +2316,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     fontSize: 12,
     textAlign: 'left',
   }
-  const renderWebDockSectionButton = (section: 'views' | 'filters' | 'tracks' | 'photos', label: string) => (
+  const renderWebDockSectionButton = (section: MapToolsDockSection, label: string) => (
     <button
       type="button"
-      onClick={() =>
-        setMapLeftToolSection((s) => {
-          const next = s === section ? null : section
-          return next
-        })
-      }
+      onClick={() => {
+        if (section === 'dvr') setProbativeFlow(null)
+        if (!isNarrow) setWideSidebarListReveal(false)
+        setMapLeftToolSection((s) => (s === section ? null : section))
+      }}
       style={{
         ...webDockNavBtnBase,
         background: mapLeftToolSection === section ? '#f3f4f6' : 'white',
@@ -2290,7 +2333,95 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </button>
   )
 
-  const mapToolsDockSectionPanels = (
+  const visitHeatmapDockRow = (
+    <label
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 2,
+        fontSize: 12,
+        fontWeight: 600,
+        color: '#374151',
+        cursor: 'pointer',
+        userSelect: 'none',
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={visitHeatmapOn}
+        onChange={(e) => setVisitHeatmapOn(e.target.checked)}
+        style={{ width: 16, height: 16 }}
+      />
+      Visit density heatmap
+    </label>
+  )
+
+  const mapToolsDockViewsPanel =
+    mapLeftToolSection === 'views' ? (
+      <div style={mapDockPanelStyle}>
+        <div
+          className="case-pane-actions-row"
+          style={{
+            display: 'grid',
+            gap: 6,
+            gridTemplateColumns: '1fr',
+            alignItems: 'stretch',
+            minWidth: 0,
+            width: '100%',
+          }}
+        >
+          {mapViewFitLocateButtons}
+        </div>
+        {canUseVisitHeatmap ? visitHeatmapDockRow : null}
+      </div>
+    ) : null
+
+  const mapToolsDockDvrPanel =
+    mapLeftToolSection === 'dvr' ? (
+      <div
+        style={{
+          ...mapDockPanelStyle,
+          ...(!isNarrow
+            ? {
+                minHeight: 0,
+                maxHeight: 'min(52vh, 480px)',
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+              }
+            : {}),
+        }}
+      >
+        <div
+          style={
+            !isNarrow
+              ? {
+                  minHeight: 0,
+                  flex: 1,
+                  overflowX: 'hidden',
+                  overflowY: 'auto',
+                  WebkitOverflowScrolling: 'touch',
+                }
+              : undefined
+          }
+        >
+          <DvrCalculatorStep
+            toolbarEmbed
+            hideManualOffset={!isNarrow}
+            isNarrowOverride={isNarrow}
+            onBack={() => setMapLeftToolSection(null)}
+            onCancel={() => setMapLeftToolSection(null)}
+            onApply={(notes) => {
+              finalizeDvrOnlyCalculatorApply(notes)
+              setMapLeftToolSection(null)
+            }}
+          />
+        </div>
+      </div>
+    ) : null
+
+  const mapToolsDockSubPanels = (
     <>
       {mapLeftToolSection === 'filters' ? (
         <div style={mapDockFilterPanelStyle}>
@@ -2298,23 +2429,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             Result ({locations.length} total)
           </div>
           {filterLegendChipsGridDock}
-        </div>
-      ) : null}
-      {mapLeftToolSection === 'views' ? (
-        <div style={mapDockPanelStyle}>
-          <div
-            className="case-pane-actions-row"
-            style={{
-              display: 'grid',
-              gap: 6,
-              gridTemplateColumns: '1fr',
-              alignItems: 'stretch',
-              minWidth: 0,
-              width: '100%',
-            }}
-          >
-            {mapViewFitLocateButtons}
-          </div>
         </div>
       ) : null}
       {mapLeftToolSection === 'tracks' ? (
@@ -2499,8 +2613,391 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </>
   )
 
-  const narrowMapTopShowsFloatingAddress =
-    caseTab === 'tracking' || (caseTab === 'addresses' && viewMode === 'map')
+  const mapToolsDockSectionPanels = (
+    <>
+      {mapToolsDockViewsPanel}
+      {mapToolsDockDvrPanel}
+      {mapToolsDockSubPanels}
+    </>
+  )
+
+  /** Wide web: sidebar list after explicit List view click; hidden while any toolbar section is open or after other toolbar actions. */
+  const wideWebListInToolbar =
+    !isNarrow &&
+    webToolsCanCollapse &&
+    caseTab === 'addresses' &&
+    viewMode === 'list' &&
+    mapLeftToolSection === null &&
+    wideSidebarListReveal
+  /** Map stays in the main pane for both map and list on addresses (list is a panel, not a replacement). */
+  const showMapInMapColumn = caseTab === 'tracking' || caseTab === 'addresses'
+
+  const renderAddressesListContent = (placement: 'mapColumn' | 'controlColumn') => {
+    const listRowPad = placement === 'controlColumn' ? '6px 8px' : isNarrow ? '8px 10px' : '6px 10px'
+    const listBadgeCompact: CSSProperties = {
+      ...statusBadge,
+      padding: '2px 7px',
+      fontSize: 10,
+      lineHeight: 1.2,
+    }
+    const outerStyle: CSSProperties =
+      placement === 'controlColumn'
+        ? {
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            borderTop: '1px solid #e5e7eb',
+            marginTop: 0,
+            paddingTop: 8,
+          }
+        : {
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            overflow: 'hidden',
+            position: 'relative',
+          }
+
+    return (
+      <div style={outerStyle}>
+        <div
+          style={{
+            ...listHeaderRow,
+            flexShrink: 0,
+            borderBottom: '1px solid #e5e7eb',
+            flexDirection: 'column',
+            alignItems: 'stretch',
+            gap: 8,
+            padding: '8px 10px',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              alignItems: 'center',
+              justifyContent: placement === 'controlColumn' ? 'flex-start' : 'space-between',
+            }}
+          >
+            <div style={{ fontWeight: 900, fontSize: 13 }}>Locations ({filtered.length})</div>
+            {placement === 'mapColumn' ? (
+              <button type="button" style={{ ...btn, fontSize: 12, padding: '6px 10px' }} onClick={() => setWorkspaceViewMode('map')}>
+                Back to map
+              </button>
+            ) : null}
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 6,
+              width: '100%',
+              minWidth: 0,
+            }}
+            role="group"
+            aria-label="Filter locations by result"
+          >
+            <LegendChip
+              dense
+              dockCompact
+              allowMultiline
+              label={`No cameras (${counts.noCameras})`}
+              color={statusColor('noCameras')}
+              on={filters.noCameras}
+              onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
+            />
+            <LegendChip
+              dense
+              dockCompact
+              allowMultiline
+              label={`Needs Follow up (${counts.camerasNoAnswer})`}
+              color={statusColor('camerasNoAnswer')}
+              on={filters.camerasNoAnswer}
+              onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
+            />
+            <LegendChip
+              dense
+              dockCompact
+              allowMultiline
+              label={`Not probative (${counts.notProbativeFootage})`}
+              color={statusColor('notProbativeFootage')}
+              on={filters.notProbativeFootage}
+              onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
+            />
+            <LegendChip
+              dense
+              dockCompact
+              allowMultiline
+              label={`Probative (${counts.probativeFootage})`}
+              color={statusColor('probativeFootage')}
+              on={filters.probativeFootage}
+              onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
+            />
+          </div>
+        </div>
+        {filtered.length ? (
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'auto',
+              display: 'grid',
+              alignContent: 'start',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
+            {locationsForListView.map((l) => {
+              const isListSelected = selectedId === l.id
+              const isListExpanded = listRowExpandedId === l.id
+              const dimListRow = selectedId != null && !isListSelected
+              const canEditL = canEditLocation(data, actorId, l)
+              const canDelL = canDeleteLocation(data, actorId, l)
+              const listLineLabel = formatAddressLineForMapList(l.addressText)
+              return (
+                <div
+                  key={l.id}
+                  style={{
+                    ...listRow,
+                    display: 'flex',
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    alignItems: 'flex-start',
+                    gap: 6,
+                    padding: listRowPad,
+                    background: isListSelected ? '#ffffff' : dimListRow ? '#ececef' : 'white',
+                    opacity: dimListRow ? 0.72 : 1,
+                    boxShadow: isListSelected ? 'inset 3px 0 0 #111827' : undefined,
+                    transition: 'background 0.15s ease, opacity 0.15s ease',
+                  }}
+                >
+                  <button
+                    type="button"
+                    aria-expanded={isListExpanded}
+                    style={{
+                      ...listRowMainBtn,
+                      flex: 1,
+                      minWidth: 0,
+                      boxSizing: 'border-box',
+                    }}
+                    onClick={() => {
+                      setLocationDetailOpen(false)
+                      if (isListExpanded) {
+                        setListRowExpandedId(null)
+                        setSelectedId(null)
+                      } else {
+                        setListRowExpandedId(l.id)
+                        setSelectedId(l.id)
+                      }
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontWeight: 800,
+                        textAlign: 'left',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                        lineHeight: 1.25,
+                        fontSize: 13,
+                      }}
+                    >
+                      {listLineLabel}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        display: 'flex',
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        gap: 6,
+                        rowGap: 4,
+                      }}
+                    >
+                      <span
+                        style={{
+                          ...listBadgeCompact,
+                          background: `${statusColor(l.status)}35`,
+                          color: statusColor(l.status),
+                        }}
+                      >
+                        {statusLabel(l.status)}
+                      </span>
+                      <span style={{ color: '#6b7280', fontSize: 10, fontWeight: 600, lineHeight: 1.2 }}>
+                        Updated {formatAppDateTime(l.updatedAt)}
+                      </span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${listLineLabel} from case`}
+                    title={
+                      canDelL ? 'Remove this address from the case' : 'You do not have permission to remove this address'
+                    }
+                    style={{
+                      flexShrink: 0,
+                      width: 32,
+                      height: 32,
+                      marginTop: 0,
+                      padding: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: 8,
+                      border: '1px solid #fca5a5',
+                      background: '#fef2f2',
+                      color: '#b91c1c',
+                      fontSize: 18,
+                      fontWeight: 900,
+                      lineHeight: 1,
+                      cursor: canDelL ? 'pointer' : 'not-allowed',
+                      boxSizing: 'border-box',
+                      opacity: canDelL ? 1 : 0.35,
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      if (!canDelL) {
+                        window.alert('You do not have permission to remove this address.')
+                        return
+                      }
+                      if (!window.confirm('Delete this address from the case? This cannot be undone.')) return
+                      void deleteLocation(actorId, l.id)
+                      setSelectedId((id) => (id === l.id ? null : id))
+                      setListRowExpandedId((exp) => (exp === l.id ? null : exp))
+                      setListAddressNotesForId((n) => (n === l.id ? null : n))
+                    }}
+                  >
+                    ✕
+                  </button>
+                  {isListExpanded ? (
+                    <>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 6,
+                          alignItems: 'center',
+                          width: '100%',
+                          flexBasis: '100%',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          style={{ ...btn, fontSize: 11, padding: '5px 8px', flex: '1 1 88px', minWidth: 0 }}
+                          onClick={() => focusLocationOnMap(l)}
+                        >
+                          Show on map
+                        </button>
+                        <button
+                          type="button"
+                          style={{ ...btn, fontSize: 11, padding: '5px 8px', flex: '1 1 88px', minWidth: 0 }}
+                          onClick={() => setListAddressNotesForId(l.id)}
+                        >
+                          Notes
+                        </button>
+                      </div>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                          gap: 5,
+                          minWidth: 0,
+                          justifyItems: 'stretch',
+                          width: '100%',
+                          flexBasis: '100%',
+                        }}
+                      >
+                        <RowStatusButton
+                          label="No cameras"
+                          color={statusColor('noCameras')}
+                          active={l.status === 'noCameras'}
+                          disabled={!canEditL}
+                          stretch
+                          onClick={() => {
+                            setProbativeFlow(null)
+                            void updateLocation(actorId, l.id, { status: 'noCameras' })
+                          }}
+                        />
+                        <RowStatusButton
+                          label="Needs Follow up"
+                          color={statusColor('camerasNoAnswer')}
+                          active={l.status === 'camerasNoAnswer'}
+                          disabled={!canEditL}
+                          stretch
+                          onClick={() => {
+                            setProbativeFlow(null)
+                            void updateLocation(actorId, l.id, { status: 'camerasNoAnswer' })
+                          }}
+                        />
+                        <RowStatusButton
+                          label="Not probative"
+                          color={statusColor('notProbativeFootage')}
+                          active={l.status === 'notProbativeFootage'}
+                          disabled={!canEditL}
+                          stretch
+                          onClick={() => {
+                            setProbativeFlow(null)
+                            void updateLocation(actorId, l.id, { status: 'notProbativeFootage' })
+                          }}
+                        />
+                        <RowStatusButton
+                          label="Probative"
+                          color={statusColor('probativeFootage')}
+                          active={l.status === 'probativeFootage'}
+                          disabled={!canEditL}
+                          stretch
+                          onClick={() => {
+                            if (l.status !== 'probativeFootage') {
+                              setLocationDetailOpen(false)
+                              setSelectedId(l.id)
+                              setListRowExpandedId(l.id)
+                              setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: l.id } })
+                              return
+                            }
+                            void updateLocation(actorId, l.id, { status: 'probativeFootage' })
+                          }}
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div style={{ padding: 12, color: '#374151', flex: placement === 'mapColumn' ? 1 : undefined }}>
+            No locations in the selected filters.
+          </div>
+        )}
+        {placement === 'mapColumn' && mapLeftToolDockOpen ? (
+          <div
+            role="presentation"
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 24,
+              background: 'rgba(17,24,39,0.14)',
+              touchAction: 'none',
+            }}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              closeMapToolsDock()
+            }}
+          />
+        ) : null}
+      </div>
+    )
+  }
+
+  const narrowMapTopShowsFloatingAddress = caseTab === 'tracking' || caseTab === 'addresses'
   const showTrackQuickPickRow = narrowMapTopShowsFloatingAddress && (caseTracks.length > 0 || canAddCaseContentHere)
   const trackQuickPickRowInner =
     caseTracks.length === 0 ? (
@@ -2526,12 +3023,20 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     ) : (
       trackQuickPickButtons
     )
-  const mapPaneShowsInteractive = caseTab === 'tracking' || viewMode === 'map'
-  const addrSearchMapShieldActive =
-    addrAutocompleteEngaged && !probativePlacementSession && mapPaneShowsInteractive
   const webToolsArrowOnly = !isNarrow && webToolsCanCollapse && webToolsCollapsed
   /** Outer pane stays overflow-visible so the collapse tab can extend into the grid gap; scroll lives in an inner div. */
   const wideToolsExpandedScrollFix = !isNarrow && webToolsCanCollapse && !webToolsCollapsed
+
+  const webWideToolbarBody = (
+    <>
+      {renderWebDockSectionButton('views', 'Views')}
+      {renderWebDockSectionButton('filters', 'Filters')}
+      {renderWebDockSectionButton('tracks', 'Tracks')}
+      {renderWebDockSectionButton('photos', 'Photos')}
+      {renderWebDockSectionButton('dvr', 'DVR calculator')}
+      {mapToolsDockSectionPanels}
+    </>
+  )
 
   const controlPaneDockInner = !webToolsCollapsed || isNarrow ? (
     <>
@@ -2559,18 +3064,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       )}
       {!isNarrow && webToolsCanCollapse ? (
         <div style={{ padding: 8, display: 'grid', gap: 6 }}>
-          {renderWebDockSectionButton('views', 'Views')}
-          {renderWebDockSectionButton('filters', 'Filters')}
-          {renderWebDockSectionButton('tracks', 'Tracks')}
-          {renderWebDockSectionButton('photos', 'Photos')}
-          <button
-            type="button"
-            onClick={() => setProbativeFlow({ step: 'calc', target: { kind: 'dvr_only' } })}
-            style={{ ...webDockNavBtnBase, background: 'white' }}
-          >
-            DVR calculator
-          </button>
-          {mapToolsDockSectionPanels}
+          {webWideToolbarBody}
         </div>
       ) : !isNarrow ? (
         <div style={{ ...mapTopBar, flexDirection: 'column', alignItems: 'stretch' }}>
@@ -2667,7 +3161,33 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           />
         </MapPaneEdgeAnchor>
       ) : null}
-      {wideToolsExpandedScrollFix ? (
+      {wideToolsExpandedScrollFix && wideWebListInToolbar ? (
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          <div ref={wideAddrSearchRef} style={{ flexShrink: 0 }} />
+          <div
+            style={{
+              flexShrink: 0,
+              padding: 8,
+              display: 'grid',
+              gap: 6,
+              overflowX: 'hidden',
+              overflowY: 'visible',
+            }}
+          >
+            {webWideToolbarBody}
+          </div>
+          {renderAddressesListContent('controlColumn')}
+        </div>
+      ) : wideToolsExpandedScrollFix ? (
         <div
           style={{
             flex: 1,
@@ -2722,6 +3242,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 autoComplete="off"
                 name="vc-case-number-edit"
                 inputMode="text"
+                {...(isNarrow ? nativeMobileTextInputProps(mobileOS) : {})}
                 style={caseMetaInlineNameEdit}
               />
               <textarea
@@ -2734,6 +3255,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 autoComplete="off"
                 name="vc-case-desc-edit"
                 inputMode="text"
+                {...(isNarrow ? nativeMobileTextareaProps(mobileOS) : {})}
                 style={{
                   ...caseMetaInlineDescEdit,
                   width: '100%',
@@ -2847,7 +3369,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   last seen). Press Esc to cancel.
                 </div>
               ) : null}
-              {!probativePlacementSession && viewMode !== 'list' ? (
+              {!probativePlacementSession ? (
                 <div
                   style={{
                     position: 'absolute',
@@ -3009,20 +3531,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                                 {renderDockSectionButton('filters', 'Filters')}
                                 {renderDockSectionButton('tracks', 'Tracks')}
                                 {renderDockSectionButton('photos', 'Photos')}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setProbativeFlow({ step: 'calc', target: { kind: 'dvr_only' } })
-                                    closeMapToolsDock()
-                                  }}
-                                  style={{
-                                    ...mapDockNavBtnBase,
-                                    textAlign: 'left',
-                                    background: 'white',
-                                  }}
-                                >
-                                  DVR calculator
-                                </button>
+                                {renderDockSectionButton('dvr', 'DVR calculator')}
                                 {mapToolsDockSectionPanels}
                               </div>
                             </div>
@@ -3033,7 +3542,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   ) : null}
                 </div>
               ) : null}
-              {caseTab === 'tracking' || viewMode === 'map' ? (
+              {showMapInMapColumn ? (
                 <div
                   style={{
                     position: 'absolute',
@@ -3093,7 +3602,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       onMapLocationPress(id)
                     }}
                     onEnsureFootprint={enqueueOutlineForLocation}
-                    suppressCanvassMapAdd={suppressCanvassMapAdd}
+                    addrSearchBlocksMapClicks={addrSearchMapShieldActive}
+                    mapInteractionFreezeUntilRef={addrMapInteractionFreezeUntilRef}
                     onRequestCanvassAdd={(input) => {
                       openAddLocationModal({
                         lat: input.lat,
@@ -3135,6 +3645,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     placementClickAddsTrackPoint={probativePlacementSession != null}
                     onTrackStepLongPress={onTrackStepLongPress}
                     onCanvassLocationLongPress={onCanvassLocationLongPress}
+                    visitHeatmapGeojson={visitHeatmapGeojson}
+                    showVisitHeatmap={canUseVisitHeatmap && visitHeatmapOn && caseTab === 'addresses'}
                   />
                   </div>
                   {addrSearchMapShieldActive ? (
@@ -3162,260 +3674,34 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     />
                   ) : null}
                 </div>
-              ) : (
+              ) : null}
+
+              {isNarrow && caseTab === 'addresses' && viewMode === 'list' ? (
                 <div
                   style={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: mapStackBottom,
+                    maxHeight: 'min(48vh, 420px)',
+                    minHeight: 140,
+                    height: 'min(48vh, 420px)',
+                    zIndex: 35,
                     display: 'flex',
                     flexDirection: 'column',
-                    height: '100%',
-                    minHeight: 0,
-                    position: 'relative',
+                    pointerEvents: 'auto',
+                    background: '#fff',
+                    borderTop: '1px solid #e5e7eb',
+                    borderTopLeftRadius: 12,
+                    borderTopRightRadius: 12,
+                    boxShadow: '0 -4px 24px rgba(0,0,0,0.12)',
+                    overflow: 'hidden',
+                    minWidth: 0,
                   }}
                 >
-                  <div
-                    style={{
-                      ...listHeaderRow,
-                      flexShrink: 0,
-                      borderBottom: '1px solid #e5e7eb',
-                      flexDirection: 'column',
-                      alignItems: 'stretch',
-                      gap: 10,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 10,
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <div style={{ fontWeight: 900 }}>Locations ({filtered.length})</div>
-                      <button type="button" style={btn} onClick={() => setWorkspaceViewMode('map')}>
-                        Back to map
-                      </button>
-                    </div>
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'row',
-                        flexWrap: 'nowrap',
-                        gap: 6,
-                        alignItems: 'center',
-                        overflowX: 'auto',
-                        WebkitOverflowScrolling: 'touch',
-                        paddingBottom: 2,
-                        marginLeft: -2,
-                        marginRight: -2,
-                        maxWidth: '100%',
-                      }}
-                      role="group"
-                      aria-label="Filter locations by result"
-                    >
-                      <LegendChip
-                        dense
-                        label={`No cameras (${counts.noCameras})`}
-                        color={statusColor('noCameras')}
-                        on={filters.noCameras}
-                        onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
-                      />
-                      <LegendChip
-                        dense
-                        label={`Needs Follow up (${counts.camerasNoAnswer})`}
-                        color={statusColor('camerasNoAnswer')}
-                        on={filters.camerasNoAnswer}
-                        onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
-                      />
-                      <LegendChip
-                        dense
-                        label={`Not probative (${counts.notProbativeFootage})`}
-                        color={statusColor('notProbativeFootage')}
-                        on={filters.notProbativeFootage}
-                        onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
-                      />
-                      <LegendChip
-                        dense
-                        label={`Probative (${counts.probativeFootage})`}
-                        color={statusColor('probativeFootage')}
-                        on={filters.probativeFootage}
-                        onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
-                      />
-                    </div>
-                  </div>
-                  {filtered.length ? (
-                    <div
-                      style={{
-                        flex: 1,
-                        minHeight: 0,
-                        overflow: 'auto',
-                        display: 'grid',
-                        alignContent: 'start',
-                      }}
-                    >
-                      {locationsForListView.map((l) => {
-                        const isListSelected = selectedId === l.id
-                        const dimListRow = selectedId != null && !isListSelected
-                        const canEditL = canEditLocation(data, actorId, l)
-                        const canDelL = canDeleteLocation(data, actorId, l)
-                        return (
-                        <div
-                          key={l.id}
-                          style={{
-                            ...listRow,
-                            alignItems: 'start',
-                            ...(isNarrow
-                              ? {
-                                  gridTemplateColumns: '1fr',
-                                  gap: 10,
-                                  padding: '10px 12px',
-                                }
-                              : {}),
-                            background: isListSelected ? '#ffffff' : dimListRow ? '#ececef' : 'white',
-                            opacity: dimListRow ? 0.72 : 1,
-                            boxShadow: isListSelected ? 'inset 3px 0 0 #111827' : undefined,
-                            transition: 'background 0.15s ease, opacity 0.15s ease',
-                          }}
-                        >
-                          <button
-                            type="button"
-                            style={{
-                              ...listRowMainBtn,
-                              ...(isNarrow ? { width: '100%', minWidth: 0, boxSizing: 'border-box' } : {}),
-                            }}
-                            onClick={() => {
-                              setLocationDetailOpen(false)
-                              setSelectedId((id) => (id === l.id ? null : l.id))
-                            }}
-                          >
-                            <div
-                              style={{
-                                fontWeight: 800,
-                                textAlign: 'left',
-                                wordBreak: 'break-word',
-                                overflowWrap: 'anywhere',
-                                lineHeight: 1.35,
-                              }}
-                            >
-                              {l.addressText}
-                            </div>
-                            <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                              <span style={{ ...statusBadge, background: `${statusColor(l.status)}35`, color: statusColor(l.status) }}>
-                                {statusLabel(l.status)}
-                              </span>
-                              <span style={{ color: '#374151', fontSize: 12 }}>
-                                Updated {formatAppDateTime(l.updatedAt)}
-                              </span>
-                            </div>
-                          </button>
-                          <div
-                            style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                              gap: 6,
-                              minWidth: 0,
-                              justifyItems: 'stretch',
-                              ...(isNarrow
-                                ? {
-                                    gridColumn: '1 / -1',
-                                    width: '100%',
-                                  }
-                                : {}),
-                            }}
-                          >
-                            <RowStatusButton
-                              label="No cameras"
-                              color={statusColor('noCameras')}
-                              active={l.status === 'noCameras'}
-                              disabled={!canEditL}
-                              stretch
-                              onClick={() => {
-                                setProbativeFlow(null)
-                                void updateLocation(actorId, l.id, { status: 'noCameras' })
-                              }}
-                            />
-                            <RowStatusButton
-                              label="Needs Follow up"
-                              color={statusColor('camerasNoAnswer')}
-                              active={l.status === 'camerasNoAnswer'}
-                              disabled={!canEditL}
-                              stretch
-                              onClick={() => {
-                                setProbativeFlow(null)
-                                void updateLocation(actorId, l.id, { status: 'camerasNoAnswer' })
-                              }}
-                            />
-                            <RowStatusButton
-                              label="Not probative"
-                              color={statusColor('notProbativeFootage')}
-                              active={l.status === 'notProbativeFootage'}
-                              disabled={!canEditL}
-                              stretch
-                              onClick={() => {
-                                setProbativeFlow(null)
-                                void updateLocation(actorId, l.id, { status: 'notProbativeFootage' })
-                              }}
-                            />
-                            <RowStatusButton
-                              label="Probative"
-                              color={statusColor('probativeFootage')}
-                              active={l.status === 'probativeFootage'}
-                              disabled={!canEditL}
-                              stretch
-                              onClick={() => {
-                                if (l.status !== 'probativeFootage') {
-                                  setLocationDetailOpen(false)
-                                  setSelectedId(l.id)
-                                  setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: l.id } })
-                                  return
-                                }
-                                void updateLocation(actorId, l.id, { status: 'probativeFootage' })
-                              }}
-                            />
-                          </div>
-                          {selectedId === l.id ? (
-                            <CaseListSelectedLocationPanel
-                              key={l.id}
-                              location={l}
-                              canEdit={canEditL}
-                              canDelete={canDelL}
-                              footprintLoading={footprintLoadingIds.has(l.id)}
-                              footprintFailed={footprintFailedIds.has(l.id)}
-                              onNotesChange={(notes) => void updateLocation(actorId, l.id, { notes })}
-                              onRemove={() => {
-                                if (!window.confirm('Delete this address from the case? This cannot be undone.')) return
-                                void deleteLocation(actorId, l.id)
-                                setSelectedId(null)
-                              }}
-                            />
-                          ) : null}
-                        </div>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <div style={{ padding: 12, color: '#374151', flex: 1 }}>No locations in the selected filters.</div>
-                  )}
-                  {mapLeftToolDockOpen ? (
-                    <div
-                      role="presentation"
-                      aria-hidden
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        zIndex: 24,
-                        background: 'rgba(17,24,39,0.14)',
-                        touchAction: 'none',
-                      }}
-                      onPointerDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        closeMapToolsDock()
-                      }}
-                    />
-                  ) : null}
+                  {renderAddressesListContent('mapColumn')}
                 </div>
-              )}
+              ) : null}
 
               {webToolsArrowOnly ? (
                 <div
@@ -3460,7 +3746,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   }}
                 >
                   <MapPaneEdgeAnchor placement="drawerTopSeam">
-                    {caseTab === 'addresses' && viewMode !== 'list' ? (
+                    {caseTab === 'addresses' ? (
                       <MapPaneEdgeToggle
                         placement="drawerTopSeam"
                         expanded={false}
@@ -3481,7 +3767,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
               {showMapDetailOverlayShell ? (
                 <div ref={caseMapDetailOverlayRef} style={mapPaneDetailOverlayStyle}>
-                  {caseTab === 'addresses' && selected && viewMode !== 'list' && locationDetailOpen ? (
+                  {caseTab === 'addresses' && selected && locationDetailOpen ? (
                     <LocationDrawer
                       key={selected.id}
                       layout={mapDetailLayout}
@@ -3510,7 +3796,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         setSelectedId(null)
                       }}
                     />
-                  ) : caseTab === 'addresses' && viewMode !== 'list' && !isNarrow && addressDrawerDetailsOpen ? (
+                  ) : caseTab === 'addresses' && !isNarrow && addressDrawerDetailsOpen ? (
                     <WideMapNotesPlaceholder onDismiss={() => setAddressDrawerDetailsOpen(false)} />
                   ) : caseTab === 'tracking' && selectedTrackPoint ? (
                     <TrackPointDrawer
@@ -3963,6 +4249,46 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     />
 
     <Modal
+      title={listNotesLocation ? listNotesLocation.addressText : 'Address notes'}
+      open={listNotesLocation != null}
+      onClose={() => setListAddressNotesForId(null)}
+    >
+      {listNotesLocation ? (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {footprintLoadingIds.has(listNotesLocation.id) ? (
+            <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>Loading building outline in background…</div>
+          ) : null}
+          {footprintFailedIds.has(listNotesLocation.id) ? (
+            <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
+              Building outline unavailable for this point (notes still save normally).
+            </div>
+          ) : null}
+          <div>
+            <div style={label}>Notes</div>
+            <textarea
+              value={listNotesLocation.notes}
+              readOnly={!canEditLocation(data, actorId, listNotesLocation)}
+              onChange={(e) => void updateLocation(actorId, listNotesLocation.id, { notes: e.target.value })}
+              placeholder="What did you observe?"
+              style={{
+                ...field,
+                minHeight: 120,
+                resize: 'vertical',
+                maxWidth: '100%',
+                boxSizing: 'border-box',
+                ...(isNarrow ? { fontSize: 16 } : {}),
+              }}
+              {...(isNarrow ? nativeMobileTextareaProps(mobileOS) : { autoCorrect: 'off' as const, spellCheck: true })}
+            />
+          </div>
+          <button type="button" style={btnPrimary} onClick={() => setListAddressNotesForId(null)}>
+            Done
+          </button>
+        </div>
+      ) : null}
+    </Modal>
+
+    <Modal
       title="Link DVR result to address"
       open={dvrLinkLocationSession != null}
       zBase={62500}
@@ -3986,6 +4312,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             }}
             placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
             disabled={dvrLinkSaving}
+            {...(isNarrow ? nativeMobileSearchInputProps(mobileOS) : {})}
             style={{
               ...field,
               maxWidth: '100%',
@@ -4179,8 +4506,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     </button>
                   </>
                 ) : null}
-                <img
-                  src={vAtt.imageDataUrl}
+                <CaseAttachmentImage
+                  attachment={vAtt}
                   alt=""
                   style={{
                     width: '100%',
@@ -4204,8 +4531,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     name="vc-case-photo-note"
                     id="vc-case-photo-note"
                     autoComplete="off"
-                    autoCorrect="off"
-                    spellCheck
+                    {...(isNarrow ? nativeMobileTextareaProps(mobileOS) : { autoCorrect: 'off' as const, spellCheck: true })}
                     inputMode="text"
                     onFocus={(e) => {
                       setPhotoViewerCaptionFocused(true)
@@ -4275,8 +4601,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       aria-label={`Photo ${i + 1}`}
                       aria-current={i === photoViewerIndex ? 'true' : undefined}
                     >
-                      <img
-                        src={a.imageDataUrl}
+                      <CaseAttachmentImage
+                        attachment={a}
                         alt=""
                         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                       />

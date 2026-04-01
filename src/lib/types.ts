@@ -79,14 +79,23 @@ export const TrackPointSchema = z.object({
 })
 export type TrackPoint = z.infer<typeof TrackPointSchema>
 
+export const CaseLifecycleSchema = z.enum(['open', 'closed'])
+export type CaseLifecycle = z.infer<typeof CaseLifecycleSchema>
+
 export const CaseSchema = z.object({
   id: z.string(),
   ownerUserId: z.string().default(''),
+  /** Optional org scope (UUID) when using relational backend. */
+  organizationId: z.string().nullable().optional().default(null),
+  /** When set, unit members may view the case without an explicit collaborator row. */
+  unitId: z.string().nullable().optional().default(null),
   caseNumber: z.string().min(1),
   title: z.string().min(1),
   description: z.string().default(''),
   createdAt: z.number(),
   updatedAt: z.number(),
+  /** Open cases appear in default filters; closed is archival. */
+  lifecycle: CaseLifecycleSchema.default('open'),
 })
 export type CaseFile = z.infer<typeof CaseSchema>
 
@@ -96,6 +105,8 @@ export const AppUserSchema = z.object({
   email: z.string().email(),
   taxNumber: z.string().min(1),
   createdAt: z.number(),
+  /** Relational: from `vc_profiles.app_role`; absent in mock / legacy = standard user. */
+  appRole: z.enum(['user', 'admin']).optional(),
 })
 export type AppUser = z.infer<typeof AppUserSchema>
 
@@ -111,17 +122,25 @@ export type CaseCollaborator = z.infer<typeof CaseCollaboratorSchema>
 export const CaseAttachmentKindSchema = z.enum(['suspect_description', 'wanted_flyer', 'other'])
 export type CaseAttachmentKind = z.infer<typeof CaseAttachmentKindSchema>
 
-export const CaseAttachmentSchema = z.object({
-  id: z.string(),
-  caseId: z.string(),
-  kind: CaseAttachmentKindSchema.default('other'),
-  caption: z.string().default(''),
-  /** data:image/…;base64,… — resized client-side before save. */
-  imageDataUrl: z.string().min(1),
-  createdByUserId: z.string().default(''),
-  createdAt: z.number(),
-  updatedAt: z.number(),
-})
+export const CaseAttachmentSchema = z
+  .object({
+    id: z.string(),
+    caseId: z.string(),
+    kind: CaseAttachmentKindSchema.default('other'),
+    caption: z.string().default(''),
+    /** data:image/…;base64,… — local / legacy; prefer `imageStoragePath` when using object storage. */
+    imageDataUrl: z.string().default(''),
+    /** Supabase Storage path inside bucket `case-attachments` (format `{caseId}/{attachmentId}`). */
+    imageStoragePath: z.string().nullable().optional().default(null),
+    contentType: z.string().default(''),
+    createdByUserId: z.string().default(''),
+    createdAt: z.number(),
+    updatedAt: z.number(),
+  })
+  .refine((a) => (a.imageDataUrl?.trim() ?? '').length > 0 || (a.imageStoragePath?.trim() ?? '').length > 0, {
+    message: 'Attachment must have imageDataUrl or imageStoragePath',
+    path: ['imageDataUrl'],
+  })
 export type CaseAttachment = z.infer<typeof CaseAttachmentSchema>
 
 export const AppDataSchema = z.object({
@@ -139,6 +158,8 @@ export const AppDataSchema = z.object({
   deletedTrackIds: z.array(z.string()).default([]),
   deletedTrackPointIds: z.array(z.string()).default([]),
   deletedCaseAttachmentIds: z.array(z.string()).default([]),
+  /** `${caseId}::${userId}` — removed collaborators so merge/push cannot resurrect rows (case/user ids must not contain `::`). */
+  deletedCaseCollaboratorKeys: z.array(z.string()).default([]),
 })
 export type AppData = z.infer<typeof AppDataSchema>
 
@@ -156,6 +177,7 @@ export const DEFAULT_DATA: AppData = {
   deletedTrackIds: [],
   deletedTrackPointIds: [],
   deletedCaseAttachmentIds: [],
+  deletedCaseCollaboratorKeys: [],
 }
 
 export function caseAttachmentKindLabel(k: CaseAttachmentKind): string {

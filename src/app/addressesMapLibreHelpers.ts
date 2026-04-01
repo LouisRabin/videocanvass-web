@@ -273,3 +273,30 @@ export function buildTracksData(
     lines: { type: 'FeatureCollection', features: lineFeatures },
   }
 }
+
+/** Visit-density heatmap: weight per canvass location from track-step links and last-visit signal. */
+export function buildVisitDensityHeatmapCollection(
+  locs: Location[],
+  trackPoints: TrackPoint[],
+  caseId: string,
+): FeatureCollection {
+  const tpPerLoc = new Map<string, number>()
+  for (const p of trackPoints) {
+    if (p.caseId !== caseId) continue
+    const lid = p.locationId?.trim()
+    if (!lid) continue
+    tpPerLoc.set(lid, (tpPerLoc.get(lid) ?? 0) + 1)
+  }
+  const features: Feature[] = []
+  for (const loc of locs) {
+    if (loc.caseId !== caseId) continue
+    let w = 1 + (tpPerLoc.get(loc.id) ?? 0) * 0.75
+    if (loc.lastVisitedAt != null) w += 0.5
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [loc.lon, loc.lat] },
+      properties: { weight: Math.min(10, Math.max(0.25, w)) },
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}

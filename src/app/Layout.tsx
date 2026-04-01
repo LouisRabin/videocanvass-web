@@ -1,6 +1,7 @@
 import React from 'react'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
-import { useSyncStatus } from '../lib/syncStatus'
+import { dismissRemoteMergeNotice, useSyncStatus } from '../lib/syncStatus'
+import { relationalBackendEnabled } from '../lib/backendMode'
 
 export function Layout(props: {
   title?: React.ReactNode
@@ -109,6 +110,63 @@ export function Layout(props: {
           </div>
         </div>
       </header>
+      {sync.pendingRemoteSaves > 0 && relationalBackendEnabled() ? (
+        <div
+          role="status"
+          style={{
+            width: '100%',
+            maxWidth: 'min(1560px, 100%)',
+            margin: '0 auto',
+            padding: '8px 12px',
+            boxSizing: 'border-box',
+            background: '#eff6ff',
+            borderBottom: '1px solid #bfdbfe',
+            color: '#1e3a8a',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          Saving to cloud… ({sync.pendingRemoteSaves} pending)
+        </div>
+      ) : null}
+      {sync.remoteMergeNotice ? (
+        <div
+          role="status"
+          style={{
+            width: '100%',
+            maxWidth: 'min(1560px, 100%)',
+            margin: '0 auto',
+            padding: '8px 12px',
+            boxSizing: 'border-box',
+            background: '#fffbeb',
+            borderBottom: '1px solid #fde68a',
+            color: '#78350f',
+            fontSize: 13,
+            display: 'flex',
+            gap: 10,
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ flex: '1 1 200px', minWidth: 0 }}>{sync.remoteMergeNotice}</span>
+          <button
+            type="button"
+            onClick={() => dismissRemoteMergeNotice()}
+            style={{
+              border: '1px solid #d97706',
+              borderRadius: 8,
+              padding: '4px 10px',
+              background: 'white',
+              cursor: 'pointer',
+              fontWeight: 700,
+              flexShrink: 0,
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <main
         style={{
           width: '100%',

@@ -60,6 +60,8 @@ export type UnifiedCaseMapHandle = {
   flyTo: (lat: number, lon: number, zoom: number, opts?: { duration?: number }) => void
   fitBounds: (bounds: InstanceType<typeof L.LatLngBounds>) => void
   getZoom: () => number
+  /** Current map center for Photon address-search bias when user has not used Locate me. */
+  getCenter: () => { lat: number; lon: number } | null
   /** Cancel deferred canvass single-tap so a dismiss tap does not select/add after overlay/pointer guard handling. */
   clearPendingMapTap: () => void
 }
@@ -72,34 +74,6 @@ export type MapTrackingInteraction = {
   onAddPoint: (lat: number, lon: number) => void
   addDisabled: boolean
   pickRadiusPx?: number
-}
-
-type TrackHitResult = { kind: 'none' } | { kind: 'blocked' } | { kind: 'picked'; pointId: string }
-
-/** Geometric hit-test only — does not call `onPickPoint` (safe for long-press gating). */
-function resolveTrackHitAtPixel(
-  map: GlMap,
-  clickPx: { x: number; y: number },
-  ti: MapTrackingInteraction,
-): TrackHitResult {
-  const r = ti.pickRadiusPx ?? 28
-  const r2 = r * r
-  let bestManip: { id: string; d2: number } | null = null
-  let anyPin = false
-  for (const pt of ti.trackPoints) {
-    if (pt.showOnMap === false) continue
-    if (ti.visibleTrackIds[pt.trackId] === false) continue
-    const lp = map.project([pt.lon, pt.lat])
-    const dx = lp.x - clickPx.x
-    const dy = lp.y - clickPx.y
-    const d2 = dx * dx + dy * dy
-    if (d2 > r2) continue
-    anyPin = true
-    if (ti.canManipulateTrackPoint(pt.id) && (!bestManip || d2 < bestManip.d2)) bestManip = { id: pt.id, d2 }
-  }
-  if (bestManip) return { kind: 'picked', pointId: bestManip.id }
-  if (anyPin) return { kind: 'blocked' }
-  return { kind: 'none' }
 }
 
 const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(props: {
@@ -504,10 +478,12 @@ export type AddressesMapLibreProps = {
     vectorTileBuildingRing?: LatLon[] | null,
   ) => void
   /**
-   * While address autocomplete is focused / loading / showing suggestions, ignore canvass map taps
-   * (selection and empty-map add). Parent normally blocks pointer events with a map shield while the field is focused.
+   * While floating address search is active (same conditions as the map shield in CasePage), ignore all map tap
+   * resolution: canvass pick/add and tracking adds — not only on the Video canvassing tab.
    */
-  suppressCanvassMapAdd?: boolean
+  addrSearchBlocksMapClicks?: boolean
+  /** Parent sets `current` to a `performance.now()` deadline after dismissing search so deferred taps are ignored. */
+  mapInteractionFreezeUntilRef?: MutableRefObject<number>
   onRequestCanvassAdd: (input: {
     lat: number
     lon: number
@@ -544,11 +520,9 @@ export type AddressesMapLibreProps = {
   onTrackStepLongPress?: (pointId: string) => void
   /** Subject tracking: user held a canvass location — offer switching to Video canvassing. */
   onCanvassLocationLongPress?: (locationId: string) => void
-  /**
-   * Optional: global hold on the map canvas (empty space) to toggle modes.
-   * This is separate from pin/marker long-press so users can switch without targeting a specific point.
-   */
-  onGlobalMapLongPressToggle?: () => void
+  /** Visit-density heatmap (GeoJSON points with `weight`); drawn under canvass polygons. */
+  visitHeatmapGeojson?: FeatureCollection | null
+  showVisitHeatmap?: boolean
 }
 
 const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, AddressesMapLibreProps>(
@@ -561,14 +535,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     // (useEffect runs too late for rapid taps before the next commit).
     propsRef.current = props
 
-    /** After any map long-press gesture, skip the next synthetic map click (release / deferred tap). */
-    const suppressNextMapClickRef = useRef(false)
+    /** After canvass long-press, skip one synthetic map click / deferred tap. */
+    const canvassLocationLongPressSuppressRef = useRef(false)
 
     /** Pair with `mapClickPendingTimerRef`: second tap in quick succession zooms; first tap is deferred. */
     const mapClickFirstTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
     const mapClickPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-    /** After dismiss-from-search UI, block canvass add/select until deferred map tap window passes (see SINGLE_TAP_DEFER_MS). */
-    const suppressCanvassTapUntilRef = useRef(0)
     const mapClickPendingEventRef = useRef<MapLayerMouseEvent | null>(null)
 
     useEffect(() => {
@@ -615,6 +587,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       getZoom() {
         return mapRef.current?.getMap()?.getZoom() ?? 11
       },
+      getCenter() {
+        const map = mapRef.current?.getMap()
+        if (!map) return null
+        const c = map.getCenter()
+        return { lat: c.lat, lon: c.lng }
+      },
       clearPendingMapTap() {
         if (mapClickPendingTimerRef.current) {
           clearTimeout(mapClickPendingTimerRef.current)
@@ -622,7 +600,6 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         }
         mapClickPendingEventRef.current = null
         mapClickFirstTapRef.current = null
-        suppressCanvassTapUntilRef.current = performance.now() + 450
       },
     }))
 
@@ -674,6 +651,13 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     )
 
     const canvassLocClusterFc = useMemo(() => buildCanvassLocationClusterCollection(props.mapPins), [props.mapPins])
+
+    const visitHeatmapFc = useMemo(() => {
+      if (!props.showVisitHeatmap) return null
+      const g = props.visitHeatmapGeojson
+      if (!g?.features?.length) return null
+      return g
+    }, [props.showVisitHeatmap, props.visitHeatmapGeojson])
 
     const flushPreload = useCallback(() => {
       const p = propsRef.current
@@ -804,24 +788,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         let holdTimer: ReturnType<typeof setTimeout> | null = null
         let downPt: { x: number; y: number } | null = null
         let client0: { x: number; y: number } | null = null
-        let capturedId: number | null = null
-
-        const releaseCapture = () => {
-          if (capturedId == null) return
-          try {
-            canvas.releasePointerCapture(capturedId)
-          } catch {
-            /* ignore */
-          }
-          capturedId = null
-        }
 
         const clearHold = () => {
           if (holdTimer) {
             clearTimeout(holdTimer)
             holdTimer = null
           }
-          releaseCapture()
           downPt = null
           client0 = null
         }
@@ -834,14 +806,10 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         const onDown = (ev: PointerEvent) => {
           const p = propsRef.current
           if (p.caseTab !== 'tracking' || !p.onCanvassLocationLongPress) return
+          if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
+          if (p.addrSearchBlocksMapClicks) return
           if (ev.pointerType === 'mouse' && ev.button !== 0) return
           clearHold()
-          try {
-            canvas.setPointerCapture(ev.pointerId)
-            capturedId = ev.pointerId
-          } catch {
-            /* ignore */
-          }
           client0 = { x: ev.clientX, y: ev.clientY }
           downPt = canvasPoint(ev)
           holdTimer = window.setTimeout(() => {
@@ -856,7 +824,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
               }
               mapClickPendingEventRef.current = null
               mapClickFirstTapRef.current = null
-              suppressNextMapClickRef.current = true
+              canvassLocationLongPressSuppressRef.current = true
               cur.onCanvassLocationLongPress(hit.id)
             }
             downPt = null
@@ -912,159 +880,36 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
     const tryResolveTrackHit = useCallback(
       (map: GlMap, clickPx: { x: number; y: number }, ti: MapTrackingInteraction): 'picked' | 'blocked' | 'none' => {
-        const h = resolveTrackHitAtPixel(map, clickPx, ti)
-        if (h.kind === 'picked') {
-          ti.onPickPoint(h.pointId)
+        const r = ti.pickRadiusPx ?? 28
+        const r2 = r * r
+        let bestManip: { id: string; d2: number } | null = null
+        let anyPin = false
+        for (const pt of ti.trackPoints) {
+          if (pt.showOnMap === false) continue
+          if (ti.visibleTrackIds[pt.trackId] === false) continue
+          const lp = map.project([pt.lon, pt.lat])
+          const dx = lp.x - clickPx.x
+          const dy = lp.y - clickPx.y
+          const d2 = dx * dx + dy * dy
+          if (d2 > r2) continue
+          anyPin = true
+          if (ti.canManipulateTrackPoint(pt.id) && (!bestManip || d2 < bestManip.d2)) bestManip = { id: pt.id, d2 }
+        }
+        if (bestManip) {
+          ti.onPickPoint(bestManip.id)
           return 'picked'
         }
-        if (h.kind === 'blocked') return 'blocked'
+        if (anyPin) return 'blocked'
         return 'none'
       },
       [],
     )
 
-    // Global hold: empty map only (pointer events work for touch and mouse).
-    useEffect(() => {
-      if (!props.onGlobalMapLongPressToggle) return
-
-      let alive = true
-      let poll: ReturnType<typeof setInterval> | null = null
-      let detachCanvasListeners: (() => void) | null = null
-
-      const attach = (map: GlMap) => {
-        const canvas = map.getCanvas()
-        let holdTimer: ReturnType<typeof setTimeout> | null = null
-        let downPt: { x: number; y: number } | null = null
-        let client0: { x: number; y: number } | null = null
-        let capturedId: number | null = null
-
-        const releaseCapture = () => {
-          if (capturedId == null) return
-          try {
-            canvas.releasePointerCapture(capturedId)
-          } catch {
-            /* ignore */
-          }
-          capturedId = null
-        }
-
-        const clearHold = () => {
-          if (holdTimer) {
-            clearTimeout(holdTimer)
-            holdTimer = null
-          }
-          releaseCapture()
-          downPt = null
-          client0 = null
-        }
-
-        const canvasPoint = (ev: PointerEvent) => {
-          const r = canvas.getBoundingClientRect()
-          return { x: ev.clientX - r.left, y: ev.clientY - r.top }
-        }
-
-        const onDown = (ev: PointerEvent) => {
-          const cur = propsRef.current
-          if (!cur.onGlobalMapLongPressToggle) return
-          if (ev.pointerType === 'mouse' && ev.button !== 0) return
-          clearHold()
-          try {
-            canvas.setPointerCapture(ev.pointerId)
-            capturedId = ev.pointerId
-          } catch {
-            /* ignore */
-          }
-          client0 = { x: ev.clientX, y: ev.clientY }
-          downPt = canvasPoint(ev)
-          holdTimer = window.setTimeout(() => {
-            holdTimer = null
-            const cur2 = propsRef.current
-            if (!downPt || !cur2.onGlobalMapLongPressToggle || !map) {
-              clearHold()
-              return
-            }
-
-            const trackHit = resolveTrackHitAtPixel(map, downPt, cur2.trackingInteraction)
-            if (trackHit.kind !== 'none') {
-              clearHold()
-              return
-            }
-            if (locationFromCanvassRenderedLayers(map, downPt, cur2.mapPins, cur2.locations)) {
-              clearHold()
-              return
-            }
-
-            if (mapClickPendingTimerRef.current) {
-              clearTimeout(mapClickPendingTimerRef.current)
-              mapClickPendingTimerRef.current = null
-            }
-            mapClickPendingEventRef.current = null
-            mapClickFirstTapRef.current = null
-
-            suppressNextMapClickRef.current = true
-            cur2.onGlobalMapLongPressToggle()
-            clearHold()
-          }, MAP_LONG_PRESS_MS)
-        }
-
-        const onMove = (ev: PointerEvent) => {
-          if (!client0) return
-          if ((ev.clientX - client0.x) ** 2 + (ev.clientY - client0.y) ** 2 > MAP_LONG_PRESS_MOVE_PX2) clearHold()
-        }
-
-        const onUp = () => clearHold()
-
-        canvas.addEventListener('pointerdown', onDown)
-        canvas.addEventListener('pointermove', onMove)
-        canvas.addEventListener('pointerup', onUp)
-        canvas.addEventListener('pointercancel', onUp)
-
-        return () => {
-          clearHold()
-          canvas.removeEventListener('pointerdown', onDown)
-          canvas.removeEventListener('pointermove', onMove)
-          canvas.removeEventListener('pointerup', onUp)
-          canvas.removeEventListener('pointercancel', onUp)
-        }
-      }
-
-      const tryAttach = () => {
-        const map = mapRef.current?.getMap()
-        if (!map || !alive) return false
-        if (detachCanvasListeners) detachCanvasListeners()
-        detachCanvasListeners = attach(map)
-        return true
-      }
-
-      if (!tryAttach()) {
-        poll = setInterval(() => {
-          if (tryAttach() && poll) {
-            clearInterval(poll)
-            poll = null
-          }
-        }, 50)
-      }
-
-      return () => {
-        alive = false
-        if (poll) clearInterval(poll)
-        if (detachCanvasListeners) detachCanvasListeners()
-        detachCanvasListeners = null
-      }
-    }, [props.onGlobalMapLongPressToggle])
-
     const runMapClickInteraction = useCallback(
       (e: MapLayerMouseEvent) => {
         const p = propsRef.current
-        if (suppressNextMapClickRef.current) {
-          suppressNextMapClickRef.current = false
-          return
-        }
-        if (
-          p.caseTab === 'addresses' &&
-          (p.suppressCanvassMapAdd || performance.now() < suppressCanvassTapUntilRef.current)
-        )
-          return
+        if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
+        if (p.addrSearchBlocksMapClicks) return
         const map = mapRef.current?.getMap()
         const lat = e.lngLat.lat
         const lon = e.lngLat.lng
@@ -1170,17 +1015,6 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
     const onClick = useCallback(
       (e: MapLayerMouseEvent) => {
-        if (suppressNextMapClickRef.current) {
-          suppressNextMapClickRef.current = false
-          if (mapClickPendingTimerRef.current) {
-            clearTimeout(mapClickPendingTimerRef.current)
-            mapClickPendingTimerRef.current = null
-          }
-          mapClickPendingEventRef.current = null
-          mapClickFirstTapRef.current = null
-          return
-        }
-
         const p = propsRef.current
         if (p.caseTab === 'tracking' || p.placementClickAddsTrackPoint) {
           runMapClickInteraction(e)
@@ -1265,6 +1099,34 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         onZoomEnd={syncZoomAndPreload}
       >
         <NavigationControl position="top-left" showCompass={false} />
+
+        {visitHeatmapFc ? (
+          <Source id="visit-heat" type="geojson" data={visitHeatmapFc}>
+            <Layer
+              id="visit-heat-layer"
+              type="heatmap"
+              paint={{
+                'heatmap-weight': ['get', 'weight'],
+                'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 9, 0.5, 14, 1.1],
+                'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 9, 14, 14, 26],
+                'heatmap-opacity': 0.5,
+                'heatmap-color': [
+                  'interpolate',
+                  ['linear'],
+                  ['heatmap-density'],
+                  0,
+                  'rgba(59,130,246,0)',
+                  0.35,
+                  'rgba(59,130,246,0.35)',
+                  0.65,
+                  'rgba(234,179,8,0.45)',
+                  1,
+                  'rgba(220,38,38,0.55)',
+                ],
+              }}
+            />
+          </Source>
+        ) : null}
 
         <Source id="canvass-geo" type="geojson" data={canvassFc}>
           <Layer

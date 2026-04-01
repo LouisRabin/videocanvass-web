@@ -1,16 +1,16 @@
-/** 24-hour (military) clock for all user-visible timestamps in the app. */
-const DISPLAY: Intl.DateTimeFormatOptions = {
-  year: 'numeric',
-  month: 'short',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hour12: false,
-}
+/** Fixed locale for the calendar portion only (no `Intl` time fields — clock is always manual 00–23). */
+const APP_DISPLAY_LOCALE = 'en-US'
 
+const padClock = (n: number) => String(n).padStart(2, '0')
+
+/**
+ * Calendar date + **24-hour (military) clock** built from numeric components so UI never depends on OS/AM–PM.
+ */
 export function formatAppDateTime(ts: number | Date): string {
-  return new Date(ts).toLocaleString(undefined, DISPLAY)
+  const d = new Date(ts)
+  const cal = d.toLocaleDateString(APP_DISPLAY_LOCALE, { year: 'numeric', month: 'short', day: 'numeric' })
+  const clock = `${padClock(d.getHours())}:${padClock(d.getMinutes())}:${padClock(d.getSeconds())}`
+  return `${cal}, ${clock}`
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -41,8 +41,7 @@ export function parseDatetimeLocalToTimestamp(s: string): number | null {
 /** 24-hour time first, then calendar date (for DVR incident display). */
 export function formatTimeThenDate(ts: number | Date): string {
   const d = new Date(ts)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  const cal = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  const clock = `${padClock(d.getHours())}:${padClock(d.getMinutes())}:${padClock(d.getSeconds())}`
+  const cal = d.toLocaleDateString(APP_DISPLAY_LOCALE, { year: 'numeric', month: 'short', day: 'numeric' })
   return `${clock}, ${cal}`
 }

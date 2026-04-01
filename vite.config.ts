@@ -6,6 +6,8 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   server: {
+    // Cloudflare quick tunnel (*.trycloudflare.com) sets Host to that domain; Vite 6+ blocks unknown hosts by default.
+    allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/api/geocode/nominatim-reverse': {
         target: 'https://nominatim.openstreetmap.org',

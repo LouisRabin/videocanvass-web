@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
+import { createPortal } from 'react-dom'
 import { Modal } from './Modal'
 import {
   composeManualOffset,
@@ -52,6 +61,508 @@ const numGrid: CSSProperties = {
   gap: 10,
 }
 
+const pad2 = (n: number) => String(n).padStart(2, '0')
+const HOUR_OPTIONS_24 = Array.from({ length: 24 }, (_, i) => pad2(i))
+const MINUTE_OPTIONS_60 = Array.from({ length: 60 }, (_, i) => pad2(i))
+const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const
+
+const WHEEL_ROW_PX = 26
+const WHEEL_VISIBLE_ROWS = 5
+const WHEEL_HEIGHT_PX = WHEEL_ROW_PX * WHEEL_VISIBLE_ROWS
+/** Spacer rows so the first/last value can scroll into the center band (same as half of visible rows). */
+const WHEEL_PAD_ROWS = Math.floor(WHEEL_VISIBLE_ROWS / 2)
+
+function wheelSnapScrollTop(index: number, len: number): number {
+  const max = Math.max(0, (len - 1) * WHEEL_ROW_PX)
+  const t = index * WHEEL_ROW_PX
+  return Math.max(0, Math.min(max, t))
+}
+
+const wheelPadRowStyle: CSSProperties = {
+  height: WHEEL_ROW_PX,
+  flexShrink: 0,
+  scrollSnapAlign: 'start',
+  boxSizing: 'border-box',
+}
+
+/** Scroll-snap column: native div + touch scroll (no seconds). */
+function TimeWheel(props: {
+  values: string[]
+  value: string
+  disabled?: boolean
+  onChange: (v: string) => void
+  ariaLabel: string
+}) {
+  const { values, value, disabled, onChange, ariaLabel } = props
+  const ref = useRef<HTMLDivElement>(null)
+  const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const scrollToValue = useCallback(
+    (v: string, instant: boolean) => {
+      const el = ref.current
+      if (!el || disabled) return
+      const idx = values.indexOf(v)
+      if (idx < 0) return
+      const top = wheelSnapScrollTop(idx, values.length)
+      el.scrollTo({ top, behavior: instant ? 'auto' : 'smooth' })
+    },
+    [values, disabled],
+  )
+
+  useLayoutEffect(() => {
+    scrollToValue(value, true)
+  }, [value, scrollToValue])
+
+  useEffect(() => {
+    return () => {
+      if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current)
+    }
+  }, [])
+
+  const onScroll = () => {
+    const el = ref.current
+    if (!el || disabled) return
+    if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current)
+    scrollEndTimer.current = setTimeout(() => {
+      scrollEndTimer.current = null
+      const n = Math.round(el.scrollTop / WHEEL_ROW_PX)
+      const c = Math.max(0, Math.min(values.length - 1, n))
+      const next = values[c]!
+      const snap = wheelSnapScrollTop(c, values.length)
+      if (Math.abs(el.scrollTop - snap) > 0.5) el.scrollTop = snap
+      if (next !== value) onChange(next)
+    }, 50)
+  }
+
+  return (
+    <div
+      style={{
+        height: WHEEL_HEIGHT_PX,
+        border: '1px solid #e5e7eb',
+        borderRadius: 8,
+        overflow: 'hidden',
+        background: '#f9fafb',
+        opacity: disabled ? 0.45 : 1,
+        pointerEvents: disabled ? 'none' : 'auto',
+        position: 'relative',
+        boxSizing: 'border-box',
+      }}
+    >
+      <div
+        aria-label={ariaLabel}
+        ref={ref}
+        role="listbox"
+        onScroll={onScroll}
+        style={{
+          height: WHEEL_HEIGHT_PX,
+          overflowY: 'scroll',
+          overscrollBehavior: 'contain',
+          scrollSnapType: 'y mandatory',
+          WebkitOverflowScrolling: 'touch',
+          scrollbarWidth: 'thin',
+        }}
+      >
+        {Array.from({ length: WHEEL_PAD_ROWS }, (_, i) => (
+          <div key={`wheel-pad-top-${i}`} aria-hidden style={wheelPadRowStyle} />
+        ))}
+        {values.map((v) => (
+          <div
+            key={v}
+            role="option"
+            aria-selected={v === value}
+            onClick={() => {
+              if (disabled) return
+              onChange(v)
+            }}
+            style={{
+              height: WHEEL_ROW_PX,
+              scrollSnapAlign: 'start',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 14,
+              fontWeight: v === value ? 800 : 600,
+              fontVariantNumeric: 'tabular-nums',
+              color: v === value ? '#111827' : '#9ca3af',
+              flexShrink: 0,
+              boxSizing: 'border-box',
+              cursor: disabled ? 'default' : 'pointer',
+              touchAction: 'manipulation',
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            {v}
+          </div>
+        ))}
+        {Array.from({ length: WHEEL_PAD_ROWS }, (_, i) => (
+          <div key={`wheel-pad-bottom-${i}`} aria-hidden style={wheelPadRowStyle} />
+        ))}
+      </div>
+      {/* Center highlight band */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: '50%',
+          height: WHEEL_ROW_PX,
+          marginTop: -WHEEL_ROW_PX / 2,
+          borderTop: '1px solid #d1d5db',
+          borderBottom: '1px solid #d1d5db',
+          pointerEvents: 'none',
+        }}
+      />
+    </div>
+  )
+}
+
+function parseDvrLocalParts(iso: string): { date: string; h: string; m: string; s: string } {
+  const v = iso.trim()
+  if (!v) return { date: '', h: '00', m: '00', s: '00' }
+  const [date = '', rest = ''] = v.split('T')
+  if (!date) return { date: '', h: '00', m: '00', s: '00' }
+  if (!rest) return { date, h: '00', m: '00', s: '00' }
+  const [h = '00', m = '00', sRaw = '00'] = rest.split(':')
+  const sx = sRaw.replace(/\D/g, '').slice(0, 2) || '00'
+  return {
+    date,
+    h: pad2(Math.min(23, Math.max(0, parseInt(h, 10) || 0))),
+    m: pad2(Math.min(59, Math.max(0, parseInt(m, 10) || 0))),
+    s: pad2(Math.min(59, Math.max(0, parseInt(sx, 10) || 0))),
+  }
+}
+
+function ymdTodayLocal(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+const PICKER_PORTAL_Z = 63000
+
+/**
+ * Opens a separate prompt (portal) with date and time side-by-side. Draft state: either can be set first;
+ * Done fills missing date with today or missing time with 00:00.
+ */
+export function DvrSingleDateTimePicker(props: {
+  legend: string
+  value: string
+  onChange: (v: string) => void
+  isNarrow: boolean
+  warn?: boolean
+  /** Show “Clear” in the dialog footer (e.g. optional subject time on a track point). */
+  clearable?: boolean
+}) {
+  type Draft = { date: string; h: string; m: string }
+  const parsed = parseDvrLocalParts(props.value)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [draft, setDraft] = useState<Draft>({ date: parsed.date, h: parsed.h, m: parsed.m })
+  const [cursor, setCursor] = useState(() => new Date())
+
+  const openPrompt = useCallback(() => {
+    const p = parseDvrLocalParts(props.value)
+    setDraft({ date: p.date, h: p.h, m: p.m })
+    if (p.date) {
+      const [y, m, d] = p.date.split('-').map(Number)
+      setCursor(new Date(y!, (m ?? 1) - 1, d ?? 1))
+    } else {
+      setCursor(new Date())
+    }
+    setPickerOpen(true)
+  }, [props.value])
+
+  useEffect(() => {
+    if (!pickerOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      setPickerOpen(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [pickerOpen])
+
+  const commit = useCallback(() => {
+    const date = draft.date.trim() || ymdTodayLocal()
+    const h = draft.h || '00'
+    const m = draft.m || '00'
+    props.onChange(`${date}T${h}:${m}:00`)
+    setPickerOpen(false)
+  }, [draft, props.onChange])
+
+  const cy = cursor.getFullYear()
+  const cmi = cursor.getMonth()
+  const firstDow = new Date(cy, cmi, 1).getDay()
+  const dim = new Date(cy, cmi + 1, 0).getDate()
+  const cells: (number | null)[] = []
+  for (let i = 0; i < firstDow; i++) cells.push(null)
+  for (let d = 1; d <= dim; d++) cells.push(d)
+  while (cells.length % 7 !== 0) cells.push(null)
+  while (cells.length < 42) cells.push(null)
+
+  const monthTitle = cursor.toLocaleString('en-US', { month: 'long', year: 'numeric' })
+  const ymdSelected = (day: number) => `${cy}-${pad2(cmi + 1)}-${pad2(day)}`
+
+  const ts = props.value.trim() ? parseDateTimeLocal(props.value) : null
+  const summary = ts != null ? formatAppDateTime(ts) : null
+
+  const openBtnStyle: CSSProperties = {
+    ...field,
+    minHeight: props.isNarrow ? 48 : 44,
+    fontSize: props.isNarrow ? 16 : 14,
+    textAlign: 'left',
+    cursor: 'pointer',
+    fontWeight: ts != null ? 700 : 600,
+    color: ts != null ? '#111827' : '#6b7280',
+    touchAction: 'manipulation',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+  }
+
+  const navBtn: CSSProperties = {
+    ...btn,
+    padding: '2px 8px',
+    minWidth: 32,
+    fontSize: 15,
+    lineHeight: 1,
+  }
+
+  const portal =
+    pickerOpen && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            role="presentation"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: PICKER_PORTAL_Z,
+              display: 'grid',
+              placeItems: 'center',
+              padding: 'max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left))',
+              boxSizing: 'border-box',
+              background: 'rgba(17, 24, 39, 0.45)',
+            }}
+            onClick={() => setPickerOpen(false)}
+          >
+            <div
+              role="dialog"
+              aria-label={props.legend}
+              style={{
+                width: 'min(520px, 100%)',
+                maxHeight: 'min(640px, 92dvh)',
+                overflow: 'auto',
+                background: 'white',
+                borderRadius: 16,
+                border: '1px solid #e5e7eb',
+                boxShadow: '0 24px 48px rgba(0,0,0,0.2)',
+                boxSizing: 'border-box',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  padding: '12px 14px',
+                  borderBottom: '1px solid #e5e7eb',
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{ fontWeight: 900, fontSize: 15 }}>{props.legend}</div>
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(false)}
+                  style={{ ...btn, padding: '6px 10px', minWidth: 40 }}
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div
+                style={{
+                  padding: 14,
+                  display: 'flex',
+                  flexDirection: props.isNarrow ? 'column' : 'row',
+                  gap: 16,
+                  alignItems: 'flex-start',
+                }}
+              >
+                <div style={{ flex: '1 1 200px', minWidth: 0, width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                    <button
+                      type="button"
+                      style={navBtn}
+                      onClick={() => setCursor(new Date(cy, cmi - 1, 1))}
+                      aria-label="Previous month"
+                    >
+                      ‹
+                    </button>
+                    <div style={{ fontWeight: 900, fontSize: 13, color: '#111827' }}>{monthTitle}</div>
+                    <button
+                      type="button"
+                      style={navBtn}
+                      onClick={() => setCursor(new Date(cy, cmi + 1, 1))}
+                      aria-label="Next month"
+                    >
+                      ›
+                    </button>
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(7, 1fr)',
+                      gap: 2,
+                      marginTop: 8,
+                      textAlign: 'center',
+                      fontSize: 10,
+                      color: '#6b7280',
+                      fontWeight: 800,
+                    }}
+                  >
+                    {WEEKDAY_LABELS.map((w) => (
+                      <div key={w}>{w}</div>
+                    ))}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, marginTop: 4 }}>
+                    {cells.map((day, i) =>
+                      day == null ? (
+                        <div key={`e-${i}`} aria-hidden style={{ minHeight: 26 }} />
+                      ) : (
+                        <button
+                          key={`${cy}-${cmi}-${day}`}
+                          type="button"
+                          onClick={() =>
+                            setDraft((d) => ({ ...d, date: ymdSelected(day) }))
+                          }
+                          style={{
+                            minHeight: props.isNarrow ? 30 : 28,
+                            padding: 0,
+                            borderRadius: 6,
+                            border:
+                              draft.date === ymdSelected(day)
+                                ? '2px solid #111827'
+                                : '1px solid #e5e7eb',
+                            background: draft.date === ymdSelected(day) ? '#111827' : 'white',
+                            color: draft.date === ymdSelected(day) ? 'white' : '#111827',
+                            fontWeight: 700,
+                            fontSize: 12,
+                            cursor: 'pointer',
+                            touchAction: 'manipulation',
+                            lineHeight: 1,
+                          }}
+                        >
+                          {day}
+                        </button>
+                      ),
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ flex: '1 1 160px', minWidth: 0, width: '100%' }}>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: 12,
+                      alignItems: 'stretch',
+                      maxWidth: 280,
+                      margin: props.isNarrow ? '0 auto' : 0,
+                    }}
+                  >
+                    <div style={{ display: 'grid', gap: 4, minWidth: 0 }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: '#6b7280', textAlign: 'center' }}>
+                        Hour
+                      </span>
+                      <TimeWheel
+                        values={HOUR_OPTIONS_24}
+                        value={draft.h}
+                        onChange={(h) => setDraft((d) => ({ ...d, h }))}
+                        ariaLabel={`${props.legend} — hour 00–23`}
+                      />
+                    </div>
+                    <div style={{ display: 'grid', gap: 4, minWidth: 0 }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: '#6b7280', textAlign: 'center' }}>
+                        Minute
+                      </span>
+                      <TimeWheel
+                        values={MINUTE_OPTIONS_60}
+                        value={draft.m}
+                        onChange={(m) => setDraft((d) => ({ ...d, m }))}
+                        ariaLabel={`${props.legend} — minute`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 10,
+                  justifyContent: 'flex-end',
+                  padding: '12px 14px',
+                  borderTop: '1px solid #e5e7eb',
+                }}
+              >
+                <button type="button" style={btn} onClick={() => setPickerOpen(false)}>
+                  Cancel
+                </button>
+                {props.clearable ? (
+                  <button
+                    type="button"
+                    style={btn}
+                    onClick={() => {
+                      props.onChange('')
+                      setPickerOpen(false)
+                    }}
+                  >
+                    Clear
+                  </button>
+                ) : null}
+                <button type="button" style={btnPrimary} onClick={commit}>
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null
+
+  return (
+    <div
+      style={
+        props.warn
+          ? {
+              padding: 10,
+              borderRadius: 12,
+              border: '1px solid #dc2626',
+              background: '#fef2f2',
+              boxSizing: 'border-box',
+            }
+          : undefined
+      }
+    >
+      <div style={label}>{props.legend}</div>
+      <button type="button" style={openBtnStyle} onClick={openPrompt} aria-haspopup="dialog">
+        <span>{summary ?? 'Pick date and time'}</span>
+        <span style={{ opacity: 0.65, flexShrink: 0, fontSize: 12, fontWeight: 700 }}>Set</span>
+      </button>
+      {portal}
+    </div>
+  )
+}
+
 type Step = 'accuracy' | 'calc'
 
 type Props = {
@@ -82,7 +593,7 @@ export function ProbativeDvrFlowModals(props: Props) {
           onCancel={props.onDismiss}
         />
       ) : props.step === 'calc' ? (
-        <CalculatorStep
+        <DvrCalculatorStep
           onBack={props.onCalcBack}
           onCancel={props.onDismiss}
           onApply={props.onCalcApply}
@@ -117,8 +628,19 @@ function AccuracyStep(props: {
   )
 }
 
-function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApply: (notes: string) => void }) {
-  const isNarrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
+export function DvrCalculatorStep(props: {
+  onBack: () => void
+  onCancel: () => void
+  onApply: (notes: string) => void
+  /** Wide toolbar embed: hide Back (no wizard step before calculator). */
+  toolbarEmbed?: boolean
+  /** Web toolbar: DVR time only (no manual offset block). */
+  hideManualOffset?: boolean
+  /** Override breakpoint-based narrow layout (toolbar vs modal). */
+  isNarrowOverride?: boolean
+}) {
+  const mqNarrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
+  const isNarrow = props.isNarrowOverride ?? mqNarrow
   const [nowTick, setNowTick] = useState(() => Date.now())
   useEffect(() => {
     const t = window.setInterval(() => setNowTick(Date.now()), 1000)
@@ -129,8 +651,6 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
   const [manual, setManual] = useState({ years: 0, months: 0, days: 0, hours: 0, minutes: 0 })
   const [dvrLocal, setDvrLocal] = useState('')
   const [incidentLocal, setIncidentLocal] = useState('')
-  const dvrInputRef = useRef<HTMLInputElement | null>(null)
-  const incidentInputRef = useRef<HTMLInputElement | null>(null)
   const [error, setError] = useState('')
   type ResultPreview = {
     comparison: 'faster' | 'slower' | 'none'
@@ -162,7 +682,7 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
   const dvrParsedMs = useMemo(() => parseDateTimeLocal(dvrLocal), [dvrLocal])
   const incidentParsedMs = useMemo(() => parseDateTimeLocal(incidentLocal), [incidentLocal])
   const incidentInFuture = incidentParsedMs != null && incidentParsedMs > nowTick
-  const showManualOffset = dvrParsedMs == null
+  const showManualOffset = !props.hideManualOffset && dvrParsedMs == null
 
   const computeResult = useCallback((): { ok: true; preview: ResultPreview } | { ok: false; error: string } => {
     const nowMs = Date.now()
@@ -170,8 +690,10 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
     const manualOk = manualOffsetHasInput(manual)
     if (dvrParsedMs != null) {
       driftMs = driftFromClocks(nowMs, dvrParsedMs)
-    } else if (manualOk) {
+    } else if (manualOk && !props.hideManualOffset) {
       driftMs = composeManualOffset(manual, manualDir)
+    } else if (props.hideManualOffset) {
+      return { ok: false, error: 'Enter the DVR date and time.' }
     } else {
       return { ok: false, error: 'Enter the DVR date and time, or fill at least one manual offset field.' }
     }
@@ -216,7 +738,7 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
     }
 
     return { ok: true, preview: { comparison, amountBold, dvrIncidentTimeFirstDate, notePlain } }
-  }, [dvrParsedMs, incidentLocal, manual, manualDir])
+  }, [dvrParsedMs, incidentLocal, manual, manualDir, props.hideManualOffset])
 
   const handleCalculate = useCallback(() => {
     setError('')
@@ -242,19 +764,6 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
 
   const manualHasInput = manualOffsetHasInput(manual)
   const showCalculate = !(manualHasInput && dvrParsedMs == null)
-  const dvrDisplay = dvrParsedMs != null ? formatAppDateTime(dvrParsedMs) : 'Pick date and time'
-  const incidentDisplay = incidentParsedMs != null ? formatAppDateTime(incidentParsedMs) : 'Pick date and time'
-
-  const openPicker = (ref: React.RefObject<HTMLInputElement | null>) => {
-    const el = ref.current as (HTMLInputElement & { showPicker?: () => void }) | null
-    if (!el) return
-    if (typeof el.showPicker === 'function') {
-      el.showPicker()
-    } else {
-      el.focus()
-      el.click()
-    }
-  }
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -263,85 +772,15 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
         <div style={{ ...field, color: '#374151', fontWeight: 700 }}>{deviceNowStr}</div>
       </div>
 
-      <div>
-        <div style={label}>DVR time</div>
-        <button
-          type="button"
-          style={{
-            ...field,
-            width: 'auto',
-            maxWidth: '100%',
-            textAlign: 'left',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            gap: 6,
-            padding: '6px 10px',
-            borderRadius: 999,
-            minHeight: 0,
-            fontSize: 13,
-            lineHeight: 1.2,
-            fontWeight: dvrParsedMs != null ? 700 : 600,
-            color: dvrParsedMs != null ? '#111827' : '#6b7280',
-            cursor: 'pointer',
-          }}
-          onClick={() => openPicker(dvrInputRef)}
-        >
-          <span>{dvrDisplay}</span>
-          <span aria-hidden style={{ opacity: 0.7, fontSize: 12 }}>📅</span>
-        </button>
-        <input
-          ref={dvrInputRef}
-          type="datetime-local"
-          step={1}
-          value={dvrLocal}
-          onChange={(e) => setDvrLocal(e.target.value)}
-          style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
-          tabIndex={-1}
-          aria-hidden
-        />
-      </div>
+      <DvrSingleDateTimePicker legend="DVR time" value={dvrLocal} onChange={setDvrLocal} isNarrow={isNarrow} />
 
       <div>
-        <div style={label}>Incident time</div>
-        <button
-          type="button"
-          style={{
-            ...field,
-            width: 'auto',
-            maxWidth: '100%',
-            textAlign: 'left',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            gap: 6,
-            padding: '6px 10px',
-            borderRadius: 999,
-            minHeight: 0,
-            fontSize: 13,
-            lineHeight: 1.2,
-            fontWeight: incidentParsedMs != null ? 700 : 600,
-            color: incidentParsedMs != null ? '#111827' : '#6b7280',
-            cursor: 'pointer',
-            ...(incidentInFuture
-              ? { borderColor: '#dc2626', boxShadow: '0 0 0 1px #dc2626', background: '#fef2f2' }
-              : {}),
-          }}
-          aria-invalid={incidentInFuture}
-          onClick={() => openPicker(incidentInputRef)}
-        >
-          <span>{incidentDisplay}</span>
-          <span aria-hidden style={{ opacity: 0.7, fontSize: 12 }}>📅</span>
-        </button>
-        <input
-          ref={incidentInputRef}
-          type="datetime-local"
-          step={1}
+        <DvrSingleDateTimePicker
+          legend="Incident time"
           value={incidentLocal}
-          onChange={(e) => setIncidentLocal(e.target.value)}
-          style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
-          tabIndex={-1}
-          aria-hidden
+          onChange={setIncidentLocal}
+          isNarrow={isNarrow}
+          warn={incidentInFuture}
         />
         {incidentInFuture ? (
           <div style={{ marginTop: 6, fontSize: 12, color: '#b91c1c', lineHeight: 1.4, fontWeight: 600 }}>
@@ -448,17 +887,19 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
             Calculate
           </button>
         ) : null}
-        <button
-          type="button"
-          style={
-            isNarrow
-              ? { ...btn, flex: '1 1 0', minWidth: 0, padding: '8px 6px', fontSize: 12 }
-              : btn
-          }
-          onClick={props.onBack}
-        >
-          Back
-        </button>
+        {!props.toolbarEmbed ? (
+          <button
+            type="button"
+            style={
+              isNarrow
+                ? { ...btn, flex: '1 1 0', minWidth: 0, padding: '8px 6px', fontSize: 12 }
+                : btn
+            }
+            onClick={props.onBack}
+          >
+            Back
+          </button>
+        ) : null}
         <button
           type="button"
           style={
