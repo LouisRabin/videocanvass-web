@@ -224,7 +224,8 @@ function WideMapNotesPlaceholder(props: { onDismiss: () => void }) {
       style={{
         ...card,
         position: 'relative',
-        width: '100%',
+        width: 'min(980px, calc(100% - 48px))',
+        margin: '0 auto',
         maxHeight: 'min(220px, 30svh)',
         boxSizing: 'border-box',
         padding: '14px 16px',
@@ -253,7 +254,8 @@ function WideMapTrackStepPlaceholder(props: { onDismiss: () => void }) {
       style={{
         ...card,
         position: 'relative',
-        width: '100%',
+        width: 'min(980px, calc(100% - 48px))',
+        margin: '0 auto',
         maxHeight: 'min(220px, 30svh)',
         boxSizing: 'border-box',
         padding: '14px 16px',
@@ -269,7 +271,7 @@ function WideMapTrackStepPlaceholder(props: { onDismiss: () => void }) {
         Step details
       </div>
       <div style={{ marginTop: 10, color: '#6b7280', fontSize: 13, fontWeight: 600, lineHeight: 1.45 }}>
-        Select a step on the map to view and edit notes, time, and label for that point.
+        Select a location on the map to view and edit notes, status, and building outline for that address.
       </div>
     </div>
   )
@@ -621,6 +623,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [autoContinuationTrackId, setAutoContinuationTrackId] = useState<string | null>(null)
   const [visibleTrackIds, setVisibleTrackIds] = useState<Record<string, boolean>>({})
   const caseTrackPoints = useMemo(() => data.trackPoints.filter((p) => p.caseId === props.caseId), [data.trackPoints, props.caseId])
+  const [trackLabelDrafts, setTrackLabelDrafts] = useState<Record<string, string>>({})
+  const trackLabelFocusRef = useRef<Record<string, boolean>>({})
+  const trackLabelDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
 
   const trackForMapAdd = useMemo(() => {
     if (autoContinuationTrackId && caseTracks.some((t) => t.id === autoContinuationTrackId)) return autoContinuationTrackId
@@ -646,8 +651,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [selectedTrackPointId, trackStepUndoTargetId])
 
+  /** Keep wide tracking details expanded while switching between points; collapse only when selection clears. */
   useEffect(() => {
-    setTrackDrawerDetailsOpen(false)
+    if (!selectedTrackPointId) setTrackDrawerDetailsOpen(false)
   }, [selectedTrackPointId])
 
   /** Collapse wide notes sheet when nothing is selected; keep open when switching between pins. */
@@ -697,6 +703,49 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       return next
     })
   }, [caseTracks])
+
+  useEffect(() => {
+    setTrackLabelDrafts((prev) => {
+      const next: Record<string, string> = {}
+      for (const t of caseTracks) {
+        next[t.id] = trackLabelFocusRef.current[t.id] ? (prev[t.id] ?? t.label) : t.label
+      }
+      return next
+    })
+  }, [caseTracks])
+
+  useEffect(() => {
+    return () => {
+      for (const key of Object.keys(trackLabelDebounceRef.current)) {
+        const timer = trackLabelDebounceRef.current[key]
+        if (timer) clearTimeout(timer)
+      }
+    }
+  }, [])
+
+  const flushTrackLabelPersist = useCallback(
+    (trackId: string, label: string) => {
+      const timer = trackLabelDebounceRef.current[trackId]
+      if (timer) {
+        clearTimeout(timer)
+        trackLabelDebounceRef.current[trackId] = null
+      }
+      void updateTrack(actorId, trackId, { label })
+    },
+    [actorId, updateTrack],
+  )
+
+  const scheduleTrackLabelPersist = useCallback(
+    (trackId: string, label: string) => {
+      const timer = trackLabelDebounceRef.current[trackId]
+      if (timer) clearTimeout(timer)
+      trackLabelDebounceRef.current[trackId] = setTimeout(() => {
+        trackLabelDebounceRef.current[trackId] = null
+        void updateTrack(actorId, trackId, { label })
+      }, 400)
+    },
+    [actorId, updateTrack],
+  )
 
   useEffect(() => {
     if (selectedId && !locations.some((l) => l.id === selectedId)) setSelectedId(null)
@@ -1547,12 +1596,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       (caseTab === 'addresses' && viewMode !== 'list' && addressDrawerDetailsOpen) ||
       (caseTab === 'tracking' && trackDrawerDetailsOpen)
     )
-  /** Top of expanded sheet: flat edge toward map. */
-  const wideMapDrawerSeamSheetTopTab =
-    !isNarrow &&
-    showWideMapDrawerSeam &&
-    ((caseTab === 'addresses' && viewMode !== 'list' && addressDrawerDetailsOpen) ||
-      (caseTab === 'tracking' && trackDrawerDetailsOpen))
   /** Wide: white notes/track sheet should paint (collapsed ⇒ display none on overlay). */
   const wideMapDetailPanelOpen =
     !isNarrow &&
@@ -1565,7 +1608,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     !isNarrow && (caseTab === 'tracking' || (caseTab === 'addresses' && viewMode !== 'list'))
   const mapStackBottom: CSSProperties['bottom'] = wideMapUsesFullBleedMapCanvas ? 0 : MAP_CANVAS_BOTTOM_RESERVE
   const showMapDetailOverlayShell =
-    (caseTab === 'tracking' && !!selectedTrackPoint) ||
+    (caseTab === 'tracking' && (!isNarrow || !!selectedTrackPoint)) ||
     (caseTab === 'addresses' && viewMode !== 'list' && (!isNarrow || (!!selected && locationDetailOpen)))
   const mapPaneDetailOverlayStyle: CSSProperties = {
     ...(wideMapDetailCollapsed
@@ -1583,8 +1626,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         }
       : mapPaneDetailOverlay),
     ...(!wideMapDetailPanelOpen && showWideMapDrawerSeam ? { display: 'none' } : {}),
-    ...(wideMapDrawerSeamSheetTopTab && !wideMapDetailCollapsed
-      ? { paddingTop: 'calc(18px + clamp(8px, 1.2vw, 14px))' }
+    ...(!isNarrow && wideMapDetailPanelOpen
+      ? {
+          background: 'transparent',
+          borderTop: 'none',
+          backdropFilter: 'none',
+          WebkitBackdropFilter: 'none',
+        }
       : {}),
   }
   const mapColumnWrapperStyle: CSSProperties = {
@@ -1713,7 +1761,67 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   )
 
   const mapLeftDockProminent = mapLeftToolDockOpen || mapLeftToolSection !== null
-
+  const activeTrackQuickPickId = trackForMapAdd
+  const selectTrackQuickPick = (trackId: string) => {
+    setAutoContinuationTrackId(trackId)
+    setVisibleTrackIds((prev) => ({ ...prev, [trackId]: true }))
+    setWorkspaceCaseTab('tracking')
+  }
+  const openTrackManagerInMenu = useCallback(() => {
+    if (isNarrow) {
+      mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
+      setMapLeftToolDockOpen(true)
+    } else {
+      setWebToolsCollapsed(false)
+    }
+    setMapLeftToolSection('tracks')
+  }, [isNarrow])
+  const openAddTrackFromQuickPick = useCallback(() => {
+    openTrackManagerInMenu()
+    if (!canAddCaseContentHere) return
+    setWorkspaceCaseTab('tracking')
+    setAddTrackKind('person')
+    setAddTrackLabel(`Track ${caseTracks.length + 1}`)
+    setShowAddTrack(true)
+  }, [openTrackManagerInMenu, canAddCaseContentHere, caseTracks.length, setWorkspaceCaseTab])
+  const trackQuickPickButtons = (
+    <>
+      {caseTracks.map((t) => {
+        const active = activeTrackQuickPickId === t.id
+        const color = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+        return (
+          <button
+            key={`track-quick-pick-${t.id}`}
+            type="button"
+            onClick={() => selectTrackQuickPick(t.id)}
+            onDoubleClick={(e) => {
+              e.preventDefault()
+              openTrackManagerInMenu()
+            }}
+            style={{
+              ...btn,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 10px',
+              borderRadius: 999,
+              opacity: active ? 1 : 0.52,
+              borderColor: active ? color : '#d1d5db',
+              background: active ? `${color}1f` : 'rgba(255,255,255,0.92)',
+              fontWeight: active ? 900 : 800,
+              transition: 'opacity 0.15s ease',
+            }}
+            aria-pressed={active}
+            aria-label={`Use ${t.label || 'Track'} for subject tracking. Double-click to open track manager.`}
+            title={`Edit/add points on ${t.label || 'this track'}. Double-click opens Tracks in the menu.`}
+          >
+            <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: color, display: 'inline-block' }} />
+            <span style={{ whiteSpace: 'nowrap' }}>{t.label || 'Track'}</span>
+          </button>
+        )
+      })}
+    </>
+  )
   const filterLegendChipsGridDock = (
     <div
       style={{
@@ -2295,11 +2403,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       />
                     </label>
                     <input
-                      value={t.label}
+                      value={trackLabelDrafts[t.id] ?? t.label}
                       readOnly={!canEditT}
                       placeholder="Track name"
                       title={canEditT ? 'Rename track' : 'No permission to rename'}
-                      onChange={(e) => void updateTrack(actorId, t.id, { label: e.target.value })}
+                      onFocus={() => {
+                        trackLabelFocusRef.current[t.id] = true
+                      }}
+                      onBlur={(e) => {
+                        trackLabelFocusRef.current[t.id] = false
+                        const v = e.currentTarget.value
+                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                        flushTrackLabelPersist(t.id, v)
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                        scheduleTrackLabelPersist(t.id, v)
+                      }}
                       style={{
                         ...field,
                         flex: 1,
@@ -2380,6 +2501,31 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const narrowMapTopShowsFloatingAddress =
     caseTab === 'tracking' || (caseTab === 'addresses' && viewMode === 'map')
+  const showTrackQuickPickRow = narrowMapTopShowsFloatingAddress && (caseTracks.length > 0 || canAddCaseContentHere)
+  const trackQuickPickRowInner =
+    caseTracks.length === 0 ? (
+      <button
+        type="button"
+        disabled={!canAddCaseContentHere}
+        onClick={openAddTrackFromQuickPick}
+        title={!canAddCaseContentHere ? 'No access to add tracks' : 'Add a movement track'}
+        style={{
+          ...btnPrimary,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '6px 14px',
+          borderRadius: 999,
+          fontWeight: 900,
+          fontSize: 13,
+          opacity: canAddCaseContentHere ? 1 : 0.45,
+        }}
+      >
+        Add Track
+      </button>
+    ) : (
+      trackQuickPickButtons
+    )
   const mapPaneShowsInteractive = caseTab === 'tracking' || viewMode === 'map'
   const addrSearchMapShieldActive =
     addrAutocompleteEngaged && !probativePlacementSession && mapPaneShowsInteractive
@@ -2774,6 +2920,41 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       </div>
                     </div>
                   ) : null}
+                  {isNarrow && showTrackQuickPickRow ? (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '50%',
+                        top: 'calc(100% + 6px)',
+                        transform: 'translateX(-50%)',
+                        zIndex: 8,
+                        pointerEvents: 'auto',
+                        display: 'flex',
+                        gap: 6,
+                        flexWrap: 'wrap',
+                        justifyContent: 'center',
+                        width: 'min(94vw, 560px)',
+                      }}
+                    >
+                      {trackQuickPickRowInner}
+                    </div>
+                  ) : null}
+                  {!isNarrow && showTrackQuickPickRow ? (
+                    <div
+                      style={{
+                        pointerEvents: 'auto',
+                        position: 'relative',
+                        zIndex: 8,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        flexWrap: 'wrap',
+                        marginLeft: 8,
+                      }}
+                    >
+                      {trackQuickPickRowInner}
+                    </div>
+                  ) : null}
                   {isNarrow ? (
                     <div
                       ref={mapToolsDockRef}
@@ -2799,6 +2980,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                             aria-label="Open map tools: views, filters, tracks, and photos"
                             onClick={() => {
                               mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
+                              if (isNarrow) {
+                                if (caseTab === 'addresses' && locationDetailOpen) {
+                                  setLocationDetailOpen(false)
+                                }
+                                if (caseTab === 'tracking' && selectedTrackPointId) {
+                                  setSelectedTrackPointId(null)
+                                }
+                                setAddressDrawerDetailsOpen(false)
+                                setTrackDrawerDetailsOpen(false)
+                              }
                               setMapLeftToolDockOpen(true)
                             }}
                             style={mapDockMenuToggleBtnStyle}
@@ -3259,8 +3450,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   className="case-map-drawer-seam-anchor"
                   style={{
                     position: 'absolute',
-                    left: 0,
-                    right: 0,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    width: 'min(980px, calc(100% - 48px))',
                     bottom: 0,
                     height: 0,
                     zIndex: 5100,
@@ -3289,44 +3481,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
               {showMapDetailOverlayShell ? (
                 <div ref={caseMapDetailOverlayRef} style={mapPaneDetailOverlayStyle}>
-                  {wideMapDrawerSeamSheetTopTab ? (
-                    <div
-                      ref={mapDrawerSeamToggleRef}
-                      role="presentation"
-                      className="case-map-drawer-seam-sheet-top"
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        right: 0,
-                        top: 0,
-                        height: 0,
-                        zIndex: 5101,
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      <MapPaneEdgeAnchor placement="drawerSheetTopSeam">
-                        {caseTab === 'addresses' && viewMode !== 'list' ? (
-                          <MapPaneEdgeToggle
-                            placement="drawerSheetTopSeam"
-                            expanded={addressDrawerDetailsOpen}
-                            ariaLabel={
-                              addressDrawerDetailsOpen ? 'Collapse address details' : 'Expand address details'
-                            }
-                            onClick={() => setAddressDrawerDetailsOpen((v) => !v)}
-                          />
-                        ) : caseTab === 'tracking' && selectedTrackPoint ? (
-                          <MapPaneEdgeToggle
-                            placement="drawerSheetTopSeam"
-                            expanded={trackDrawerDetailsOpen}
-                            ariaLabel={
-                              trackDrawerDetailsOpen ? 'Collapse step details' : 'Expand step details'
-                            }
-                            onClick={() => setTrackDrawerDetailsOpen((v) => !v)}
-                          />
-                        ) : null}
-                      </MapPaneEdgeAnchor>
-                    </div>
-                  ) : null}
                   {caseTab === 'addresses' && selected && viewMode !== 'list' && locationDetailOpen ? (
                     <LocationDrawer
                       key={selected.id}
@@ -3631,9 +3785,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               {isNarrow ? (
                 <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
                   <input
-                    value={t.label}
+                    value={trackLabelDrafts[t.id] ?? t.label}
                     readOnly={!canEditT}
-                    onChange={(e) => void updateTrack(actorId, t.id, { label: e.target.value })}
+                    onFocus={() => {
+                      trackLabelFocusRef.current[t.id] = true
+                    }}
+                    onBlur={(e) => {
+                      trackLabelFocusRef.current[t.id] = false
+                      const v = e.currentTarget.value
+                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                      flushTrackLabelPersist(t.id, v)
+                    }}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                      scheduleTrackLabelPersist(t.id, v)
+                    }}
                     style={field}
                   />
                   <div
@@ -3661,9 +3828,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   }}
                 >
                   <input
-                    value={t.label}
+                    value={trackLabelDrafts[t.id] ?? t.label}
                     readOnly={!canEditT}
-                    onChange={(e) => void updateTrack(actorId, t.id, { label: e.target.value })}
+                    onFocus={() => {
+                      trackLabelFocusRef.current[t.id] = true
+                    }}
+                    onBlur={(e) => {
+                      trackLabelFocusRef.current[t.id] = false
+                      const v = e.currentTarget.value
+                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                      flushTrackLabelPersist(t.id, v)
+                    }}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                      scheduleTrackLabelPersist(t.id, v)
+                    }}
                     style={field}
                   />
                   {kindSelect}

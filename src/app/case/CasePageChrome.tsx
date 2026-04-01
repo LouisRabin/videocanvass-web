@@ -1,7 +1,6 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Location, TrackPoint } from '../../lib/types'
 import { statusColor } from '../../lib/types'
-import { reverseGeocodeAddressText } from '../../lib/geocode'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
 
 const btn: CSSProperties = {
@@ -527,59 +526,118 @@ export function TrackPointDrawer(props: {
   const canEdit = props.canEdit !== false
   const canDelete = props.canDelete !== false
   const wide = props.layout === 'wide'
-  const [mapAddressLine, setMapAddressLine] = useState<string | null>(null)
-  const [mapAddressLoading, setMapAddressLoading] = useState(true)
+  /** Wide header label: local draft + debounced persist so each keystroke does not await Supabase. */
+  const [inlineLabelDraft, setInlineLabelDraft] = useState(props.point.addressText)
+  const inlineLabelFocusRef = useRef(false)
+  const inlineLabelDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onUpdateRef = useRef(props.onUpdate)
+  onUpdateRef.current = props.onUpdate
   const fieldBox: CSSProperties = { ...field, maxWidth: '100%', boxSizing: 'border-box', minWidth: 0 }
 
-  const { lat: stepLat, lon: stepLon } = props.point
   useEffect(() => {
-    const ac = new AbortController()
-    setMapAddressLoading(true)
-    setMapAddressLine(null)
-    void reverseGeocodeAddressText(stepLat, stepLon, ac.signal)
-      .then((t) => {
-        if (ac.signal.aborted) return
-        setMapAddressLine(t)
-      })
-      .catch(() => {
-        if (ac.signal.aborted) return
-        setMapAddressLine(null)
-      })
-      .finally(() => {
-        if (ac.signal.aborted) return
-        setMapAddressLoading(false)
-      })
-    return () => ac.abort()
-  }, [stepLat, stepLon])
+    if (inlineLabelDebounceRef.current) {
+      clearTimeout(inlineLabelDebounceRef.current)
+      inlineLabelDebounceRef.current = null
+    }
+    inlineLabelFocusRef.current = false
+    setInlineLabelDraft(props.point.addressText)
+  }, [props.point.id])
 
-  const coordFallback = `${stepLat.toFixed(6)}, ${stepLon.toFixed(6)}`
-  const mapAddressDisplay = mapAddressLoading
-    ? 'Looking up address…'
-    : (mapAddressLine?.trim() || coordFallback)
+  useEffect(() => {
+    if (!inlineLabelFocusRef.current) {
+      setInlineLabelDraft(props.point.addressText)
+    }
+  }, [props.point.addressText])
+
+  useEffect(() => {
+    return () => {
+      if (inlineLabelDebounceRef.current) clearTimeout(inlineLabelDebounceRef.current)
+    }
+  }, [])
+
+  const flushInlineLabelToStore = useCallback(
+    (value: string) => {
+      if (!wide || !canEdit) return
+      onUpdateRef.current({ addressText: value })
+    },
+    [wide, canEdit],
+  )
+
+  const scheduleInlineLabelPersist = useCallback(
+    (value: string) => {
+      if (inlineLabelDebounceRef.current) clearTimeout(inlineLabelDebounceRef.current)
+      inlineLabelDebounceRef.current = setTimeout(() => {
+        inlineLabelDebounceRef.current = null
+        flushInlineLabelToStore(value)
+      }, 400)
+    },
+    [flushInlineLabelToStore],
+  )
+
+  const stepNameLooksDefault = /^step\s+\d+$/i.test(inlineLabelDraft.trim())
+  const inlineStepLabelValue = wide && stepNameLooksDefault ? '' : inlineLabelDraft
 
   const stepTitleLine = (
-    <div style={{ fontSize: 12, fontWeight: 800, color: '#64748b' }}>
-      {props.trackLabel ? `${props.trackLabel} · ` : null}Step {props.stepIndex}
-    </div>
-  )
-  const stepAddressLine = (
     <div
       style={{
-        fontSize: 11,
-        color: mapAddressLoading ? '#9ca3af' : '#64748b',
-        marginTop: 4,
-        fontWeight: 600,
-        lineHeight: 1.4,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'wrap',
+        minWidth: 0,
       }}
     >
-      Address from coordinates: {mapAddressDisplay}
+      <span style={{ fontSize: 12, fontWeight: 800, color: '#64748b' }}>
+        {props.trackLabel ? `${props.trackLabel} · ` : null}Step {props.stepIndex}
+      </span>
+      {wide ? (
+        <input
+          value={inlineStepLabelValue}
+          placeholder="Label"
+          readOnly={!canEdit}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onFocus={() => {
+            inlineLabelFocusRef.current = true
+          }}
+          onBlur={(e) => {
+            inlineLabelFocusRef.current = false
+            if (inlineLabelDebounceRef.current) {
+              clearTimeout(inlineLabelDebounceRef.current)
+              inlineLabelDebounceRef.current = null
+            }
+            const v = e.currentTarget.value
+            setInlineLabelDraft(v)
+            flushInlineLabelToStore(v)
+          }}
+          onChange={(e) => {
+            const v = e.target.value
+            setInlineLabelDraft(v)
+            scheduleInlineLabelPersist(v)
+          }}
+          aria-label="Step label"
+          style={{
+            border: '1px solid #cbd5e1',
+            borderRadius: 6,
+            background: canEdit ? 'white' : 'transparent',
+            padding: '0 6px',
+            margin: 0,
+            minWidth: 0,
+            width: 'clamp(100px, 24vw, 260px)',
+            fontSize: 12,
+            fontWeight: 800,
+            color: '#64748b',
+            lineHeight: 1.35,
+            cursor: canEdit ? 'text' : 'default',
+            boxSizing: 'border-box',
+          }}
+        />
+      ) : null}
     </div>
   )
-
   const headerCore = (
     <div style={{ flex: 1, minWidth: 0 }}>
       {stepTitleLine}
-      {stepAddressLine}
     </div>
   )
 
@@ -593,6 +651,16 @@ export function TrackPointDrawer(props: {
       Remove
     </button>
   ) : null
+  const collapseWideDetailsBtn = (
+    <button
+      type="button"
+      style={btn}
+      onClick={() => props.onDetailsOpenChange?.(false)}
+      aria-label="Collapse step details"
+    >
+      ✕
+    </button>
+  )
 
   const wideHeaderOnly = (
     <div
@@ -602,39 +670,38 @@ export function TrackPointDrawer(props: {
         alignItems: 'flex-start',
         width: '100%',
         boxSizing: 'border-box',
-        padding: '12px 14px 0',
+        padding: '10px 12px 0',
       }}
     >
       {headerCore}
-      {removeStepBtn ? <div style={{ flexShrink: 0, alignSelf: 'flex-start' }}>{removeStepBtn}</div> : null}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexShrink: 0 }}>
+        {removeStepBtn}
+        {collapseWideDetailsBtn}
+      </div>
     </div>
   )
+
+  const stackHeaderSticky: CSSProperties = {
+    position: 'sticky',
+    top: 0,
+    zIndex: 2,
+    background: 'white',
+    paddingBottom: 10,
+    marginBottom: 4,
+    boxShadow: '0 1px 0 #e5e7eb',
+  }
 
   const header = (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-      {headerCore}
-      <button type="button" style={btn} onClick={props.onClose} aria-label="Close">
-        ✕
-      </button>
-    </div>
-  )
-
-  const labelBlock = (
-    <div>
-      <div style={label}>Label</div>
-      <input
-        value={props.point.addressText}
-        readOnly={!canEdit}
-        onChange={(e) => props.onUpdate({ addressText: e.target.value })}
-        style={fieldBox}
-      />
-      {canDelete && !wide ? (
-        <div style={{ marginTop: 10 }}>
-          <button type="button" style={btnDanger} onClick={props.onDelete}>
-            Delete step
+    <div style={stackHeaderSticky}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+        {headerCore}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexShrink: 0 }}>
+          {removeStepBtn}
+          <button type="button" style={btn} onClick={props.onClose} aria-label="Close">
+            ✕
           </button>
         </div>
-      ) : null}
+      </div>
     </div>
   )
 
@@ -657,10 +724,51 @@ export function TrackPointDrawer(props: {
     </div>
   )
 
+  const openSubjectTimePicker = () => {
+    if (!canEdit) return
+    const el = document.getElementById(`track-point-time-${props.point.id}`) as
+      | (HTMLInputElement & { showPicker?: () => void })
+      | null
+    if (!el) return
+    if (typeof el.showPicker === 'function') {
+      el.showPicker()
+    } else {
+      el.focus()
+      el.click()
+    }
+  }
+
   const timeBlock = (
     <div>
       <div style={label}>Subject time at this point</div>
+      <button
+        type="button"
+        onClick={openSubjectTimePicker}
+        disabled={!canEdit}
+        style={{
+          ...fieldBox,
+          width: 'auto',
+          maxWidth: '100%',
+          textAlign: 'left',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'flex-start',
+          gap: 6,
+          padding: '6px 10px',
+          borderRadius: 999,
+          minHeight: 0,
+          fontSize: 13,
+          lineHeight: 1.2,
+          cursor: canEdit ? 'pointer' : 'default',
+          color: props.point.visitedAt == null ? '#6b7280' : '#111827',
+          fontWeight: props.point.visitedAt == null ? 600 : 700,
+        }}
+      >
+        <span>{props.point.visitedAt == null ? 'Pick date and time' : formatAppDateTime(props.point.visitedAt)}</span>
+        <span aria-hidden style={{ opacity: 0.7, fontSize: 12 }}>📅</span>
+      </button>
       <input
+        id={`track-point-time-${props.point.id}`}
         type="datetime-local"
         step={1}
         value={timestampToDatetimeLocalValue(props.point.visitedAt)}
@@ -669,7 +777,15 @@ export function TrackPointDrawer(props: {
           const v = parseDatetimeLocalToTimestamp(e.target.value)
           props.onUpdate(v == null ? { visitedAt: null, displayTimeOnMap: false } : { visitedAt: v })
         }}
-        style={fieldBox}
+        style={{
+          position: 'absolute',
+          opacity: 0,
+          width: 0,
+          height: 0,
+          pointerEvents: 'none',
+        }}
+        tabIndex={-1}
+        aria-hidden
       />
       <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
         Optional. When the subject was here per your investigation—not filled in automatically.
@@ -695,20 +811,20 @@ export function TrackPointDrawer(props: {
     if (!(props.detailsOpen ?? false)) {
       return null
     }
+    const wideDrawerFrame: CSSProperties = {
+      ...card,
+      position: 'relative',
+      width: 'min(980px, calc(100% - 48px))',
+      margin: '0 auto',
+      maxHeight: 'min(244px, 30svh)',
+      boxSizing: 'border-box',
+      padding: 0,
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+    }
     return (
-      <div
-        style={{
-          ...card,
-          width: '100%',
-          maxHeight: 'min(272px, 33svh)',
-          boxSizing: 'border-box',
-          padding: 0,
-          overflow: 'hidden',
-          position: 'relative',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
+      <div style={wideDrawerFrame}>
         <div style={{ flexShrink: 0, background: 'white' }}>{wideHeaderOnly}</div>
         <div
           style={{
@@ -720,7 +836,7 @@ export function TrackPointDrawer(props: {
             background: 'white',
             borderBottomLeftRadius: 'var(--vc-radius-xl)',
             borderBottomRightRadius: 'var(--vc-radius-xl)',
-            padding: '12px 14px 14px',
+            padding: '10px 12px 12px',
             boxSizing: 'border-box',
           }}
         >
@@ -728,7 +844,7 @@ export function TrackPointDrawer(props: {
             style={{
               display: 'flex',
               flexWrap: 'wrap',
-              gap: 16,
+              gap: 12,
               alignItems: 'flex-start',
               width: '100%',
               boxSizing: 'border-box',
@@ -737,16 +853,15 @@ export function TrackPointDrawer(props: {
             <div
               style={{
                 flex: '2 1 300px',
-                maxWidth: 'min(520px, 100%)',
+                maxWidth: 'min(500px, 100%)',
                 minWidth: 0,
                 display: 'grid',
-                gap: 12,
+                gap: 10,
               }}
             >
               {notesBlock}
             </div>
-            <div style={{ flex: '1 1 160px', minWidth: 0, display: 'grid', gap: 12 }}>{labelBlock}</div>
-            <div style={{ flex: '1 1 200px', minWidth: 0, display: 'grid', gap: 12 }}>
+            <div style={{ flex: '1 1 200px', minWidth: 0, display: 'grid', gap: 10 }}>
               {timeBlock}
               {toggles}
             </div>
@@ -759,7 +874,6 @@ export function TrackPointDrawer(props: {
   return (
     <div style={card}>
       {header}
-      <div style={{ marginTop: 10 }}>{labelBlock}</div>
       <div style={{ marginTop: 10 }}>{notesBlock}</div>
       <div style={{ marginTop: 10 }}>{timeBlock}</div>
       <div style={{ marginTop: 0 }}>{toggles}</div>
@@ -899,7 +1013,34 @@ export function LocationDrawer(props: {
 
   const notesOnly = (
     <div style={{ marginTop: wide ? 0 : 'var(--vc-space-md)' }}>
-      <div style={label}>Notes</div>
+      {wide ? (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'baseline',
+            justifyContent: 'space-between',
+            gap: 8,
+            flexWrap: 'wrap',
+            marginBottom: 6,
+          }}
+        >
+          <span style={{ ...label, marginBottom: 0, display: 'inline-block' }}>Notes</span>
+          <span
+            style={{
+              color: '#6b7280',
+              fontSize: 11,
+              fontWeight: 600,
+              lineHeight: 1.3,
+              textAlign: 'right',
+            }}
+          >
+            Updated {formatAppDateTime(props.location.updatedAt)}
+          </span>
+        </div>
+      ) : (
+        <div style={label}>Notes</div>
+      )}
       <textarea
         value={props.location.notes}
         readOnly={!canEdit}
@@ -908,9 +1049,11 @@ export function LocationDrawer(props: {
         rows={wide ? 2 : undefined}
         style={ta}
       />
-      <div style={{ marginTop: 'var(--vc-space-md)', color: '#374151', fontSize: 'var(--vc-fs-sm)' }}>
-        Updated {formatAppDateTime(props.location.updatedAt)}
-      </div>
+      {!wide ? (
+        <div style={{ marginTop: 'var(--vc-space-md)', color: '#374151', fontSize: 'var(--vc-fs-sm)' }}>
+          Updated {formatAppDateTime(props.location.updatedAt)}
+        </div>
+      ) : null}
     </div>
   )
 
@@ -919,38 +1062,46 @@ export function LocationDrawer(props: {
       Remove
     </button>
   ) : null
+  const collapseWideDetailsBtn = (
+    <button type="button" style={btn} onClick={() => props.onDetailsOpenChange?.(false)} aria-label="Collapse address details">
+      ✕
+    </button>
+  )
 
   if (wide) {
     if (!(props.detailsOpen ?? false)) {
       return null
     }
+    const wideDrawerFrame: CSSProperties = {
+      ...card,
+      position: 'relative',
+      width: 'min(980px, calc(100% - 48px))',
+      margin: '0 auto',
+      maxHeight: 'min(244px, 30svh)',
+      boxSizing: 'border-box',
+      padding: 0,
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+    }
     return (
-      <div
-        style={{
-          ...card,
-          position: 'relative',
-          width: '100%',
-          maxHeight: 'min(272px, 33svh)',
-          boxSizing: 'border-box',
-          padding: 0,
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
+      <div style={wideDrawerFrame}>
         <div
           style={{
             flexShrink: 0,
             display: 'flex',
             gap: 8,
             alignItems: 'flex-start',
-            padding: '12px 14px 0',
+            padding: '10px 12px 0',
             boxSizing: 'border-box',
             background: 'white',
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>{addressOnly}</div>
-          {removeAddressBarBtn ? <div style={{ flexShrink: 0, alignSelf: 'flex-start' }}>{removeAddressBarBtn}</div> : null}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexShrink: 0 }}>
+            {removeAddressBarBtn}
+            {collapseWideDetailsBtn}
+          </div>
         </div>
         <div
           style={{
@@ -959,7 +1110,7 @@ export function LocationDrawer(props: {
             overflowY: 'auto',
             overflowX: 'hidden',
             WebkitOverflowScrolling: 'touch',
-            padding: '12px 14px 14px',
+            padding: '10px 12px 12px',
             boxSizing: 'border-box',
             background: 'white',
             borderBottomLeftRadius: 'var(--vc-radius-xl)',
@@ -970,7 +1121,7 @@ export function LocationDrawer(props: {
             style={{
               display: 'flex',
               flexDirection: 'row',
-              gap: 12,
+              gap: 10,
               alignItems: 'flex-start',
               width: '100%',
               minWidth: 0,
@@ -988,9 +1139,19 @@ export function LocationDrawer(props: {
     )
   }
 
+  const stackNotesHeaderSticky: CSSProperties = {
+    position: 'sticky',
+    top: 0,
+    zIndex: 2,
+    background: 'white',
+    paddingBottom: 10,
+    marginBottom: 4,
+    boxShadow: '0 1px 0 #e5e7eb',
+  }
+
   return (
     <div style={card}>
-      {headerRow}
+      <div style={stackNotesHeaderSticky}>{headerRow}</div>
       {canvassResultsPills(false)}
       {buildingBlock}
       {deleteAddressBtn}

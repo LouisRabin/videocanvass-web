@@ -42,16 +42,6 @@ function normalizeTrackPointSequences(data: AppData): AppData {
 }
 
 /** Backfill empty createdByUserId to the case owner (legacy rows). */
-function migrateTrackUpdatedAtField(data: AppData): AppData {
-  return {
-    ...data,
-    tracks: data.tracks.map((t) => ({
-      ...t,
-      updatedAt: t.updatedAt ?? t.createdAt,
-    })),
-  }
-}
-
 function migrateCreatedByUserIds(data: AppData): AppData {
   const ownerByCase = new Map<string, string>()
   for (const c of data.cases) {
@@ -86,9 +76,7 @@ function migrateCreatedByUserIds(data: AppData): AppData {
 }
 
 export function normalizeAppData(data: AppData): AppData {
-  return migrateCreatedByUserIds(
-    migrateTrackUpdatedAtField(normalizeTrackPointSequences(migrateTrackPointUpdatedAt(data))),
-  )
+  return migrateCreatedByUserIds(normalizeTrackPointSequences(migrateTrackPointUpdatedAt(data)))
 }
 
 localforage.config({
@@ -222,7 +210,7 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
     deletedCaseAttachmentIds: [...delAtt],
     cases: mergeById(locCases, remCases, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     locations: mergeById(locLocs, remLocs, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
-    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
+    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.createdAt),
     trackPoints: mergeById(locPts, remPts, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     users: mergeById(local.users, remote.users, (x) => x.id, (x) => x.createdAt),
     caseCollaborators: mergeCollaborators(locCollab, remCollab),
@@ -235,13 +223,12 @@ export async function loadData(): Promise<AppData> {
     setSyncStatus({ mode: 'local_fallback', message: 'Supabase env missing; using local storage' })
   }
 
-  const [shared, local] = await Promise.all([loadSharedData(), loadLocalData()])
-
-  if (shared && local) {
-    const merged = mergeAppData(local, shared)
-    await localforage.setItem(STORE_KEY, merged)
-    return merged
-  }
+  // Fast-first startup: hydrate from IndexedDB immediately when available.
+  // Collaborative sync merges remote shortly after ready (store effect), so
+  // home screen does not block on network latency.
+  const local = await loadLocalData()
+  if (local) return local
+  const shared = await loadSharedData()
 
   if (shared) {
     // Keep a local mirror so transient Supabase read failures on refresh do not
@@ -249,8 +236,6 @@ export async function loadData(): Promise<AppData> {
     await localforage.setItem(STORE_KEY, shared)
     return shared
   }
-
-  if (local) return local
   return DEFAULT_DATA
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Modal } from './Modal'
 import {
   composeManualOffset,
@@ -62,13 +62,6 @@ type Props = {
   onDismiss: () => void
   onCalcBack: () => void
   onCalcApply: (notesAppend: string) => void
-}
-
-/** Inline DVR calculator (e.g. web map-tools rail). Same UI as the modal calculator step. */
-export function DvrCalculatorPanel(props: { onBack: () => void; onCancel: () => void; onApply: (notes: string) => void }) {
-  return (
-    <CalculatorStep onBack={props.onBack} onCancel={props.onCancel} onApply={props.onApply} />
-  )
 }
 
 export function ProbativeDvrFlowModals(props: Props) {
@@ -136,6 +129,8 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
   const [manual, setManual] = useState({ years: 0, months: 0, days: 0, hours: 0, minutes: 0 })
   const [dvrLocal, setDvrLocal] = useState('')
   const [incidentLocal, setIncidentLocal] = useState('')
+  const dvrInputRef = useRef<HTMLInputElement | null>(null)
+  const incidentInputRef = useRef<HTMLInputElement | null>(null)
   const [error, setError] = useState('')
   type ResultPreview = {
     comparison: 'faster' | 'slower' | 'none'
@@ -247,6 +242,19 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
 
   const manualHasInput = manualOffsetHasInput(manual)
   const showCalculate = !(manualHasInput && dvrParsedMs == null)
+  const dvrDisplay = dvrParsedMs != null ? formatAppDateTime(dvrParsedMs) : 'Pick date and time'
+  const incidentDisplay = incidentParsedMs != null ? formatAppDateTime(incidentParsedMs) : 'Pick date and time'
+
+  const openPicker = (ref: React.RefObject<HTMLInputElement | null>) => {
+    const el = ref.current as (HTMLInputElement & { showPicker?: () => void }) | null
+    if (!el) return
+    if (typeof el.showPicker === 'function') {
+      el.showPicker()
+    } else {
+      el.focus()
+      el.click()
+    }
+  }
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -257,29 +265,83 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
 
       <div>
         <div style={label}>DVR time</div>
+        <button
+          type="button"
+          style={{
+            ...field,
+            width: 'auto',
+            maxWidth: '100%',
+            textAlign: 'left',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            gap: 6,
+            padding: '6px 10px',
+            borderRadius: 999,
+            minHeight: 0,
+            fontSize: 13,
+            lineHeight: 1.2,
+            fontWeight: dvrParsedMs != null ? 700 : 600,
+            color: dvrParsedMs != null ? '#111827' : '#6b7280',
+            cursor: 'pointer',
+          }}
+          onClick={() => openPicker(dvrInputRef)}
+        >
+          <span>{dvrDisplay}</span>
+          <span aria-hidden style={{ opacity: 0.7, fontSize: 12 }}>📅</span>
+        </button>
         <input
+          ref={dvrInputRef}
           type="datetime-local"
           step={1}
           value={dvrLocal}
           onChange={(e) => setDvrLocal(e.target.value)}
-          style={field}
+          style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
+          tabIndex={-1}
+          aria-hidden
         />
       </div>
 
       <div>
         <div style={label}>Incident time</div>
-        <input
-          type="datetime-local"
-          step={1}
-          value={incidentLocal}
-          onChange={(e) => setIncidentLocal(e.target.value)}
+        <button
+          type="button"
           style={{
             ...field,
+            width: 'auto',
+            maxWidth: '100%',
+            textAlign: 'left',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            gap: 6,
+            padding: '6px 10px',
+            borderRadius: 999,
+            minHeight: 0,
+            fontSize: 13,
+            lineHeight: 1.2,
+            fontWeight: incidentParsedMs != null ? 700 : 600,
+            color: incidentParsedMs != null ? '#111827' : '#6b7280',
+            cursor: 'pointer',
             ...(incidentInFuture
               ? { borderColor: '#dc2626', boxShadow: '0 0 0 1px #dc2626', background: '#fef2f2' }
               : {}),
           }}
           aria-invalid={incidentInFuture}
+          onClick={() => openPicker(incidentInputRef)}
+        >
+          <span>{incidentDisplay}</span>
+          <span aria-hidden style={{ opacity: 0.7, fontSize: 12 }}>📅</span>
+        </button>
+        <input
+          ref={incidentInputRef}
+          type="datetime-local"
+          step={1}
+          value={incidentLocal}
+          onChange={(e) => setIncidentLocal(e.target.value)}
+          style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
+          tabIndex={-1}
+          aria-hidden
         />
         {incidentInFuture ? (
           <div style={{ marginTop: 6, fontSize: 12, color: '#b91c1c', lineHeight: 1.4, fontWeight: 600 }}>
@@ -311,7 +373,7 @@ function CalculatorStep(props: { onBack: () => void; onCancel: () => void; onApp
             </label>
           </div>
           <div style={numGrid}>
-            {(['years', 'months', 'days', 'hours', 'minutes'] as const).map((k) => (
+            {(['minutes', 'hours', 'days', 'months', 'years'] as const).map((k) => (
               <label key={k} style={{ display: 'grid', gap: 4 }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: '#6b7280', textTransform: 'capitalize' }}>{k}</span>
                 <input
