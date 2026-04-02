@@ -1,0 +1,13 @@
+# Netlify: connect repo, then set Environment variables (same names as .env.example).
+# Site settings → Environment variables → add VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, etc.
+# Redeploy after changing vars so `npm run build` picks them up.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Client-side routing (single-page app)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

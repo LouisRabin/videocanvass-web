@@ -1298,7 +1298,20 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
         if (map && p.caseTab === 'tracking') {
           const tidPeek = peekNearestTrackPointId(map, e.point, p.trackingInteraction)
-          if (tidPeek && tidPeek === (p.selectedTrackPointId ?? null)) {
+          const selTrack = p.selectedTrackPointId ?? null
+          // Switching to another route step (or first selection): run immediately — the deferred path
+          // made one click feel like two. Keep firstTap after pick so a second tap can still be a double-tap.
+          if (tidPeek && tidPeek !== selTrack) {
+            if (mapClickPendingTimerRef.current) {
+              clearTimeout(mapClickPendingTimerRef.current)
+              mapClickPendingTimerRef.current = null
+            }
+            mapClickPendingEventRef.current = null
+            runMapClickInteraction(e)
+            mapClickFirstTapRef.current = { t: performance.now(), x: e.point.x, y: e.point.y }
+            return
+          }
+          if (tidPeek && tidPeek === selTrack) {
             if (mapClickPendingTimerRef.current) {
               clearTimeout(mapClickPendingTimerRef.current)
               mapClickPendingTimerRef.current = null

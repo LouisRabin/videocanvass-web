@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Layout } from './Layout'
 import { useStore } from '../lib/store'
 import { caseLastActivityMs, caseQuickCounts, casesAccessibleToUser } from '../lib/caseDashboard'
@@ -12,6 +12,13 @@ import {
   clampCaseDescription,
 } from '../lib/caseMeta'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
+import { relationalBackendEnabled } from '../lib/backendMode'
+import { useTargetMode } from '../lib/targetMode'
+import { MfaEnrollmentModal } from './MfaEnrollmentModal'
+import { useTour } from './tour/TourContext'
+import { SHOW_TOUR_FIRST_RUN_PROMPT, TOUR_UI_ENABLED } from './tour/tourFlags'
+import { readTourFlag, tourCasesDoneKey, TOUR_CASES_PROMPT_DISMISSED_KEY, writeTourFlag } from './tour/tourStorage'
+import { VC_TOUR } from './tour/tourSteps'
 
 function TeamMembersModalBody(props: {
   caseId: string
@@ -80,6 +87,18 @@ export function CasesPage(props: {
   onLogout: () => void
   onOpenAdminGlobal?: () => void
 }) {
+  const [mfaSecurityOpen, setMfaSecurityOpen] = useState(false)
+  const tourTargetMode = useTargetMode()
+  const { startTour, tourOpen } = useTour()
+  const [showCasesTourBanner, setShowCasesTourBanner] = useState(false)
+
+  useEffect(() => {
+    if (!TOUR_UI_ENABLED || !SHOW_TOUR_FIRST_RUN_PROMPT) return
+    if (readTourFlag(tourCasesDoneKey(tourTargetMode))) return
+    if (readTourFlag(TOUR_CASES_PROMPT_DISMISSED_KEY)) return
+    setShowCasesTourBanner(true)
+  }, [tourTargetMode])
+
   const {
     ready,
     data,
@@ -209,17 +228,31 @@ export function CasesPage(props: {
   }
 
   return (
+    <>
     <Layout
       title="Cases"
       subtitle={`Signed in as ${props.currentUser.displayName} (${props.currentUser.taxNumber})`}
       right={
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', minWidth: 0, maxWidth: '100%' }}>
+        <div
+          data-vc-tour={VC_TOUR.casesActions}
+          style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', minWidth: 0, maxWidth: '100%' }}
+        >
+          {TOUR_UI_ENABLED ? (
+            <button type="button" onClick={() => startTour('cases')} style={btn} disabled={tourOpen}>
+              Tour
+            </button>
+          ) : null}
           <button onClick={() => setShowNewCaseForm(true)} style={btnPrimary}>
             + New case
           </button>
           {props.onOpenAdminGlobal ? (
             <button type="button" onClick={props.onOpenAdminGlobal} style={btn}>
               Global results
+            </button>
+          ) : null}
+          {relationalBackendEnabled() ? (
+            <button type="button" onClick={() => setMfaSecurityOpen(true)} style={btn}>
+              Security / 2FA
             </button>
           ) : null}
           <button onClick={props.onLogout} style={btn}>
@@ -232,7 +265,47 @@ export function CasesPage(props: {
         <div style={{ color: '#6b7280' }}>Loading…</div>
       ) : (
         <div style={{ minWidth: 0, maxWidth: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+          {TOUR_UI_ENABLED && showCasesTourBanner ? (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: '12px 14px',
+                borderRadius: 12,
+                border: '1px solid #e5e7eb',
+                background: '#f9fafb',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 10,
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontSize: 14, color: '#374151', fontWeight: 600 }}>New here? Take a quick tour of the case list.</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  style={btnPrimary}
+                  onClick={() => {
+                    setShowCasesTourBanner(false)
+                    startTour('cases')
+                  }}
+                >
+                  Start tour
+                </button>
+                <button
+                  type="button"
+                  style={btn}
+                  onClick={() => {
+                    writeTourFlag(TOUR_CASES_PROMPT_DISMISSED_KEY, true)
+                    setShowCasesTourBanner(false)
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <div data-vc-tour={VC_TOUR.casesTabsSearch} style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
             <button
               type="button"
               onClick={() => {
@@ -413,7 +486,7 @@ export function CasesPage(props: {
                   : 'No cases match these filters, or you have no accessible cases.'}
             </div>
           ) : (
-            <div style={{ display: 'grid', gap: 8 }}>
+            <div data-vc-tour={VC_TOUR.casesList} style={{ display: 'grid', gap: 8 }}>
               {filtered.map((c) => (
                 <div key={c.id} style={card}>
                   {listTab === 'team' || (listTab === 'all' && c.ownerUserId !== props.currentUser.id) ? (
@@ -803,6 +876,8 @@ export function CasesPage(props: {
         </div>
       )}
     </Layout>
+    <MfaEnrollmentModal open={mfaSecurityOpen} onClose={() => setMfaSecurityOpen(false)} onFactorsChanged={() => {}} />
+    </>
   )
 }
 

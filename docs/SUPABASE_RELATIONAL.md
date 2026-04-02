@@ -25,3 +25,11 @@ Enable replication for the `vc_*` tables you want in the Realtime UI so other cl
 ## Collaborators
 
 Invited users must already exist in **auth.users** (and thus **vc_profiles**). The UI currently expects collaborator ids to match profile ids (UUID strings).
+
+## MFA (2FA)
+
+With relational mode on, users can enroll **TOTP** under **Cases → Security / 2FA**. Enable MFA in Supabase **Authentication → Multi-factor** when you want it required or optional. Sign-in runs a TOTP challenge when the session must reach **AAL2**. Removing a verified factor requires an **AAL2** session (Supabase rule).
+
+## From POC blob (`vc_app_state`) to relational
+
+The legacy JSON workspace (`VITE_SHARED_WORKSPACE_ID` + `vc_app_state`) and relational tables are **separate**. Turning on **`VITE_VC_RELATIONAL_BACKEND=true`** does not import blob data. Plan either a one-time ETL/script or accept an empty relational dataset for new users. Keep **`VITE_VC_RELATIONAL_BACKEND`** and **`VITE_SHARED_WORKSPACE_ID`** aligned across web and Android builds as described in [DEPLOY_ENV_CHECKLIST.md](DEPLOY_ENV_CHECKLIST.md).

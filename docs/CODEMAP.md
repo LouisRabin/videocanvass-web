@@ -5,10 +5,11 @@ Short orientation for humans and tooling. **Policy and tuning** for geocoding, f
 ## Entry points
 
 - [`src/main.tsx`](../src/main.tsx) — React root, global styles.
-- [`src/App.tsx`](../src/App.tsx) — Mock login, routing, `hasCaseAccess`, top-level navigation.
+- [`src/App.tsx`](../src/App.tsx) — Session gate (mock vs Supabase auth), MFA step, routing, `hasCaseAccess`.
 
 ## Screens and layout
 
+- [`src/app/tour/`](../src/app/tour/) — Product tour (`TourProvider`, `ProductTour`, `tourSteps`); UI anchors use `data-vc-tour`.
 - [`src/app/CasesPage.tsx`](../src/app/CasesPage.tsx) — Case list.
 - [`src/app/CasePage.tsx`](../src/app/CasePage.tsx) — Single case: map, list, tracking, modals, attachments.
 - [`src/app/Layout.tsx`](../src/app/Layout.tsx) — App chrome / shell.
@@ -24,6 +25,9 @@ Short orientation for humans and tooling. **Policy and tuning** for geocoding, f
 - [`src/lib/db.ts`](../src/lib/db.ts) — Local persistence layer.
 - [`src/lib/types.ts`](../src/lib/types.ts) — Shared domain types and small UI helpers (e.g. status labels/colors).
 - [`src/lib/supabase.ts`](../src/lib/supabase.ts) — Supabase client and remote sync.
+- [`src/lib/mfaAuth.ts`](../src/lib/mfaAuth.ts) — TOTP MFA helpers (`sessionNeedsTotpStep`, `verifyTotpChallenge`).
+- [`src/app/LoginPage.tsx`](../src/app/LoginPage.tsx) — Email/password sign-up and sign-in (relational mode).
+- [`src/app/MfaTotpChallengePanel.tsx`](../src/app/MfaTotpChallengePanel.tsx) / [`MfaEnrollmentModal.tsx`](../src/app/MfaEnrollmentModal.tsx) — TOTP challenge at sign-in; optional enrollment from Cases.
 
 ## Permissions
 

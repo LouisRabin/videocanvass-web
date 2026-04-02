@@ -68,34 +68,51 @@ const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const
 
 const WHEEL_ROW_PX = 26
 const WHEEL_VISIBLE_ROWS = 5
-const WHEEL_HEIGHT_PX = WHEEL_ROW_PX * WHEEL_VISIBLE_ROWS
 /** Spacer rows so the first/last value can scroll into the center band (same as half of visible rows). */
 const WHEEL_PAD_ROWS = Math.floor(WHEEL_VISIBLE_ROWS / 2)
 
-function wheelSnapScrollTop(index: number, len: number): number {
-  const max = Math.max(0, (len - 1) * WHEEL_ROW_PX)
-  const t = index * WHEEL_ROW_PX
+function wheelSnapScrollTop(index: number, len: number, rowPx: number): number {
+  const max = Math.max(0, (len - 1) * rowPx)
+  const t = index * rowPx
   return Math.max(0, Math.min(max, t))
 }
 
-const wheelPadRowStyle: CSSProperties = {
-  height: WHEEL_ROW_PX,
+const wheelPadRowStyleFor = (rowPx: number): CSSProperties => ({
+  height: rowPx,
   flexShrink: 0,
   scrollSnapAlign: 'start',
   boxSizing: 'border-box',
-}
+})
 
-/** Scroll-snap column: native div + touch scroll (no seconds). */
+/** Mobile: taller rows + soft fade + light panel (24h scroll columns, no AM/PM). */
+const SPINNER_ROW_PX = 34
+const SPINNER_WHEEL_BG = '#e8edf4'
+
+/** Scroll-snap column: native div + touch scroll (no seconds). 24-hour values only — no AM/PM column. */
 function TimeWheel(props: {
   values: string[]
   value: string
   disabled?: boolean
   onChange: (v: string) => void
   ariaLabel: string
+  /** Spinner look (fade, band, 24h columns) — used on web and mobile. */
+  spinnerLook?: boolean
 }) {
-  const { values, value, disabled, onChange, ariaLabel } = props
+  const { values, value, disabled, onChange, ariaLabel, spinnerLook } = props
+  const rowPx = spinnerLook ? SPINNER_ROW_PX : WHEEL_ROW_PX
+  const wheelHeightPx = rowPx * WHEEL_VISIBLE_ROWS
+  const wheelPadRowStyle = wheelPadRowStyleFor(rowPx)
   const ref = useRef<HTMLDivElement>(null)
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mouseDragRef = useRef<{
+    phase: 'idle' | 'pending' | 'dragging'
+    lastY: number
+    totalMove: number
+    pointerId: number
+  }>({ phase: 'idle', lastY: 0, totalMove: 0, pointerId: -1 })
+  const skipRowClickRef = useRef(false)
+  const wheelMouseCleanupRef = useRef<(() => void) | null>(null)
+  const [mouseDragging, setMouseDragging] = useState(false)
 
   const scrollToValue = useCallback(
     (v: string, instant: boolean) => {
@@ -103,10 +120,10 @@ function TimeWheel(props: {
       if (!el || disabled) return
       const idx = values.indexOf(v)
       if (idx < 0) return
-      const top = wheelSnapScrollTop(idx, values.length)
+      const top = wheelSnapScrollTop(idx, values.length, rowPx)
       el.scrollTo({ top, behavior: instant ? 'auto' : 'smooth' })
     },
-    [values, disabled],
+    [values, disabled, rowPx],
   )
 
   useLayoutEffect(() => {
@@ -116,50 +133,172 @@ function TimeWheel(props: {
   useEffect(() => {
     return () => {
       if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current)
+      wheelMouseCleanupRef.current?.()
+      wheelMouseCleanupRef.current = null
     }
   }, [])
 
-  const onScroll = () => {
+  const snapAfterScroll = useCallback(() => {
     const el = ref.current
     if (!el || disabled) return
     if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current)
     scrollEndTimer.current = setTimeout(() => {
       scrollEndTimer.current = null
-      const n = Math.round(el.scrollTop / WHEEL_ROW_PX)
+      const n = Math.round(el.scrollTop / rowPx)
       const c = Math.max(0, Math.min(values.length - 1, n))
       const next = values[c]!
-      const snap = wheelSnapScrollTop(c, values.length)
+      const snap = wheelSnapScrollTop(c, values.length, rowPx)
       if (Math.abs(el.scrollTop - snap) > 0.5) el.scrollTop = snap
       if (next !== value) onChange(next)
     }, 50)
+  }, [disabled, onChange, rowPx, value, values])
+
+  const onScroll = () => {
+    snapAfterScroll()
   }
+
+  /** Mouse: do not capture on down (so row clicks work). After small movement, capture + drag. Window listeners track moves outside the wheel. */
+  const onWheelPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (disabled || e.button !== 0 || e.pointerType !== 'mouse') return
+    const scrollEl = ref.current
+    if (!scrollEl) return
+    wheelMouseCleanupRef.current?.()
+    wheelMouseCleanupRef.current = null
+    skipRowClickRef.current = false
+    const pid = e.pointerId
+    mouseDragRef.current = { phase: 'pending', lastY: e.clientY, totalMove: 0, pointerId: pid }
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid || disabled) return
+      const el = ref.current
+      if (!el) return
+      const st = mouseDragRef.current
+      if (st.phase === 'idle') return
+      if (st.phase === 'pending') {
+        const dy = ev.clientY - st.lastY
+        st.lastY = ev.clientY
+        st.totalMove += Math.abs(dy)
+        if (st.totalMove > 6) {
+          st.phase = 'dragging'
+          setMouseDragging(true)
+          try {
+            el.setPointerCapture(pid)
+          } catch {
+            /* ignore */
+          }
+          el.scrollTop -= dy
+          snapAfterScroll()
+        }
+        return
+      }
+      if (st.phase === 'dragging') {
+        const dy = ev.clientY - st.lastY
+        st.lastY = ev.clientY
+        st.totalMove += Math.abs(dy)
+        el.scrollTop -= dy
+        snapAfterScroll()
+      }
+    }
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      wheelMouseCleanupRef.current = null
+
+      const el = ref.current
+      const st = mouseDragRef.current
+      if (st.phase === 'dragging') {
+        try {
+          el?.releasePointerCapture(pid)
+        } catch {
+          /* ignore */
+        }
+        if (st.totalMove > 6) skipRowClickRef.current = true
+      }
+      mouseDragRef.current = { phase: 'idle', lastY: 0, totalMove: 0, pointerId: -1 }
+      setMouseDragging(false)
+      snapAfterScroll()
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    wheelMouseCleanupRef.current = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }
+
+  const borderColor = spinnerLook ? '#c5cdd9' : '#e5e7eb'
+  const bg = spinnerLook ? SPINNER_WHEEL_BG : '#f9fafb'
+  const offColor = spinnerLook ? '#94a3b8' : '#9ca3af'
+  const selColor = spinnerLook ? '#0f172a' : '#111827'
+  const fontSize = spinnerLook ? 18 : 14
+  const selWeight = spinnerLook ? 700 : 800
+  const offWeight = spinnerLook ? 500 : 600
 
   return (
     <div
       style={{
-        height: WHEEL_HEIGHT_PX,
-        border: '1px solid #e5e7eb',
-        borderRadius: 8,
+        height: wheelHeightPx,
+        border: `1px solid ${borderColor}`,
+        borderRadius: spinnerLook ? 10 : 8,
         overflow: 'hidden',
-        background: '#f9fafb',
+        background: bg,
         opacity: disabled ? 0.45 : 1,
         pointerEvents: disabled ? 'none' : 'auto',
         position: 'relative',
         boxSizing: 'border-box',
       }}
     >
+      {spinnerLook ? (
+        <>
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              height: '38%',
+              background: `linear-gradient(to bottom, ${SPINNER_WHEEL_BG} 0%, transparent 100%)`,
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          />
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: '38%',
+              background: `linear-gradient(to top, ${SPINNER_WHEEL_BG} 0%, transparent 100%)`,
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          />
+        </>
+      ) : null}
       <div
         aria-label={ariaLabel}
         ref={ref}
         role="listbox"
         onScroll={onScroll}
+        onPointerDown={onWheelPointerDown}
         style={{
-          height: WHEEL_HEIGHT_PX,
+          height: wheelHeightPx,
           overflowY: 'scroll',
           overscrollBehavior: 'contain',
-          scrollSnapType: 'y mandatory',
+          scrollSnapType: mouseDragging ? 'none' : 'y mandatory',
           WebkitOverflowScrolling: 'touch',
           scrollbarWidth: 'thin',
+          cursor: spinnerLook ? (mouseDragging ? 'grabbing' : 'grab') : undefined,
+          touchAction: 'pan-y',
         }}
       >
         {Array.from({ length: WHEEL_PAD_ROWS }, (_, i) => (
@@ -172,18 +311,22 @@ function TimeWheel(props: {
             aria-selected={v === value}
             onClick={() => {
               if (disabled) return
+              if (skipRowClickRef.current) {
+                skipRowClickRef.current = false
+                return
+              }
               onChange(v)
             }}
             style={{
-              height: WHEEL_ROW_PX,
+              height: rowPx,
               scrollSnapAlign: 'start',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: 14,
-              fontWeight: v === value ? 800 : 600,
+              fontSize,
+              fontWeight: v === value ? selWeight : offWeight,
               fontVariantNumeric: 'tabular-nums',
-              color: v === value ? '#111827' : '#9ca3af',
+              color: v === value ? selColor : offColor,
               flexShrink: 0,
               boxSizing: 'border-box',
               cursor: disabled ? 'default' : 'pointer',
@@ -206,11 +349,12 @@ function TimeWheel(props: {
           left: 0,
           right: 0,
           top: '50%',
-          height: WHEEL_ROW_PX,
-          marginTop: -WHEEL_ROW_PX / 2,
-          borderTop: '1px solid #d1d5db',
-          borderBottom: '1px solid #d1d5db',
+          height: rowPx,
+          marginTop: -rowPx / 2,
+          borderTop: spinnerLook ? '1px solid #9ca3af' : '1px solid #d1d5db',
+          borderBottom: spinnerLook ? '1px solid #9ca3af' : '1px solid #d1d5db',
           pointerEvents: 'none',
+          zIndex: 1,
         }}
       />
     </div>
@@ -308,6 +452,7 @@ export function DvrSingleDateTimePicker(props: {
 
   const ts = props.value.trim() ? parseDateTimeLocal(props.value) : null
   const summary = ts != null ? formatAppDateTime(ts) : null
+  const spinnerLook = true
 
   const openBtnStyle: CSSProperties = {
     ...field,
@@ -474,21 +619,22 @@ export function DvrSingleDateTimePicker(props: {
                     style={{
                       display: 'grid',
                       gridTemplateColumns: '1fr 1fr',
-                      gap: 12,
+                      gap: spinnerLook ? 14 : 12,
                       alignItems: 'stretch',
-                      maxWidth: 280,
-                      margin: props.isNarrow ? '0 auto' : 0,
+                      maxWidth: 300,
+                      margin: '0 auto',
                     }}
                   >
                     <div style={{ display: 'grid', gap: 4, minWidth: 0 }}>
                       <span style={{ fontSize: 10, fontWeight: 800, color: '#6b7280', textAlign: 'center' }}>
-                        Hour
+                        Hour (24h)
                       </span>
                       <TimeWheel
                         values={HOUR_OPTIONS_24}
                         value={draft.h}
                         onChange={(h) => setDraft((d) => ({ ...d, h }))}
                         ariaLabel={`${props.legend} — hour 00–23`}
+                        spinnerLook={spinnerLook}
                       />
                     </div>
                     <div style={{ display: 'grid', gap: 4, minWidth: 0 }}>
@@ -500,6 +646,7 @@ export function DvrSingleDateTimePicker(props: {
                         value={draft.m}
                         onChange={(m) => setDraft((d) => ({ ...d, m }))}
                         ariaLabel={`${props.legend} — minute`}
+                        spinnerLook={spinnerLook}
                       />
                     </div>
                   </div>
@@ -508,31 +655,33 @@ export function DvrSingleDateTimePicker(props: {
 
               <div
                 style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
+                  display: 'grid',
+                  gridTemplateColumns: '1fr auto',
                   gap: 10,
-                  justifyContent: 'flex-end',
+                  alignItems: 'center',
                   padding: '12px 14px',
                   borderTop: '1px solid #e5e7eb',
                 }}
               >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', minWidth: 0 }}>
+                  <button type="button" style={btnPrimary} onClick={commit}>
+                    Done
+                  </button>
+                  {props.clearable ? (
+                    <button
+                      type="button"
+                      style={btn}
+                      onClick={() => {
+                        props.onChange('')
+                        setPickerOpen(false)
+                      }}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </div>
                 <button type="button" style={btn} onClick={() => setPickerOpen(false)}>
                   Cancel
-                </button>
-                {props.clearable ? (
-                  <button
-                    type="button"
-                    style={btn}
-                    onClick={() => {
-                      props.onChange('')
-                      setPickerOpen(false)
-                    }}
-                  >
-                    Clear
-                  </button>
-                ) : null}
-                <button type="button" style={btnPrimary} onClick={commit}>
-                  Done
                 </button>
               </div>
             </div>
@@ -910,11 +1059,10 @@ export function DvrCalculatorStep(props: {
 
       <div
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
+          display: 'grid',
+          gridTemplateColumns: '1fr auto',
           gap: 8,
-          flexWrap: 'wrap',
+          alignItems: 'center',
           width: '100%',
         }}
       >
@@ -937,13 +1085,13 @@ export function DvrCalculatorStep(props: {
           >
             Save
           </button>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {!props.toolbarEmbed ? (
             <button type="button" style={footerBtnSecondary} onClick={props.onBack}>
               Back
             </button>
           ) : null}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
           <button type="button" style={footerBtnSecondary} onClick={props.onCancel}>
             Cancel
           </button>

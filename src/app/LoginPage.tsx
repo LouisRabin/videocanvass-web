@@ -45,11 +45,7 @@ const btnGhost: CSSProperties = {
   padding: 0,
 }
 
-type Props = {
-  onAuthed: () => void
-}
-
-export function LoginPage(props: Props) {
+export function LoginPage() {
   const [mode, setMode] = useState<'sign_in' | 'sign_up'>('sign_in')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -97,7 +93,7 @@ export function LoginPage(props: Props) {
       } else {
         const { error } = await client.auth.signInWithPassword({ email: em, password: pw })
         if (error) throw error
-        props.onAuthed()
+        // Session + optional MFA step are handled by SessionGate (auth listener).
       }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : 'Authentication failed')

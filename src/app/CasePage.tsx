@@ -95,6 +95,9 @@ import { useCaseGeocodeSearch } from './case/hooks/useCaseGeocodeSearch'
 import { useMapPaneOutsideDismiss } from './case/hooks/useMapPaneOutsideDismiss'
 import { WebCaseWorkspace } from './case/web/WebCaseWorkspace'
 import { CaseAttachmentImage } from './CaseAttachmentImage'
+import { useTour } from './tour/TourContext'
+import { TOUR_UI_ENABLED } from './tour/tourFlags'
+import { VC_TOUR } from './tour/tourSteps'
 
 /** Longer than AddressesMapLibre SINGLE_TAP_DEFER_MS (270) so open + deferred map tap don't dismiss the dock. */
 const MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS = 350
@@ -216,6 +219,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [photoViewerIndex, setPhotoViewerIndex] = useState<number | null>(null)
   const targetMode = useTargetMode()
   const isNarrow = targetMode === 'mobile'
+  const { startTour, tourOpen } = useTour()
   const mobileOS = useMemo(() => (targetMode === 'mobile' ? getMobileOS() : null), [targetMode])
   const [geoBias, setGeoBias] = useState<{ lat: number; lon: number } | null>(null)
   const mapRef = useRef<UnifiedCaseMapHandle | null>(null)
@@ -1959,6 +1963,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       </button>
       <button
         type="button"
+        data-vc-tour={VC_TOUR.caseListViewBtn}
         style={{
           ...viewModeBtn(viewMode === 'list'),
           width: '100%',
@@ -2036,6 +2041,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   )
   const caseModeToggleBar = (
     <div
+      data-vc-tour={VC_TOUR.caseWorkspaceTabs}
       style={{
         pointerEvents: 'auto',
         display: 'grid',
@@ -3086,6 +3092,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const mapTopFloatingAddressEl = narrowMapTopShowsFloatingAddress ? (
     <div
       ref={narrowMapAddressRef}
+      data-vc-tour={VC_TOUR.caseFloatingSearch}
       style={{
         ...(isNarrow
           ? { flex: 1, minWidth: 0 }
@@ -3130,7 +3137,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     <>
       {isNarrow ? (
         <div style={{ padding: 8, display: 'grid', gap: 6, borderBottom: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          <div data-vc-tour={VC_TOUR.caseWorkspaceTabs} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
             <button
               type="button"
               style={{ ...viewModeBtn(caseTab === 'addresses'), width: '100%' }}
@@ -3214,6 +3221,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const controlPaneBlock = (
     <div
       className="case-control-pane"
+      data-vc-tour={VC_TOUR.caseControlPane}
       style={{
         gridArea: 'controls',
         ...card,
@@ -3303,6 +3311,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       title={
         caseMetaEditing ? (
           <div
+            data-vc-tour={VC_TOUR.caseHeaderMeta}
             style={{
               display: 'flex',
               flexDirection: 'column',
@@ -3369,6 +3378,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           </div>
         ) : (
           <div
+            data-vc-tour={VC_TOUR.caseHeaderMeta}
             style={{
               display: 'flex',
               flexDirection: 'column',
@@ -3421,7 +3431,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               </button>
             </>
           ) : null}
-          <button type="button" onClick={props.onBack} style={btn}>
+          {TOUR_UI_ENABLED ? (
+            <button type="button" onClick={() => startTour('case')} style={btn} disabled={tourOpen}>
+              Tour
+            </button>
+          ) : null}
+          <button type="button" data-vc-tour={VC_TOUR.caseBack} onClick={props.onBack} style={btn}>
             Case List
           </button>
         </div>
@@ -3557,6 +3572,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   {isNarrow ? (
                     <div
                       ref={mapToolsDockRef}
+                      data-vc-tour={VC_TOUR.caseMapToolsMobile}
                       style={{
                         ...mapDockColumnStyle,
                         marginLeft: narrowMapTopShowsFloatingAddress ? undefined : 'auto',
@@ -3672,7 +3688,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                     />
                   ) : null}
-                  <div style={{ position: 'absolute', inset: 0, zIndex: 1, minHeight: 0 }}>
+                  <div data-vc-tour={VC_TOUR.caseMapCanvas} style={{ position: 'absolute', inset: 0, zIndex: 1, minHeight: 0 }}>
                   <AddressesMapLibre
                     key={props.caseId}
                     ref={mapRef}
@@ -3803,6 +3819,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               {webToolsArrowOnly ? (
                 <div
                   ref={mapToolbarExpandToggleRef}
+                  data-vc-tour={VC_TOUR.caseMapToolsWide}
                   role="presentation"
                   className="case-map-toolbar-expand-anchor"
                   style={{

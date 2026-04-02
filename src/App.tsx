@@ -11,8 +11,12 @@ import { CasesPage } from './app/CasesPage'
 import { CasePage } from './app/CasePage'
 import { Layout } from './app/Layout'
 import { LoginPage } from './app/LoginPage'
+import { MfaTotpChallengePanel } from './app/MfaTotpChallengePanel'
 import { GlobalCanvassAdminPage } from './app/GlobalCanvassAdminPage'
+import { getPreferredTotpFactorId, sessionNeedsTotpStep } from './lib/mfaAuth'
 import type { AppUser } from './lib/types'
+import { TourProvider } from './app/tour/TourContext'
+import { TOUR_UI_ENABLED } from './app/tour/tourFlags'
 
 function App() {
   const targetMode = useTargetMode()
@@ -31,6 +35,8 @@ function App() {
   )
 }
 
+type MfaGateState = 'off' | 'checking' | 'totp' | 'unsupported'
+
 function SessionGate() {
   const { ready, data } = useStore()
   const [mockUserId, setMockUserId] = useState<string | null>(null)
@@ -40,6 +46,7 @@ function SessionGate() {
     displayName: string
     taxNumber: string
   } | null>(null)
+  const [mfaGate, setMfaGate] = useState<MfaGateState>('off')
 
   const applySession = useCallback(
     (session: import('@supabase/supabase-js').Session | null) => {
@@ -59,14 +66,42 @@ function SessionGate() {
     [],
   )
 
+  const syncMfaGate = useCallback(async () => {
+    if (!relationalBackendEnabled() || !supabase) {
+      setMfaGate('off')
+      return
+    }
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    if (!session?.user) {
+      setMfaGate('off')
+      return
+    }
+    setMfaGate('checking')
+    const need = await sessionNeedsTotpStep(supabase)
+    if (!need) {
+      setMfaGate('off')
+      return
+    }
+    const fid = await getPreferredTotpFactorId(supabase)
+    setMfaGate(fid ? 'totp' : 'unsupported')
+  }, [])
+
   useEffect(() => {
     if (!relationalBackendEnabled() || !supabase) return
-    void supabase.auth.getSession().then(({ data: { session } }) => applySession(session))
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      applySession(session)
+      void syncMfaGate()
+    })
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => applySession(session))
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      applySession(session)
+      void syncMfaGate()
+    })
     return () => subscription.unsubscribe()
-  }, [applySession])
+  }, [applySession, syncMfaGate])
 
   const relationalUser = useMemo((): AppUser | null => {
     if (!sessionUserId) return null
@@ -97,14 +132,48 @@ function SessionGate() {
 
   if (relationalBackendEnabled()) {
     if (!sessionUserId) {
+      return <LoginPage />
+    }
+    if (mfaGate === 'checking') {
       return (
-        <LoginPage
-          onAuthed={async () => {
-            if (!supabase) return
-            const { data: s } = await supabase.auth.getSession()
-            applySession(s.session)
-          }}
-        />
+        <Layout title="VideoCanvass" subtitle="Checking security…">
+          <div style={{ color: '#6b7280' }}>Loading…</div>
+        </Layout>
+      )
+    }
+    if (mfaGate === 'totp') {
+      return (
+        <Layout title="VideoCanvass" subtitle="Two-step verification">
+          <MfaTotpChallengePanel
+            onSignOut={async () => {
+              if (supabase) await supabase.auth.signOut()
+              applySession(null)
+              setMfaGate('off')
+            }}
+          />
+        </Layout>
+      )
+    }
+    if (mfaGate === 'unsupported') {
+      return (
+        <Layout title="VideoCanvass" subtitle="Sign-in issue">
+          <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
+            <p style={{ margin: 0, color: '#4b5563', lineHeight: 1.5 }}>
+              Your account requires MFA, but this app only supports authenticator-app (TOTP) codes right now. Phone/SMS or WebAuthn factors cannot be used here yet.
+            </p>
+            <button
+              type="button"
+              style={{ border: '1px solid #111827', borderRadius: 10, padding: '10px 12px', background: '#111827', color: 'white', fontWeight: 800 }}
+              onClick={async () => {
+                if (supabase) await supabase.auth.signOut()
+                applySession(null)
+                setMfaGate('off')
+              }}
+            >
+              Sign out
+            </button>
+          </div>
+        </Layout>
       )
     }
     if (!relationalUser) {
@@ -114,23 +183,26 @@ function SessionGate() {
         </Layout>
       )
     }
-    return (
+    const relationalRouter = (
       <Router
         currentUser={relationalUser}
         onLogout={async () => {
           if (supabase) await supabase.auth.signOut()
           applySession(null)
+          setMfaGate('off')
         }}
         allowAdminGlobal={relationalUser.appRole === 'admin'}
       />
     )
+    return TOUR_UI_ENABLED ? <TourProvider>{relationalRouter}</TourProvider> : relationalRouter
   }
 
   if (!mockUser) {
     return <MockLogin users={data.users} onSelectUser={(userId) => setMockUserId(userId)} />
   }
 
-  return <Router currentUser={mockUser} onLogout={() => setMockUserId(null)} allowAdminGlobal={false} />
+  const mockRouter = <Router currentUser={mockUser} onLogout={() => setMockUserId(null)} allowAdminGlobal={false} />
+  return TOUR_UI_ENABLED ? <TourProvider>{mockRouter}</TourProvider> : mockRouter
 }
 
 function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => void }) {

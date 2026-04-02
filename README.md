@@ -23,6 +23,8 @@ For native plugin changes or if you prefer the official tool: **`npm run cap:syn
 
 - **Where the code lives:** [docs/CODEMAP.md](docs/CODEMAP.md)
 - **Geocode, footprints, and retrieval policy:** [HANDOFF.md](HANDOFF.md)
+- **Hosted web + same env as Android:** [docs/HOSTING_QUICKSTART.md](docs/HOSTING_QUICKSTART.md) and [docs/DEPLOY_ENV_CHECKLIST.md](docs/DEPLOY_ENV_CHECKLIST.md)
+- **Netlify:** [`netlify.toml`](netlify.toml) · **Vercel:** [`vercel.json`](vercel.json)
 
 ---
 
