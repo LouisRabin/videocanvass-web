@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core'
+
 import type { TargetMode } from './targetMode'
 
 export type NativePlatform = 'ios' | 'android' | 'none'
@@ -11,6 +13,10 @@ export type NativeCapabilities = {
 
 function detectNativePlatform(): NativePlatform {
   if (typeof navigator === 'undefined') return 'none'
+  if (Capacitor.isNativePlatform()) {
+    const p = Capacitor.getPlatform()
+    if (p === 'ios' || p === 'android') return p
+  }
   const ua = navigator.userAgent.toLowerCase()
   if (/iphone|ipad|ipod/.test(ua)) return 'ios'
   if (/android/.test(ua)) return 'android'

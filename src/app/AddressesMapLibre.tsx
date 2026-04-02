@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
   type MutableRefObject,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
 import MapGL, { Layer, Marker, NavigationControl, Source, useMap, type MapLayerMouseEvent, type MapRef } from 'react-map-gl/maplibre'
@@ -86,12 +85,13 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
   onSelectPoint: (pointId: string) => void
   draggable: boolean
   onDragEndPoint?: (pointId: string, lat: number, lon: number) => void
-  /** Video canvassing mode: long-press a step to switch to Subject tracking. */
-  onLongPressPoint?: (pointId: string) => void
+  onDoubleTapTrackPoint?: (pointId: string) => void
   /** When false, low-zoom cluster layers replace these markers. */
   showMarkers?: boolean
 }) {
-  const longPressSuppressClickUntilRef = useRef(0)
+  const waypointDblTapRef = useRef<{ id: string; t: number; x: number; y: number } | null>(null)
+  const WPT_DBL_MS = 340
+  const WPT_DBL_DIST = 40
   if (props.showMarkers === false) return null
   const byTrack = new Map<string, TrackPoint[]>()
   for (const p of props.trackPoints) {
@@ -111,35 +111,8 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
       const ring = props.selectedPointId === p.id ? '0 0 0 3px #111827' : '0 0 0 2px #fff'
       const canManip = props.canManipulatePoint(p.id)
       const draggable = !!(canManip && props.draggable && props.onDragEndPoint)
-      const interactive = canManip && (!!props.onSelectPoint || draggable)
-      const scheduleLongPress =
-        canManip && props.onLongPressPoint
-          ? (ev: ReactPointerEvent<HTMLDivElement>) => {
-              const sx = ev.clientX
-              const sy = ev.clientY
-              let tid = window.setTimeout(() => {
-                tid = 0
-                longPressSuppressClickUntilRef.current = Date.now() + 450
-                props.onLongPressPoint!(p.id)
-              }, MAP_LONG_PRESS_MS)
-              const clear = () => {
-                if (tid) {
-                  clearTimeout(tid)
-                  tid = 0
-                }
-              }
-              const onMove = (e: PointerEvent) => {
-                if ((e.clientX - sx) ** 2 + (e.clientY - sy) ** 2 > MAP_LONG_PRESS_MOVE_PX2) clear()
-              }
-              const onUp = () => {
-                clear()
-                window.removeEventListener('pointermove', onMove)
-              }
-              window.addEventListener('pointermove', onMove)
-              window.addEventListener('pointerup', onUp, { once: true })
-              window.addEventListener('pointercancel', onUp, { once: true })
-            }
-          : undefined
+      const interactive =
+        (!!canManip && (!!props.onSelectPoint || draggable)) || !!props.onDoubleTapTrackPoint
 
       nodes.push(
         <Marker
@@ -151,8 +124,28 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
           style={{ zIndex: props.selectedPointId === p.id ? 40 : 20 + Math.min(i, 15) }}
           onClick={(ev) => {
             ev.originalEvent?.stopPropagation?.()
-            if (Date.now() < longPressSuppressClickUntilRef.current) return
-            if (canManip) props.onSelectPoint(p.id)
+            if (props.onDoubleTapTrackPoint) {
+              const oe = ev.originalEvent
+              if (oe && 'clientX' in oe) {
+                const now = Date.now()
+                const cx = (oe as MouseEvent).clientX
+                const cy = (oe as MouseEvent).clientY
+                const prev = waypointDblTapRef.current
+                if (
+                  prev &&
+                  prev.id === p.id &&
+                  now - prev.t < WPT_DBL_MS &&
+                  (cx - prev.x) ** 2 + (cy - prev.y) ** 2 < WPT_DBL_DIST ** 2
+                ) {
+                  waypointDblTapRef.current = null
+                  props.onDoubleTapTrackPoint(p.id)
+                  return
+                }
+                waypointDblTapRef.current = { id: p.id, t: now, x: cx, y: cy }
+              }
+            }
+            if (!canManip) return
+            props.onSelectPoint(p.id)
           }}
           onDragEnd={
             draggable && props.onDragEndPoint
@@ -164,7 +157,6 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
           }
         >
           <div
-            onPointerDown={scheduleLongPress}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -211,12 +203,16 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
   canManipulatePoint: (pointId: string) => boolean
   selectedPointId: string | null
   onSelectPoint: (id: string) => void
+  onDoubleTapTrackPoint?: (pointId: string) => void
   onDragEndLabel?: (pointId: string, offsetX: number, offsetY: number) => void
   /** When false (zoomed out), time chips and tethers are hidden. */
   showLabels?: boolean
 }) {
   const maps = useMap()
   const mapRefFromCtx = maps.current
+  const timeLabelDblTapRef = useRef<{ id: string; t: number; x: number; y: number } | null>(null)
+  const TL_DBL_MS = 340
+  const TL_DBL_DIST = 40
   const [moveTick, setMoveTick] = useState(0)
   const [dragLine, setDragLine] = useState<null | { id: string; lng: number; lat: number }>(null)
 
@@ -357,7 +353,29 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
             style={{ zIndex: r.z }}
             onClick={(ev) => {
               ev.originalEvent?.stopPropagation?.()
-              if (r.canManip) props.onSelectPoint(r.point.id)
+              if (props.onDoubleTapTrackPoint) {
+                const oe = ev.originalEvent
+                if (oe && 'clientX' in oe) {
+                  const now = Date.now()
+                  const cx = (oe as MouseEvent).clientX
+                  const cy = (oe as MouseEvent).clientY
+                  const pid = r.point.id
+                  const prev = timeLabelDblTapRef.current
+                  if (
+                    prev &&
+                    prev.id === pid &&
+                    now - prev.t < TL_DBL_MS &&
+                    (cx - prev.x) ** 2 + (cy - prev.y) ** 2 < TL_DBL_DIST ** 2
+                  ) {
+                    timeLabelDblTapRef.current = null
+                    props.onDoubleTapTrackPoint(pid)
+                    return
+                  }
+                  timeLabelDblTapRef.current = { id: pid, t: now, x: cx, y: cy }
+                }
+              }
+              if (!r.canManip) return
+              props.onSelectPoint(r.point.id)
             }}
             onDrag={(ev) => {
               const ll = ev.lngLat
@@ -516,13 +534,122 @@ export type AddressesMapLibreProps = {
   onSelectTrackPoint: (id: string) => void
   onTrackPointDragEnd?: (pointId: string, lat: number, lon: number) => void
   onTrackTimeLabelDragEnd?: (pointId: string, offsetX: number, offsetY: number) => void
-  /** Video canvassing: user held a route step — offer switching to Subject tracking. */
-  onTrackStepLongPress?: (pointId: string) => void
-  /** Subject tracking: user held a canvass location — offer switching to Video canvassing. */
-  onCanvassLocationLongPress?: (locationId: string) => void
+  /** Video canvassing: long-press map (not on selected address or any route step) → switch to Subject tracking. */
+  onTabLongPressSwitchToTracking?: () => void
+  /** Subject tracking: long-press empty map → switch to Video canvassing. */
+  onTabLongPressSwitchToAddresses?: () => void
+  /** Subject tracking: long-press an unselected route step or address → confirm, then switch to Video canvassing. */
+  onTrackingUnselectedFeatureLongPress?: (payload: { kind: 'track' | 'loc'; id: string }) => void
+  /** Double-tap a route step (map or marker): parent switches to Subject tracking and opens step notes. */
+  onDoubleTapTrackPoint?: (pointId: string) => void
+  /** Double-tap a canvass location: parent switches to Video canvassing and opens address notes. */
+  onDoubleTapLocation?: (locationId: string) => void
   /** Visit-density heatmap (GeoJSON points with `weight`); drawn under canvass polygons. */
   visitHeatmapGeojson?: FeatureCollection | null
   showVisitHeatmap?: boolean
+}
+
+function peekNearestTrackPointId(
+  map: GlMap,
+  clickPx: { x: number; y: number },
+  ti: MapTrackingInteraction,
+): string | null {
+  const r = ti.pickRadiusPx ?? 28
+  const r2 = r * r
+  let best: { id: string; d2: number } | null = null
+  for (const pt of ti.trackPoints) {
+    if (pt.showOnMap === false) continue
+    if (ti.visibleTrackIds[pt.trackId] === false) continue
+    const lp = map.project([pt.lon, pt.lat])
+    const dx = lp.x - clickPx.x
+    const dy = lp.y - clickPx.y
+    const d2 = dx * dx + dy * dy
+    if (d2 > r2) continue
+    if (!best || d2 < best.d2) best = { id: pt.id, d2 }
+  }
+  return best?.id ?? null
+}
+
+/** Nearest track vs canvass feature at a screen point (matches tap / double-tap resolution). */
+function resolveFeatureHitAtPoint(
+  map: GlMap,
+  point: { x: number; y: number },
+  p: AddressesMapLibreProps,
+): { kind: 'track'; id: string } | { kind: 'loc'; id: string } | null {
+  const ll = map.unproject([point.x, point.y])
+  const lat = ll.lat
+  const lon = ll.lng
+  const z = map.getZoom()
+  const lowZoom = z < MAP_DETAIL_MIN_ZOOM
+  const { x, y } = point
+  const ti = p.trackingInteraction
+  const pointPx: [number, number] = [point.x, point.y]
+
+  if (lowZoom) {
+    let trackPid: string | null = null
+    const tPts = map.queryRenderedFeatures(pointPx, { layers: ['track-wpts-unclustered', 'track-wpts-stepnum'] })
+    for (const f of tPts) {
+      const pid = f.properties?.pid
+      if (typeof pid === 'string' && pid) {
+        trackPid = pid
+        break
+      }
+    }
+    let locId: string | null = null
+    const cPts = map.queryRenderedFeatures(pointPx, { layers: ['canvass-loc-unclustered'] })
+    const lid = cPts[0]?.properties?.locId
+    if (typeof lid === 'string' && lid) locId = lid
+
+    if (trackPid && locId) {
+      const tpt = p.caseTrackPoints.find((q) => q.id === trackPid)
+      const loc = p.mapPins.find((l) => l.id === locId) ?? p.locations.find((l) => l.id === locId) ?? p.findHit(lat, lon)
+      if (tpt && loc) {
+        const pp = map.project([tpt.lon, tpt.lat])
+        const lp = map.project([loc.lon, loc.lat])
+        const dT = (pp.x - x) ** 2 + (pp.y - y) ** 2
+        const dL = (lp.x - x) ** 2 + (lp.y - y) ** 2
+        return dT <= dL ? { kind: 'track', id: trackPid } : { kind: 'loc', id: locId }
+      }
+    }
+    if (trackPid) return { kind: 'track', id: trackPid }
+    if (locId) return { kind: 'loc', id: locId }
+    return null
+  }
+
+  let bestTrack: { id: string; d2: number } | null = null
+  for (const pt of ti.trackPoints) {
+    if (pt.showOnMap === false) continue
+    if (ti.visibleTrackIds[pt.trackId] === false) continue
+    const lp = map.project([pt.lon, pt.lat])
+    const dx = lp.x - x
+    const dy = lp.y - y
+    const d2 = dx * dx + dy * dy
+    const r = ti.pickRadiusPx ?? 28
+    if (d2 > r * r) continue
+    if (!bestTrack || d2 < bestTrack.d2) bestTrack = { id: pt.id, d2 }
+  }
+
+  const hitLoc = locationFromCanvassRenderedLayers(map, point, p.mapPins, p.locations) ?? p.findHit(lat, lon)
+  let locD2 = Infinity
+  if (hitLoc) {
+    const lp = map.project([hitLoc.lon, hitLoc.lat])
+    locD2 = (lp.x - x) ** 2 + (lp.y - y) ** 2
+  }
+
+  if (bestTrack && hitLoc) {
+    return bestTrack.d2 <= locD2 ? { kind: 'track', id: bestTrack.id } : { kind: 'loc', id: hitLoc.id }
+  }
+  if (bestTrack) return { kind: 'track', id: bestTrack.id }
+  if (hitLoc) return { kind: 'loc', id: hitLoc.id }
+  return null
+}
+
+function resolveDoubleTapDeepLink(
+  map: GlMap,
+  e: MapLayerMouseEvent,
+  p: AddressesMapLibreProps,
+): { kind: 'track'; id: string } | { kind: 'loc'; id: string } | null {
+  return resolveFeatureHitAtPoint(map, e.point, p)
 }
 
 const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, AddressesMapLibreProps>(
@@ -535,13 +662,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     // (useEffect runs too late for rapid taps before the next commit).
     propsRef.current = props
 
-    /** After canvass long-press, skip one synthetic map click / deferred tap. */
-    const canvassLocationLongPressSuppressRef = useRef(false)
-
     /** Pair with `mapClickPendingTimerRef`: second tap in quick succession zooms; first tap is deferred. */
     const mapClickFirstTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
     const mapClickPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const mapClickPendingEventRef = useRef<MapLayerMouseEvent | null>(null)
+    /** After hold-to-switch tab, ignore map clicks until this deadline (pointer-up still synthesizes a click). */
+    const mapClickSuppressUntilRef = useRef(0)
 
     useEffect(() => {
       const lookup = (lat: number, lon: number): LatLon[] | null => {
@@ -600,6 +726,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         }
         mapClickPendingEventRef.current = null
         mapClickFirstTapRef.current = null
+        mapClickSuppressUntilRef.current = 0
       },
     }))
 
@@ -777,7 +904,11 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     }, [])
 
     useEffect(() => {
-      if (props.caseTab !== 'tracking' || !props.onCanvassLocationLongPress) return
+      const needListeners =
+        (props.caseTab === 'addresses' && !!props.onTabLongPressSwitchToTracking) ||
+        (props.caseTab === 'tracking' &&
+          (!!props.onTabLongPressSwitchToAddresses || !!props.onTrackingUnselectedFeatureLongPress))
+      if (!needListeners) return
 
       let alive = true
       let poll: ReturnType<typeof setInterval> | null = null
@@ -803,9 +934,22 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           return { x: ev.clientX - r.left, y: ev.clientY - r.top }
         }
 
+        const suppressPendingClick = () => {
+          if (mapClickPendingTimerRef.current) {
+            clearTimeout(mapClickPendingTimerRef.current)
+            mapClickPendingTimerRef.current = null
+          }
+          mapClickPendingEventRef.current = null
+          mapClickFirstTapRef.current = null
+          mapClickSuppressUntilRef.current = performance.now() + 900
+        }
+
         const onDown = (ev: PointerEvent) => {
           const p = propsRef.current
-          if (p.caseTab !== 'tracking' || !p.onCanvassLocationLongPress) return
+          const addrs = p.caseTab === 'addresses' && !!p.onTabLongPressSwitchToTracking
+          const trk = p.caseTab === 'tracking'
+          if (!addrs && !trk) return
+          if (addrs && p.placementClickAddsTrackPoint) return
           if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
           if (p.addrSearchBlocksMapClicks) return
           if (ev.pointerType === 'mouse' && ev.button !== 0) return
@@ -815,18 +959,70 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           holdTimer = window.setTimeout(() => {
             holdTimer = null
             const cur = propsRef.current
-            if (!downPt || cur.caseTab !== 'tracking' || !cur.onCanvassLocationLongPress) return
-            const hit = locationFromCanvassRenderedLayers(map, downPt, cur.mapPins, cur.locations)
-            if (hit) {
-              if (mapClickPendingTimerRef.current) {
-                clearTimeout(mapClickPendingTimerRef.current)
-                mapClickPendingTimerRef.current = null
-              }
-              mapClickPendingEventRef.current = null
-              mapClickFirstTapRef.current = null
-              canvassLocationLongPressSuppressRef.current = true
-              cur.onCanvassLocationLongPress(hit.id)
+            if (!downPt) return
+
+            const addrsNow = cur.caseTab === 'addresses' && !!cur.onTabLongPressSwitchToTracking
+            const trkNow = cur.caseTab === 'tracking'
+            if (!addrsNow && !trkNow) {
+              downPt = null
+              client0 = null
+              return
             }
+            if (addrsNow && cur.placementClickAddsTrackPoint) {
+              downPt = null
+              client0 = null
+              return
+            }
+
+            const hit = resolveFeatureHitAtPoint(map, downPt, cur)
+            const selAddr = cur.selectedId ?? null
+            const selTrack = cur.selectedTrackPointId ?? null
+
+            if (addrsNow) {
+              if (hit?.kind === 'track') {
+                downPt = null
+                client0 = null
+                return
+              }
+              if (hit?.kind === 'loc' && hit.id === selAddr) {
+                downPt = null
+                client0 = null
+                return
+              }
+              suppressPendingClick()
+              cur.onTabLongPressSwitchToTracking?.()
+              downPt = null
+              client0 = null
+              return
+            }
+
+            // Subject tracking
+            if (!hit) {
+              suppressPendingClick()
+              cur.onTabLongPressSwitchToAddresses?.()
+              downPt = null
+              client0 = null
+              return
+            }
+            if (hit.kind === 'track') {
+              if (hit.id === selTrack) {
+                downPt = null
+                client0 = null
+                return
+              }
+              suppressPendingClick()
+              cur.onTrackingUnselectedFeatureLongPress?.({ kind: 'track', id: hit.id })
+              downPt = null
+              client0 = null
+              return
+            }
+            if (hit.id === selAddr) {
+              downPt = null
+              client0 = null
+              return
+            }
+            suppressPendingClick()
+            cur.onTrackingUnselectedFeatureLongPress?.({ kind: 'loc', id: hit.id })
             downPt = null
             client0 = null
           }, MAP_LONG_PRESS_MS)
@@ -876,7 +1072,13 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         if (detachCanvasListeners) detachCanvasListeners()
         detachCanvasListeners = null
       }
-    }, [props.caseTab, props.onCanvassLocationLongPress])
+    }, [
+      props.caseTab,
+      props.placementClickAddsTrackPoint,
+      props.onTabLongPressSwitchToTracking,
+      props.onTabLongPressSwitchToAddresses,
+      props.onTrackingUnselectedFeatureLongPress,
+    ])
 
     const tryResolveTrackHit = useCallback(
       (map: GlMap, clickPx: { x: number; y: number }, ti: MapTrackingInteraction): 'picked' | 'blocked' | 'none' => {
@@ -908,6 +1110,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const runMapClickInteraction = useCallback(
       (e: MapLayerMouseEvent) => {
         const p = propsRef.current
+        if (performance.now() < mapClickSuppressUntilRef.current) return
         if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
         if (p.addrSearchBlocksMapClicks) return
         const map = mapRef.current?.getMap()
@@ -1016,13 +1219,67 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const onClick = useCallback(
       (e: MapLayerMouseEvent) => {
         const p = propsRef.current
-        if (p.caseTab === 'tracking' || p.placementClickAddsTrackPoint) {
+        if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
+        if (p.addrSearchBlocksMapClicks) return
+        if (performance.now() < mapClickSuppressUntilRef.current) {
+          if (mapClickPendingTimerRef.current) {
+            clearTimeout(mapClickPendingTimerRef.current)
+            mapClickPendingTimerRef.current = null
+          }
+          mapClickPendingEventRef.current = null
+          mapClickFirstTapRef.current = null
+          return
+        }
+
+        if (p.placementClickAddsTrackPoint) {
           runMapClickInteraction(e)
           return
         }
 
         const map = mapRef.current?.getMap()
-        if (map && p.selectedId) {
+        const now = performance.now()
+        const { x, y } = e.point
+        const first = mapClickFirstTapRef.current
+        const isSecondOfDouble =
+          first != null &&
+          now - first.t < DOUBLE_TAP_MAX_MS &&
+          (x - first.x) ** 2 + (y - first.y) ** 2 < DOUBLE_TAP_MAX_DIST_PX ** 2
+
+        if (isSecondOfDouble) {
+          if (mapClickPendingTimerRef.current) {
+            clearTimeout(mapClickPendingTimerRef.current)
+            mapClickPendingTimerRef.current = null
+          }
+          mapClickPendingEventRef.current = null
+          mapClickFirstTapRef.current = null
+
+          if (map && p.onDoubleTapTrackPoint && p.onDoubleTapLocation) {
+            const target = resolveDoubleTapDeepLink(map, e, p)
+            if (target?.kind === 'track') p.onDoubleTapTrackPoint(target.id)
+            else if (target?.kind === 'loc') p.onDoubleTapLocation(target.id)
+            else {
+              const curZ = map.getZoom()
+              map.easeTo({
+                center: [e.lngLat.lng, e.lngLat.lat],
+                zoom: Math.min(curZ + 1.25, 22),
+                duration: 240,
+              })
+            }
+            return
+          }
+
+          if (map) {
+            const curZ = map.getZoom()
+            map.easeTo({
+              center: [e.lngLat.lng, e.lngLat.lat],
+              zoom: Math.min(curZ + 1.25, 22),
+              duration: 240,
+            })
+          }
+          return
+        }
+
+        if (map && p.caseTab === 'addresses' && p.selectedId) {
           const quick = locationFromCanvassRenderedLayers(map, e.point, p.mapPins, p.locations)
           const geomHit = p.findHit(e.lngLat.lat, e.lngLat.lng)
           const reTapSelected =
@@ -1039,31 +1296,18 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           }
         }
 
-        const now = performance.now()
-        const { x, y } = e.point
-        const first = mapClickFirstTapRef.current
-        const isSecondOfDouble =
-          first != null &&
-          now - first.t < DOUBLE_TAP_MAX_MS &&
-          (x - first.x) ** 2 + (y - first.y) ** 2 < DOUBLE_TAP_MAX_DIST_PX ** 2
-
-        if (isSecondOfDouble) {
-          if (mapClickPendingTimerRef.current) {
-            clearTimeout(mapClickPendingTimerRef.current)
-            mapClickPendingTimerRef.current = null
+        if (map && p.caseTab === 'tracking') {
+          const tidPeek = peekNearestTrackPointId(map, e.point, p.trackingInteraction)
+          if (tidPeek && tidPeek === (p.selectedTrackPointId ?? null)) {
+            if (mapClickPendingTimerRef.current) {
+              clearTimeout(mapClickPendingTimerRef.current)
+              mapClickPendingTimerRef.current = null
+            }
+            mapClickPendingEventRef.current = null
+            mapClickFirstTapRef.current = null
+            runMapClickInteraction(e)
+            return
           }
-          mapClickPendingEventRef.current = null
-          mapClickFirstTapRef.current = null
-          const map = mapRef.current?.getMap()
-          if (map) {
-            const curZ = map.getZoom()
-            map.easeTo({
-              center: [e.lngLat.lng, e.lngLat.lat],
-              zoom: Math.min(curZ + 1.25, 22),
-              duration: 240,
-            })
-          }
-          return
         }
 
         if (mapClickPendingTimerRef.current) {
@@ -1309,7 +1553,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           onSelectPoint={props.onSelectTrackPoint}
           draggable={props.caseTab === 'tracking'}
           onDragEndPoint={props.onTrackPointDragEnd}
-          onLongPressPoint={props.caseTab === 'addresses' ? props.onTrackStepLongPress : undefined}
+          onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
           showMarkers={showDetailOverlays}
         />
 
@@ -1321,6 +1565,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           canManipulatePoint={props.canManipulateTrackPoint}
           selectedPointId={props.selectedTrackPointId ?? null}
           onSelectPoint={props.onSelectTrackPoint}
+          onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
           onDragEndLabel={props.onTrackTimeLabelDragEnd}
           showLabels={showDetailOverlays}
         />

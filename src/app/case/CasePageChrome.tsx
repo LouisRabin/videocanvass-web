@@ -3,6 +3,7 @@ import type { Location, TrackPoint } from '../../lib/types'
 import { statusColor } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
 import { DvrSingleDateTimePicker } from '../ProbativeDvrFlow'
+import { formatAddressLineForMapList } from '../casePageHelpers'
 
 const btn: CSSProperties = {
   border: '1px solid #e5e7eb',
@@ -577,6 +578,8 @@ export function TrackPointDrawer(props: {
 
   const stepNameLooksDefault = /^step\s+\d+$/i.test(inlineLabelDraft.trim())
   const inlineStepLabelValue = wide && stepNameLooksDefault ? '' : inlineLabelDraft
+  const wideStepLabelShown =
+    canEdit ? inlineStepLabelValue : formatAddressLineForMapList(inlineStepLabelValue)
 
   const stepTitleLine = (
     <div
@@ -593,7 +596,7 @@ export function TrackPointDrawer(props: {
       </span>
       {wide ? (
         <input
-          value={inlineStepLabelValue}
+          value={wideStepLabelShown}
           placeholder="Label"
           readOnly={!canEdit}
           onPointerDown={(e) => e.stopPropagation()}
@@ -730,6 +733,7 @@ export function TrackPointDrawer(props: {
       {canEdit ? (
         <DvrSingleDateTimePicker
           legend="Subject time at this point"
+          legendHint="Optional"
           value={timestampToDatetimeLocalValue(props.point.visitedAt)}
           onChange={(s) => {
             const v = parseDatetimeLocalToTimestamp(s)
@@ -740,15 +744,23 @@ export function TrackPointDrawer(props: {
         />
       ) : (
         <>
-          <div style={label}>Subject time at this point</div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 8,
+              flexWrap: 'wrap',
+              marginBottom: 6,
+            }}
+          >
+            <span style={{ fontSize: 12, color: '#111827', fontWeight: 800 }}>Subject time at this point</span>
+            <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>Optional</span>
+          </div>
           <div style={{ ...fieldBox, fontSize: 13, color: props.point.visitedAt == null ? '#6b7280' : '#111827' }}>
             {props.point.visitedAt == null ? '—' : formatAppDateTime(props.point.visitedAt)}
           </div>
         </>
       )}
-      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-        Optional. When the subject was here per your investigation—not filled in automatically.
-      </div>
     </div>
   )
 
@@ -870,13 +882,15 @@ export function LocationDrawer(props: {
     minWidth: 0,
   }
 
+  const addressDisplay = formatAddressLineForMapList(props.location.addressText)
+
   const addressOnly = (
-    <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, minWidth: 0 }}>{props.location.addressText}</div>
+    <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, minWidth: 0 }}>{addressDisplay}</div>
   )
 
   const headerRow = (
     <div style={{ display: 'flex', gap: 'var(--vc-space-md)', alignItems: 'start' }}>
-      <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, flex: 1, minWidth: 0 }}>{props.location.addressText}</div>
+      <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, flex: 1, minWidth: 0 }}>{addressDisplay}</div>
       <button type="button" style={btn} onClick={props.onClose} aria-label="Close">
         ✕
       </button>

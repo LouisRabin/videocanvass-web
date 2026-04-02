@@ -629,19 +629,26 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     if (caseTab === 'addresses' && viewMode === 'list') setAddressDrawerDetailsOpen(false)
   }, [caseTab, viewMode])
 
-  const onTrackStepLongPress = useCallback((pointId: string) => {
-    if (!window.confirm('Open Subject tracking for this step?')) return
+  const onTabLongPressSwitchToTracking = useCallback(() => {
     setWorkspaceCaseTab('tracking')
-    setSelectedTrackPointId(pointId)
   }, [setWorkspaceCaseTab])
 
-  const onCanvassLocationLongPress = useCallback((locationId: string) => {
-    if (!window.confirm('Open Video canvassing for this address?')) return
+  const onTabLongPressSwitchToAddresses = useCallback(() => {
     setWorkspaceCaseTab('addresses')
-    setSelectedId(locationId)
-    setLocationDetailOpen(true)
-    setSelectedTrackPointId(null)
   }, [setWorkspaceCaseTab])
+
+  const onTrackingUnselectedFeatureLongPress = useCallback(
+    (payload: { kind: 'track' | 'loc'; id: string }) => {
+      if (!window.confirm('Switch to Video canvassing mode?')) return
+      setWorkspaceCaseTab('addresses')
+      setSelectedTrackPointId(null)
+      if (payload.kind === 'loc') {
+        setSelectedId(payload.id)
+        setLocationDetailOpen(true)
+      }
+    },
+    [setWorkspaceCaseTab],
+  )
 
   useEffect(() => {
     if (!autoContinuationTrackId) return
@@ -1464,6 +1471,28 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     [caseTrackPoints, data, actorId],
   )
   const onSelectTrackPointMap = useCallback((id: string) => setSelectedTrackPointId(id), [])
+  const onDoubleTapTrackPointFromMap = useCallback(
+    (pointId: string) => {
+      if (!caseTrackPoints.some((x) => x.id === pointId)) return
+      setWorkspaceCaseTab('tracking')
+      setSelectedTrackPointId(pointId)
+      setTrackDrawerDetailsOpen(true)
+      closeMapToolsDock()
+    },
+    [caseTrackPoints, setWorkspaceCaseTab, closeMapToolsDock],
+  )
+  const onDoubleTapLocationFromMap = useCallback(
+    (locationId: string) => {
+      if (!locations.some((l) => l.id === locationId)) return
+      setWorkspaceCaseTab('addresses')
+      setWorkspaceViewMode('map')
+      setSelectedId(locationId)
+      setLocationDetailOpen(true)
+      setAddressDrawerDetailsOpen(true)
+      closeMapToolsDock()
+    },
+    [locations, setWorkspaceCaseTab, setWorkspaceViewMode, closeMapToolsDock],
+  )
   const onTrackPointDragEnd = useCallback(
     (pointId: string, lat: number, lon: number) => {
       const p = caseTrackPoints.find((x) => x.id === pointId)
@@ -1779,13 +1808,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setMapLeftToolSection('tracks')
   }, [isNarrow])
   const openAddTrackFromQuickPick = useCallback(() => {
-    openTrackManagerInMenu()
     if (!canAddCaseContentHere) return
     setWorkspaceCaseTab('tracking')
     setAddTrackKind('person')
     setAddTrackLabel(`Track ${caseTracks.length + 1}`)
     setShowAddTrack(true)
-  }, [openTrackManagerInMenu, canAddCaseContentHere, caseTracks.length, setWorkspaceCaseTab])
+  }, [canAddCaseContentHere, caseTracks.length, setWorkspaceCaseTab])
   const trackQuickPickButtons = (
     <>
       {caseTracks.map((t) => {
@@ -2183,13 +2211,33 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     padding: 8,
   }
 
+  /** Narrow ☰: extra left padding pulls over the flex gap so misses don’t hit the map. */
+  const narrowMapMenuSlop = { left: 24, right: 12, top: 10, bottom: 10 } as const
+  const narrowMapMenuOuterW = narrowMapMenuSlop.left + 44 + narrowMapMenuSlop.right
+  const narrowMapMenuOuterH = narrowMapMenuSlop.top + 44 + narrowMapMenuSlop.bottom
+  const narrowMapMenuHitSlopBtnStyle: CSSProperties = {
+    border: 'none',
+    background: 'transparent',
+    padding: `${narrowMapMenuSlop.top}px ${narrowMapMenuSlop.right}px ${narrowMapMenuSlop.bottom}px ${narrowMapMenuSlop.left}px`,
+    margin: 0,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexShrink: 0,
+    width: narrowMapMenuOuterW,
+    height: narrowMapMenuOuterH,
+    boxSizing: 'border-box',
+    WebkitTapHighlightColor: 'transparent',
+  }
+
   const mapDockColumnStyle: CSSProperties = {
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-end',
     gap: 6,
-    minWidth: 44,
+    minWidth: narrowMapMenuOuterW,
     width: 'auto',
     maxWidth: 'min(calc(100vw - 32px), 300px)',
     maxHeight:
@@ -2292,10 +2340,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
     flexShrink: 0,
   }
+  const mapDockMenuToggleFaceStyle: CSSProperties = {
+    ...mapDockMenuToggleBtnStyle,
+    pointerEvents: 'none',
+  }
   const renderDockSectionButton = (section: MapToolsDockSection, label: string) => (
     <button
       type="button"
       onClick={() => {
+        if (section === 'dvr' && isNarrow) {
+          closeMapToolsDock()
+          setProbativeFlow({ step: 'calc', target: { kind: 'dvr_only' } })
+          return
+        }
         if (section === 'dvr') setProbativeFlow(null)
         setMapLeftToolSection((s) => (s === section ? null : section))
       }}
@@ -2389,6 +2446,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',
+                padding: 6,
+                marginTop: 4,
               }
             : {}),
         }}
@@ -2999,30 +3058,59 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const narrowMapTopShowsFloatingAddress = caseTab === 'tracking' || caseTab === 'addresses'
   const showTrackQuickPickRow = narrowMapTopShowsFloatingAddress && (caseTracks.length > 0 || canAddCaseContentHere)
-  const trackQuickPickRowInner =
-    caseTracks.length === 0 ? (
-      <button
-        type="button"
-        disabled={!canAddCaseContentHere}
-        onClick={openAddTrackFromQuickPick}
-        title={!canAddCaseContentHere ? 'No access to add tracks' : 'Add a movement track'}
+  const addTrackQuickPickButton = canAddCaseContentHere ? (
+    <button
+      type="button"
+      onClick={openAddTrackFromQuickPick}
+      title="Add a movement track"
+      style={{
+        ...btnPrimary,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 14px',
+        borderRadius: 999,
+        fontWeight: 900,
+        fontSize: 13,
+      }}
+    >
+      Add Track
+    </button>
+  ) : null
+  const trackQuickPickRowInner = (
+    <>
+      {addTrackQuickPickButton}
+      {caseTracks.length > 0 ? trackQuickPickButtons : null}
+    </>
+  )
+  const mapTopFloatingAddressEl = narrowMapTopShowsFloatingAddress ? (
+    <div
+      ref={narrowMapAddressRef}
+      style={{
+        ...(isNarrow
+          ? { flex: 1, minWidth: 0 }
+          : {
+              flex: '0 1 auto',
+              width: 'min(400px, 100%)',
+              minWidth: 0,
+              maxWidth: '100%',
+            }),
+        pointerEvents: 'auto',
+        position: 'relative',
+        zIndex: 8,
+      }}
+    >
+      <div
         style={{
-          ...btnPrimary,
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '6px 14px',
-          borderRadius: 999,
-          fontWeight: 900,
-          fontSize: 13,
-          opacity: canAddCaseContentHere ? 1 : 0.45,
+          ...narrowFloatingAddressCardStyle,
+          opacity: addrSearchProminent ? 1 : 0.52,
+          transition: 'opacity 0.2s ease',
         }}
       >
-        Add Track
-      </button>
-    ) : (
-      trackQuickPickButtons
-    )
+        {renderAddAddressSearch(true)}
+      </div>
+    </div>
+  ) : null
   const webToolsArrowOnly = !isNarrow && webToolsCanCollapse && webToolsCollapsed
   /** Outer pane stays overflow-visible so the collapse tab can extend into the grid gap; scroll lives in an inner div. */
   const wideToolsExpandedScrollFix = !isNarrow && webToolsCanCollapse && !webToolsCollapsed
@@ -3382,12 +3470,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     boxSizing: 'border-box',
                     display: 'flex',
                     flexDirection: 'row',
-                    alignItems: 'flex-start',
-                    gap: 8,
+                    alignItems: isNarrow ? 'center' : 'flex-start',
+                    gap: isNarrow ? 0 : 8,
                     pointerEvents: 'none',
                   }}
                 >
-                  {!isNarrow ? caseModeToggleBar : null}
                   {narrowMapTopShowsFloatingAddress && mapLeftToolDockOpen ? (
                     <div
                       role="presentation"
@@ -3414,34 +3501,40 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                     />
                   ) : null}
-                  {narrowMapTopShowsFloatingAddress ? (
+                  {!isNarrow ? (
                     <div
-                      ref={narrowMapAddressRef}
                       style={{
-                        ...(isNarrow
-                          ? { flex: 1, minWidth: 0 }
-                          : {
-                              flex: '0 1 auto',
-                              width: 'min(400px, 100%)',
-                              minWidth: 0,
-                              maxWidth: '100%',
-                            }),
-                        pointerEvents: 'auto',
-                        position: 'relative',
-                        zIndex: 8,
+                        flex: 1,
+                        minWidth: 0,
+                        display: 'flex',
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        gap: 8,
+                        pointerEvents: 'none',
                       }}
                     >
-                      <div
-                        style={{
-                          ...narrowFloatingAddressCardStyle,
-                          opacity: addrSearchProminent ? 1 : 0.52,
-                          transition: 'opacity 0.2s ease',
-                        }}
-                      >
-                        {renderAddAddressSearch(true)}
-                      </div>
+                      {caseModeToggleBar}
+                      {mapTopFloatingAddressEl}
+                      {showTrackQuickPickRow ? (
+                        <div
+                          style={{
+                            pointerEvents: 'auto',
+                            position: 'relative',
+                            zIndex: 8,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          {trackQuickPickRowInner}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
+                  {isNarrow ? mapTopFloatingAddressEl : null}
                   {isNarrow && showTrackQuickPickRow ? (
                     <div
                       style={{
@@ -3456,22 +3549,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         flexWrap: 'wrap',
                         justifyContent: 'center',
                         width: 'min(94vw, 560px)',
-                      }}
-                    >
-                      {trackQuickPickRowInner}
-                    </div>
-                  ) : null}
-                  {!isNarrow && showTrackQuickPickRow ? (
-                    <div
-                      style={{
-                        pointerEvents: 'auto',
-                        position: 'relative',
-                        zIndex: 8,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        flexWrap: 'wrap',
-                        marginLeft: 8,
                       }}
                     >
                       {trackQuickPickRowInner}
@@ -3514,18 +3591,35 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                               }
                               setMapLeftToolDockOpen(true)
                             }}
-                            style={mapDockMenuToggleBtnStyle}
+                            style={narrowMapMenuHitSlopBtnStyle}
                           >
-                            ☰
+                            <span style={mapDockMenuToggleFaceStyle} aria-hidden>
+                              ☰
+                            </span>
                           </button>
                         ) : (
                           <>
                             {/** Keeps the top bar’s right edge aligned with the collapsed ☰ while the menu overlays leftward. */}
-                            <div style={{ width: 44, height: 44, flexShrink: 0, pointerEvents: 'none' }} aria-hidden />
+                            <div
+                              style={{
+                                width: narrowMapMenuOuterW,
+                                height: narrowMapMenuOuterH,
+                                flexShrink: 0,
+                                pointerEvents: 'none',
+                              }}
+                              aria-hidden
+                            />
                             <div style={narrowMapToolsOverlayPassThroughStyle}>
                               <div style={narrowMapToolsOverlayInteractiveStyle}>
-                                <button type="button" aria-label="Close map tools" onClick={closeMapToolsDock} style={mapDockMenuToggleBtnStyle}>
-                                  ☰
+                                <button
+                                  type="button"
+                                  aria-label="Close map tools"
+                                  onClick={closeMapToolsDock}
+                                  style={narrowMapMenuHitSlopBtnStyle}
+                                >
+                                  <span style={mapDockMenuToggleFaceStyle} aria-hidden>
+                                    ☰
+                                  </span>
                                 </button>
                                 {renderDockSectionButton('views', 'Views')}
                                 {renderDockSectionButton('filters', 'Filters')}
@@ -3643,8 +3737,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onTrackPointDragEnd={onTrackPointDragEnd}
                     onTrackTimeLabelDragEnd={onTrackTimeLabelDragEnd}
                     placementClickAddsTrackPoint={probativePlacementSession != null}
-                    onTrackStepLongPress={onTrackStepLongPress}
-                    onCanvassLocationLongPress={onCanvassLocationLongPress}
+                    onTabLongPressSwitchToTracking={onTabLongPressSwitchToTracking}
+                    onTabLongPressSwitchToAddresses={onTabLongPressSwitchToAddresses}
+                    onTrackingUnselectedFeatureLongPress={onTrackingUnselectedFeatureLongPress}
+                    onDoubleTapTrackPoint={onDoubleTapTrackPointFromMap}
+                    onDoubleTapLocation={onDoubleTapLocationFromMap}
                     visitHeatmapGeojson={visitHeatmapGeojson}
                     showVisitHeatmap={canUseVisitHeatmap && visitHeatmapOn && caseTab === 'addresses'}
                   />
@@ -4249,7 +4346,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     />
 
     <Modal
-      title={listNotesLocation ? listNotesLocation.addressText : 'Address notes'}
+      title={
+        listNotesLocation ? formatAddressLineForMapList(listNotesLocation.addressText) : 'Address notes'
+      }
       open={listNotesLocation != null}
       onClose={() => setListAddressNotesForId(null)}
     >

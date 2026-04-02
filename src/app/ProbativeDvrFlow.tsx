@@ -246,6 +246,8 @@ const PICKER_PORTAL_Z = 63000
  */
 export function DvrSingleDateTimePicker(props: {
   legend: string
+  /** Muted text on the same row as `legend` (e.g. “Optional”). */
+  legendHint?: string
   value: string
   onChange: (v: string) => void
   isNarrow: boolean
@@ -553,7 +555,20 @@ export function DvrSingleDateTimePicker(props: {
           : undefined
       }
     >
-      <div style={label}>{props.legend}</div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 8,
+          flexWrap: 'wrap',
+          marginBottom: 6,
+        }}
+      >
+        <span style={{ fontSize: 12, color: '#111827', fontWeight: 800 }}>{props.legend}</span>
+        {props.legendHint ? (
+          <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>{props.legendHint}</span>
+        ) : null}
+      </div>
       <button type="button" style={openBtnStyle} onClick={openPrompt} aria-haspopup="dialog">
         <span>{summary ?? 'Pick date and time'}</span>
         <span style={{ opacity: 0.65, flexShrink: 0, fontSize: 12, fontWeight: 700 }}>Set</span>
@@ -764,9 +779,21 @@ export function DvrCalculatorStep(props: {
 
   const manualHasInput = manualOffsetHasInput(manual)
   const showCalculate = !(manualHasInput && dvrParsedMs == null)
+  const embed = props.toolbarEmbed === true
+  const rootGap = embed ? 8 : 16
+  const footerBtnPrimary: CSSProperties = embed
+    ? { ...btnPrimary, padding: '6px 10px', fontSize: 12, minHeight: 0 }
+    : isNarrow
+      ? { ...btnPrimary, padding: '8px 6px', fontSize: 12 }
+      : btnPrimary
+  const footerBtnSecondary: CSSProperties = embed
+    ? { ...btn, padding: '6px 10px', fontSize: 12, minHeight: 0 }
+    : isNarrow
+      ? { ...btn, padding: '8px 6px', fontSize: 12 }
+      : btn
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
+    <div style={{ display: 'grid', gap: rootGap }}>
       <div>
         <div style={label}>Current time</div>
         <div style={{ ...field, color: '#374151', fontWeight: 700 }}>{deviceNowStr}</div>
@@ -783,7 +810,15 @@ export function DvrCalculatorStep(props: {
           warn={incidentInFuture}
         />
         {incidentInFuture ? (
-          <div style={{ marginTop: 6, fontSize: 12, color: '#b91c1c', lineHeight: 1.4, fontWeight: 600 }}>
+          <div
+            style={{
+              marginTop: embed ? 4 : 6,
+              fontSize: embed ? 11 : 12,
+              color: '#b91c1c',
+              lineHeight: 1.35,
+              fontWeight: 600,
+            }}
+          >
             Incident time can&apos;t be later than real time right now. Use a time at or before the device clock above
             (the subject can&apos;t have been somewhere in the future).
           </div>
@@ -795,9 +830,9 @@ export function DvrCalculatorStep(props: {
           style={{
             borderTop: '1px solid #e5e7eb',
             borderBottom: '1px solid #e5e7eb',
-            padding: '12px 0',
+            padding: embed ? '8px 0' : '12px 0',
             display: 'grid',
-            gap: 10,
+            gap: embed ? 8 : 10,
           }}
         >
           <div style={{ fontWeight: 900, fontSize: 13 }}>Or enter offset manually</div>
@@ -835,9 +870,25 @@ export function DvrCalculatorStep(props: {
       {error ? <div style={{ color: '#b91c1c', fontSize: 13, fontWeight: 700 }}>{error}</div> : null}
 
       {resultPreview ? (
-        <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 12, padding: 12 }}>
-          <div style={{ fontWeight: 900, fontSize: 12, marginBottom: 8, color: '#374151' }}>Result</div>
-          <div style={{ fontSize: 13, lineHeight: 1.55, color: '#111827' }}>
+        <div
+          style={{
+            background: '#f9fafb',
+            border: '1px solid #e5e7eb',
+            borderRadius: embed ? 8 : 12,
+            padding: embed ? 8 : 12,
+          }}
+        >
+          <div
+            style={{
+              fontWeight: 900,
+              fontSize: 12,
+              marginBottom: embed ? 4 : 8,
+              color: '#374151',
+            }}
+          >
+            Result
+          </div>
+          <div style={{ fontSize: embed ? 12 : 13, lineHeight: embed ? 1.45 : 1.55, color: '#111827' }}>
             {resultPreview.comparison === 'none' ? (
               <div>
                 DVR is <strong>in sync</strong> with real time
@@ -849,7 +900,7 @@ export function DvrCalculatorStep(props: {
               </div>
             )}
             {resultPreview.dvrIncidentTimeFirstDate ? (
-              <div style={{ marginTop: 10 }}>
+              <div style={{ marginTop: embed ? 6 : 10 }}>
                 DVR incident time: <strong>{resultPreview.dvrIncidentTimeFirstDate}</strong>
               </div>
             ) : null}
@@ -860,75 +911,43 @@ export function DvrCalculatorStep(props: {
       <div
         style={{
           display: 'flex',
-          gap: isNarrow ? 6 : 10,
-          flexWrap: isNarrow ? 'nowrap' : 'wrap',
-          justifyContent: isNarrow ? 'stretch' : 'flex-end',
-          overflowX: isNarrow ? 'auto' : undefined,
-          WebkitOverflowScrolling: isNarrow ? 'touch' : undefined,
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          flexWrap: 'wrap',
+          width: '100%',
         }}
       >
-        {showCalculate ? (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', minWidth: 0 }}>
+          {showCalculate ? (
+            <button
+              type="button"
+              style={footerBtnPrimary}
+              onClick={handleCalculate}
+              disabled={incidentInFuture}
+            >
+              Calculate
+            </button>
+          ) : null}
           <button
             type="button"
-            style={
-              isNarrow
-                ? {
-                    ...btnPrimary,
-                    flex: '1 1 0',
-                    minWidth: 0,
-                    padding: '8px 6px',
-                    fontSize: 12,
-                  }
-                : btnPrimary
-            }
-            onClick={handleCalculate}
+            style={footerBtnPrimary}
+            onClick={handleApply}
             disabled={incidentInFuture}
           >
-            Calculate
+            Save
           </button>
-        ) : null}
-        {!props.toolbarEmbed ? (
-          <button
-            type="button"
-            style={
-              isNarrow
-                ? { ...btn, flex: '1 1 0', minWidth: 0, padding: '8px 6px', fontSize: 12 }
-                : btn
-            }
-            onClick={props.onBack}
-          >
-            Back
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {!props.toolbarEmbed ? (
+            <button type="button" style={footerBtnSecondary} onClick={props.onBack}>
+              Back
+            </button>
+          ) : null}
+          <button type="button" style={footerBtnSecondary} onClick={props.onCancel}>
+            Cancel
           </button>
-        ) : null}
-        <button
-          type="button"
-          style={
-            isNarrow
-              ? { ...btn, flex: '1 1 0', minWidth: 0, padding: '8px 6px', fontSize: 12 }
-              : btn
-          }
-          onClick={props.onCancel}
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          style={
-            isNarrow
-              ? {
-                  ...btnPrimary,
-                  flex: '1 1 0',
-                  minWidth: 0,
-                  padding: '8px 6px',
-                  fontSize: 12,
-                }
-              : btnPrimary
-          }
-          onClick={handleApply}
-          disabled={incidentInFuture}
-        >
-          Save
-        </button>
+        </div>
       </div>
     </div>
   )
