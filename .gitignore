@@ -19,6 +19,10 @@ ios/.appetize-derived
 # Samsung TV experimental variant (broken / not maintained — do not track)
 *SamsungTV*
 
+# Local machine backup copies (out of sync with main sources — do not track)
+*DESKTOP-NC1PT5R*
+README-DESKTOP-NC1PT5R.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
