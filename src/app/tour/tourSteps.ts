@@ -93,16 +93,8 @@ const CASE_STEPS_SHARED: TourStepDef[] = [
 const CASE_STEPS_WEB: TourStepDef[] = [
   {
     id: 'case-wide-tools',
-    title: 'Map tools column',
-    body: 'On a wide screen, Views, Filters, Tracks, Photos, and DVR calculator live in the left column. If collapsed, use the edge tab to expand tools.',
-    target: VC_TOUR.caseControlPane,
-    placement: 'right',
-    variants: ['web'],
-  },
-  {
-    id: 'case-wide-expand',
-    title: 'Collapsed toolbar',
-    body: 'When the strip is hidden, open this control to show map tools again.',
+    title: 'Map tools on the map',
+    body: 'On a wide screen, Views, Filters, Tracks, Photos, and DVR calculator sit on the map as a vertical strip. Tap an icon to open that tool in a panel below the strip.',
     target: VC_TOUR.caseMapToolsWide,
     placement: 'right',
     variants: ['web'],
@@ -110,7 +102,7 @@ const CASE_STEPS_WEB: TourStepDef[] = [
   {
     id: 'case-list-view',
     title: 'Map and list',
-    body: 'In Video canvassing, open Views in the left map tools, then use List view to show addresses in a scrollable list beside the map.',
+    body: 'In Video canvassing, open Views on the map toolbar, then use List view to show addresses in a scrollable list (at the bottom of the map on a wide screen).',
     target: VC_TOUR.caseListViewBtn,
     placement: 'right',
     variants: ['web'],

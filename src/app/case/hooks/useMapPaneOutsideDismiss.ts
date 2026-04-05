@@ -8,8 +8,9 @@ type UseMapPaneOutsideDismissArgs = {
   mapDrawerSeamToggleRef?: RefObject<HTMLDivElement | null>
   /** Collapsed wide map tools expand tab (over map). */
   mapToolbarExpandToggleRef?: RefObject<HTMLDivElement | null>
-  wideAddrSearchRef: RefObject<HTMLDivElement | null>
   narrowMapAddressRef: RefObject<HTMLDivElement | null>
+  /** Narrow: bottom floating mode + track strip (outside address ref). */
+  narrowMapBottomChromeRef?: RefObject<HTMLDivElement | null>
   mapPaneShellRef: RefObject<HTMLDivElement | null>
   addrSearchInputRef: RefObject<HTMLInputElement | null>
   mapLeftToolDockOpenRef: MutableRefObject<boolean>
@@ -35,8 +36,8 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
     caseMapDetailOverlayRef,
     mapDrawerSeamToggleRef,
     mapToolbarExpandToggleRef,
-    wideAddrSearchRef,
     narrowMapAddressRef,
+    narrowMapBottomChromeRef,
     mapPaneShellRef,
     addrSearchInputRef,
     mapLeftToolDockOpenRef,
@@ -60,8 +61,10 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
         containsNode(caseMapDetailOverlayRef as RefObject<HTMLElement | null>, target) ||
         (mapDrawerSeamToggleRef ? containsNode(mapDrawerSeamToggleRef as RefObject<HTMLElement | null>, target) : false) ||
         (mapToolbarExpandToggleRef ? containsNode(mapToolbarExpandToggleRef as RefObject<HTMLElement | null>, target) : false) ||
-        containsNode(wideAddrSearchRef as RefObject<HTMLElement | null>, target) ||
-        containsNode(narrowMapAddressRef as RefObject<HTMLElement | null>, target)
+        containsNode(narrowMapAddressRef as RefObject<HTMLElement | null>, target) ||
+        (narrowMapBottomChromeRef
+          ? containsNode(narrowMapBottomChromeRef as RefObject<HTMLElement | null>, target)
+          : false)
       )
     }
 
@@ -121,8 +124,8 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
     caseMapDetailOverlayRef,
     mapDrawerSeamToggleRef,
     mapToolbarExpandToggleRef,
-    wideAddrSearchRef,
     narrowMapAddressRef,
+    narrowMapBottomChromeRef,
     mapPaneShellRef,
     addrSearchInputRef,
     mapLeftToolDockOpenRef,

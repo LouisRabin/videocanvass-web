@@ -20,17 +20,19 @@ if not exist "package.json" (
 )
 
 echo [1/3] Checking dependencies...
-if not exist "node_modules" (
-  echo node_modules not found. Installing...
-  call npm.cmd install
-  if errorlevel 1 (
-    echo.
-    echo [ERROR] npm install failed.
-    pause
-    exit /b 1
-  )
-) else (
-  echo node_modules found. Skipping install.
+where node >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] Node.js is not installed or not on PATH.
+  echo Install Node LTS from https://nodejs.org/ then retry.
+  pause
+  exit /b 1
+)
+node "%~dp0scripts\ensure-deps.mjs"
+if errorlevel 1 (
+  echo.
+  echo [ERROR] npm install failed.
+  pause
+  exit /b 1
 )
 
 echo.

@@ -10,7 +10,7 @@ import {
   type MutableRefObject,
   type ReactNode,
 } from 'react'
-import MapGL, { Layer, Marker, NavigationControl, Source, useMap, type MapLayerMouseEvent, type MapRef } from 'react-map-gl/maplibre'
+import MapGL, { Layer, Marker, Source, useMap, type MapLayerMouseEvent, type MapRef } from 'react-map-gl/maplibre'
 import type { Map as GlMap } from 'maplibre-gl'
 import type { Feature, FeatureCollection } from 'geojson'
 import L from 'leaflet'
@@ -1350,12 +1350,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         mapStyle={CARTO_VOYAGER_STYLE}
         style={{ width: '100%', height: '100%' }}
         doubleClickZoom={false}
+        attributionControl={false}
         onClick={onClick}
         onLoad={onLoad}
         onMoveEnd={syncZoomAndPreload}
         onZoomEnd={syncZoomAndPreload}
       >
-        <NavigationControl position="top-left" showCompass={false} />
 
         {visitHeatmapFc ? (
           <Source id="visit-heat" type="geojson" data={visitHeatmapFc}>

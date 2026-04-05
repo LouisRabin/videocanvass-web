@@ -85,7 +85,6 @@ import {
   listRowMainBtn,
   MapPaneEdgeAnchor,
   MapPaneEdgeToggle,
-  mapTopBar,
   select,
   statusBadge,
   suggestionBtn,
@@ -168,6 +167,83 @@ function WideMapTrackStepPlaceholder(props: { onDismiss: () => void }) {
   )
 }
 
+function EyeOpenIcon() {
+  return (
+    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth={2} />
+    </svg>
+  )
+}
+
+function EyeClosedIcon() {
+  return (
+    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M2 2l20 20" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function TrackMapVisibilityButton(props: {
+  visible: boolean
+  trackLabel: string
+  variant: 'mapDockGlass' | 'mapDockLight' | 'modal'
+  onToggle: () => void
+}) {
+  const { visible, trackLabel, variant, onToggle } = props
+  const glass = variant === 'mapDockGlass'
+  const btn: CSSProperties = {
+    flexShrink: 0,
+    width: 32,
+    height: 32,
+    padding: 0,
+    borderRadius: 8,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    boxSizing: 'border-box',
+    ...(glass
+      ? {
+          border: '1px solid rgba(255,255,255,0.22)',
+          background: visible ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.06)',
+          color: visible ? '#f8fafc' : 'rgba(203,213,225,0.72)',
+          opacity: visible ? 1 : 0.78,
+        }
+      : {
+          border: '1px solid #e5e7eb',
+          background: visible ? '#ffffff' : '#f3f4f6',
+          color: visible ? '#111827' : '#9ca3af',
+          opacity: visible ? 1 : 0.9,
+        }),
+  }
+  return (
+    <button
+      type="button"
+      aria-label={visible ? `Hide “${trackLabel}” on map` : `Show “${trackLabel}” on map`}
+      aria-pressed={visible}
+      title={visible ? 'Hide path on map' : 'Show path on map'}
+      onClick={onToggle}
+      style={btn}
+    >
+      {visible ? <EyeOpenIcon /> : <EyeClosedIcon />}
+    </button>
+  )
+}
+
 export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: () => void }) {
   const {
     data,
@@ -229,6 +305,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
   /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
   const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
+  /** Full height of wide map tool pill (px); panel top = below pill with gap. */
+  const [webWideMapDockPillFullPx, setWebWideMapDockPillFullPx] = useState(96)
   const { clear: clearQuickMenuSearch } = useCaseGeocodeSearch('', {
     bias: geoBias,
     mapCenterFallback: mapSearchCenterFallback,
@@ -260,11 +338,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   /** Ignore outside-dismiss until this time (performance.now ms) so open + deferred map tap don't instantly close. */
   const mapToolsDockIgnoreOutsideUntilRef = useRef(0)
   const narrowMapAddressRef = useRef<HTMLDivElement>(null)
-  const wideAddrSearchRef = useRef<HTMLDivElement>(null)
+  const narrowMapBottomChromeRef = useRef<HTMLDivElement>(null)
   const mapPaneShellRef = useRef<HTMLDivElement>(null)
   const caseMapDetailOverlayRef = useRef<HTMLDivElement>(null)
   const mapDrawerSeamToggleRef = useRef<HTMLDivElement>(null)
-  const mapToolbarExpandToggleRef = useRef<HTMLDivElement>(null)
+  const webWideMapDockPillRef = useRef<HTMLDivElement>(null)
   const addrSearchInputRef = useRef<HTMLInputElement>(null)
   /** After address search dismiss, `performance.now()` deadline for ignoring map taps (see ADDR_MAP_INTERACTION_FREEZE_MS). */
   const addrMapInteractionFreezeUntilRef = useRef(0)
@@ -461,8 +539,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   useEffect(() => {
     if (caseTab !== 'addresses') setWideSidebarListReveal(false)
   }, [caseTab])
-  const [webToolsCollapsed, setWebToolsCollapsed] = useState(true)
-
   useEffect(() => {
     if (caseTab !== 'addresses' || viewMode !== 'list') {
       setListRowExpandedId(null)
@@ -489,9 +565,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       }
       if (resolvedView === 'list') {
         setLocationDetailOpen(false)
-        if (!isNarrow && caseTab === 'addresses') {
-          setWebToolsCollapsed(false)
-        }
       }
       if (isNarrow && resolvedView === 'list') {
         closeMapToolsDock()
@@ -504,10 +577,23 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     if (!isNarrow) {
       mapToolsDockIgnoreOutsideUntilRef.current = 0
       setMapLeftToolDockOpen(false)
-      setWebToolsCollapsed(true)
       setMapLeftToolSection(null)
     }
   }, [isNarrow])
+
+  useLayoutEffect(() => {
+    if (isNarrow) return
+    if (caseTab !== 'tracking' && caseTab !== 'addresses') return
+    const el = webWideMapDockPillRef.current
+    if (!el) return
+    const measure = () => {
+      setWebWideMapDockPillFullPx(Math.max(40, el.offsetHeight))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [isNarrow, caseTab, mapLeftToolSection])
 
   const setWorkspaceCaseTab = useCallback((nextCaseTab: 'addresses' | 'tracking') => {
     setWorkspaceMode((prev) => {
@@ -524,14 +610,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [])
 
-  const webToolsCanCollapse = !isNarrow
-  useEffect(() => {
-    if (!webToolsCanCollapse && webToolsCollapsed) {
-      setWebToolsCollapsed(false)
-    }
-  }, [webToolsCanCollapse, webToolsCollapsed])
-
-  const [filterLegendOpen, setFilterLegendOpen] = useState(false)
   const [visitHeatmapOn, setVisitHeatmapOn] = useState(false)
 
   useEffect(() => {
@@ -1127,12 +1205,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }, [probativeFlow])
 
   useEffect(() => {
-    if (mapLeftToolSection === 'dvr' && !isNarrow && webToolsCanCollapse) {
-      setWebToolsCollapsed(false)
-    }
-  }, [mapLeftToolSection, isNarrow, webToolsCanCollapse])
-
-  useEffect(() => {
     const available = OUTLINE_CONCURRENCY - outlineInFlightRef.current.size
     if (available <= 0) return
     if (!outlineQueue.length) return
@@ -1391,9 +1463,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     mapToolsDockRef,
     caseMapDetailOverlayRef,
     mapDrawerSeamToggleRef,
-    mapToolbarExpandToggleRef,
-    wideAddrSearchRef,
     narrowMapAddressRef,
+    narrowMapBottomChromeRef,
     mapPaneShellRef,
     addrSearchInputRef,
     mapLeftToolDockOpenRef,
@@ -1562,16 +1633,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     ],
   )
 
-  const controlPaneWidth = 'clamp(300px, 28vw, 380px)'
   const workspaceGridStyle = useMemo<CSSProperties>(
     () =>
       isNarrow
         ? {
             display: 'grid',
             gridTemplateColumns: '1fr',
-            // Map (or list) uses all flexible height; tabs strip is only as tall as its content — no empty gap below.
-            gridTemplateRows: 'minmax(0, 1fr) auto',
-            gridTemplateAreas: '"map" "controls"',
+            gridTemplateRows: 'minmax(0, 1fr)',
+            gridTemplateAreas: '"map"',
             gap: 'clamp(4px, 0.9vw, 10px)',
             alignItems: 'stretch',
             flex: 1,
@@ -1580,16 +1649,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           }
         : {
             display: 'grid',
-            gridTemplateColumns: `${webToolsCanCollapse && webToolsCollapsed ? '0px' : controlPaneWidth} minmax(0, 1fr)`,
+            gridTemplateColumns: '1fr',
             gridTemplateRows: 'minmax(0, 1fr)',
-            gridTemplateAreas: '"controls map"',
-            gap: webToolsCanCollapse && webToolsCollapsed ? 0 : 'clamp(4px, 0.9vw, 10px)',
+            gridTemplateAreas: '"map"',
+            gap: 0,
             alignItems: 'stretch',
             flex: 1,
             minHeight: 0,
             minWidth: 0,
           },
-    [isNarrow, webToolsCanCollapse, webToolsCollapsed, controlPaneWidth],
+    [isNarrow],
   )
   const mapPaneDetailOverlay: CSSProperties = {
     position: 'absolute',
@@ -1700,100 +1769,123 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const addrSearchProminent =
     addrFieldFocused || loadingSug || suggestions.length > 0 || addr.trim().length > 0
 
-  const renderAddAddressSearch = (floating: boolean) => (
-    <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
-      {!floating && !isNarrow ? (
-        <div style={{ fontWeight: 900, fontSize: 13 }}>Add address</div>
-      ) : null}
-      <input
-        ref={addrSearchInputRef}
-        value={addr}
-        onChange={(e) => setAddr(e.target.value)}
-        onFocus={() => {
-          if (addrBlurClearRef.current) {
-            clearTimeout(addrBlurClearRef.current)
-            addrBlurClearRef.current = null
-          }
-          setAddrFieldFocused(true)
-        }}
-        onBlur={() => clearAddrFieldFocusSoon()}
-        placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
-        {...(isNarrow ? nativeMobileSearchInputProps(mobileOS) : {})}
-        style={{
-          ...field,
-          maxWidth: '100%',
-          boxSizing: 'border-box',
-          minWidth: 0,
-          fontSize: isNarrow ? 16 : undefined,
-          ...(floating
-            ? { padding: '6px 9px', minHeight: 38, lineHeight: 1.25 }
-            : isNarrow
-              ? { padding: '8px 10px' }
-              : {}),
-        }}
-      />
-      {(!floating || addrSearchProminent) && GEOCODE_SCOPE === 'ny' ? (
-        <div
-          style={{
-            color: '#374151',
-            fontSize: floating ? 11 : 12,
-            lineHeight: 1.35,
+  const renderAddAddressSearch = (floating: boolean, opts?: { glassChrome?: boolean; narrowCondensed?: boolean }) => {
+    const glass = opts?.glassChrome === true
+    const narrowCondensed = opts?.narrowCondensed === true && isNarrow
+    const hintColor = glass ? 'rgba(226, 232, 240, 0.9)' : '#374151'
+    const glassInput: CSSProperties = glass
+      ? {
+          background: 'rgba(255,255,255,0.94)',
+          borderColor: 'rgba(255,255,255,0.45)',
+          color: '#0f172a',
+        }
+      : {}
+    const glassSug: CSSProperties = glass
+      ? {
+          ...suggestionBtn,
+          border: '1px solid rgba(255,255,255,0.22)',
+          background: 'rgba(255,255,255,0.96)',
+          color: '#0f172a',
+        }
+      : suggestionBtn
+    return (
+      <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
+        {!floating && !isNarrow ? (
+          <div style={{ fontWeight: 900, fontSize: 13 }}>Add address</div>
+        ) : null}
+        <input
+          ref={addrSearchInputRef}
+          value={addr}
+          onChange={(e) => setAddr(e.target.value)}
+          onFocus={() => {
+            if (addrBlurClearRef.current) {
+              clearTimeout(addrBlurClearRef.current)
+              addrBlurClearRef.current = null
+            }
+            setAddrFieldFocused(true)
           }}
-        >
-          Autocomplete is currently scoped to New York addresses.
-        </div>
-      ) : null}
-      {!floating || addrSearchProminent ? (
-        loadingSug ? (
-          <div style={{ color: '#374151', fontSize: floating ? 11 : 12 }}>Searching…</div>
-        ) : null
-      ) : null}
-      {suggestions.length ? (
-        <div
+          onBlur={() => clearAddrFieldFocusSoon()}
+          placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
+          {...(isNarrow ? nativeMobileSearchInputProps(mobileOS) : {})}
           style={{
-            display: 'grid',
-            gap: floating ? 3 : 6,
-            maxHeight: isNarrow ? `min(${floating ? 150 : 220}px, ${floating ? 28 : 36}vh)` : undefined,
-            overflowY: isNarrow ? 'auto' : undefined,
-            WebkitOverflowScrolling: isNarrow ? 'touch' : undefined,
+            ...field,
+            maxWidth: '100%',
+            boxSizing: 'border-box',
+            minWidth: 0,
+            fontSize: isNarrow ? 16 : undefined,
+            ...glassInput,
+            ...(narrowCondensed && floating
+              ? { padding: '5px 8px', minHeight: 34, lineHeight: 1.25, fontSize: 15 }
+              : floating
+                ? { padding: '6px 9px', minHeight: 38, lineHeight: 1.25 }
+                : isNarrow
+                  ? { padding: '8px 10px' }
+                  : {}),
           }}
-        >
-          {suggestions.map((s) => (
-            <button
-              type="button"
-              key={`${s.lat},${s.lon},${s.label}`}
-              style={suggestionBtn}
-              onClick={() => {
-                if (addrBlurClearRef.current) {
-                  clearTimeout(addrBlurClearRef.current)
-                  addrBlurClearRef.current = null
-                }
-                dismissAddressSearch()
-                setAddr('')
-                openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
-                const m = mapRef.current
-                if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-              }}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      ) : !floating || addrSearchProminent ? (
-        addr.trim().length >= 3 ? (
-          /^\d{1,4}-\d{1,4}$/.test(addr.trim()) ? (
-            <div style={{ color: '#374151', fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
-              Add the street name after the house number (e.g., ‘120-37 170 Street’).
-            </div>
-          ) : (
-            <div style={{ color: '#374151', fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
-              No suggestions. Try adding city/state.
-            </div>
-          )
-        ) : null
-      ) : null}
-    </div>
-  )
+        />
+        {(!floating || addrSearchProminent) && GEOCODE_SCOPE === 'ny' ? (
+          <div
+            style={{
+              color: hintColor,
+              fontSize: floating ? 11 : 12,
+              lineHeight: 1.35,
+            }}
+          >
+            Autocomplete is currently scoped to New York addresses.
+          </div>
+        ) : null}
+        {!floating || addrSearchProminent ? (
+          loadingSug ? (
+            <div style={{ color: hintColor, fontSize: floating ? 11 : 12 }}>Searching…</div>
+          ) : null
+        ) : null}
+        {suggestions.length ? (
+          <div
+            style={{
+              display: 'grid',
+              gap: floating ? 3 : 6,
+              maxHeight: isNarrow ? `min(${floating ? 150 : 220}px, ${floating ? 28 : 36}vh)` : undefined,
+              overflowY: isNarrow ? 'auto' : undefined,
+              WebkitOverflowScrolling: isNarrow ? 'touch' : undefined,
+            }}
+          >
+            {suggestions.map((s) => (
+              <button
+                type="button"
+                key={`${s.lat},${s.lon},${s.label}`}
+                style={glassSug}
+                onClick={() => {
+                  if (addrBlurClearRef.current) {
+                    clearTimeout(addrBlurClearRef.current)
+                    addrBlurClearRef.current = null
+                  }
+                  dismissAddressSearch()
+                  setAddr('')
+                  openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
+                  const m = mapRef.current
+                  if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+                }}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        ) : !floating || addrSearchProminent ? (
+          addr.trim().length >= 3 ? (
+            /^\d{1,4}-\d{1,4}$/.test(addr.trim()) ? (
+              <div style={{ color: hintColor, fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
+                Add the street name after the house number (e.g., ‘120-37 170 Street’).
+              </div>
+            ) : (
+              <div style={{ color: hintColor, fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
+                No suggestions. Try adding city/state.
+              </div>
+            )
+          ) : null
+        ) : null}
+      </div>
+    )
+  }
 
   const mapLeftDockProminent = mapLeftToolDockOpen || mapLeftToolSection !== null
   const activeTrackQuickPickId = trackForMapAdd
@@ -1806,56 +1898,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     if (isNarrow) {
       mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
       setMapLeftToolDockOpen(true)
-    } else {
-      setWebToolsCollapsed(false)
     }
     setMapLeftToolSection('tracks')
   }, [isNarrow])
-  const openAddTrackFromQuickPick = useCallback(() => {
-    if (!canAddCaseContentHere) return
-    setWorkspaceCaseTab('tracking')
-    setAddTrackKind('person')
-    setAddTrackLabel(`Track ${caseTracks.length + 1}`)
-    setShowAddTrack(true)
-  }, [canAddCaseContentHere, caseTracks.length, setWorkspaceCaseTab])
-  const trackQuickPickButtons = (
-    <>
-      {caseTracks.map((t) => {
-        const active = activeTrackQuickPickId === t.id
-        const color = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
-        return (
-          <button
-            key={`track-quick-pick-${t.id}`}
-            type="button"
-            onClick={() => selectTrackQuickPick(t.id)}
-            onDoubleClick={(e) => {
-              e.preventDefault()
-              openTrackManagerInMenu()
-            }}
-            style={{
-              ...btn,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '6px 10px',
-              borderRadius: 999,
-              opacity: active ? 1 : 0.52,
-              borderColor: active ? color : '#d1d5db',
-              background: active ? `${color}1f` : 'rgba(255,255,255,0.92)',
-              fontWeight: active ? 900 : 800,
-              transition: 'opacity 0.15s ease',
-            }}
-            aria-pressed={active}
-            aria-label={`Use ${t.label || 'Track'} for subject tracking. Double-click to open track manager.`}
-            title={`Edit/add points on ${t.label || 'this track'}. Double-click opens Tracks in the menu.`}
-          >
-            <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: color, display: 'inline-block' }} />
-            <span style={{ whiteSpace: 'nowrap' }}>{t.label || 'Track'}</span>
-          </button>
-        )
-      })}
-    </>
-  )
   const filterLegendChipsGridDock = (
     <div
       style={{
@@ -2039,27 +2084,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       </button>
     </>
   )
-  const caseModeToggleBar = (
-    <div
-      data-vc-tour={VC_TOUR.caseWorkspaceTabs}
-      style={{
-        pointerEvents: 'auto',
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: 6,
-        width: 'min(360px, calc(100% - 56px))',
-        minWidth: 0,
-      }}
-    >
-      <button type="button" style={{ ...viewModeBtn(caseTab === 'addresses'), width: '100%' }} onClick={() => setWorkspaceCaseTab('addresses')}>
-        Video canvassing
-      </button>
-      <button type="button" style={{ ...viewModeBtn(caseTab === 'tracking'), width: '100%' }} onClick={() => setWorkspaceCaseTab('tracking')}>
-        Subject tracking
-      </button>
-    </div>
-  )
-
   const casePhotosSidebarBlock =
     caseAttachments.length > 0 || canAddCaseContentHere ? (
       <div
@@ -2217,19 +2241,88 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     padding: 8,
   }
 
+  /** Shared “liquid glass” slab for wide map tools + top unified bar (cooler blue, blur, specular edge). */
+  const liquidGlassToolbarBlue: CSSProperties = {
+    background: 'linear-gradient(160deg, rgba(44, 74, 128, 0.5) 0%, rgba(26, 44, 78, 0.48) 45%, rgba(18, 32, 58, 0.52) 100%)',
+    backdropFilter: 'blur(22px) saturate(1.45)',
+    WebkitBackdropFilter: 'blur(22px) saturate(1.45)',
+    border: '1px solid rgba(255,255,255,0.28)',
+    boxShadow: '0 10px 36px rgba(6, 16, 42, 0.38), inset 0 1px 0 rgba(255,255,255,0.2)',
+  }
+
+  /** Left top slab: Video canvassing | Subject tracking | address search on one row (chips sit in a sibling slab). */
+  const mapTopModeAndSearchGlassStyle: CSSProperties = {
+    ...liquidGlassToolbarBlue,
+    borderRadius: 20,
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: 10,
+    padding: '8px 12px',
+    pointerEvents: 'auto',
+    flex: '1 1 0',
+    minWidth: 0,
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+  }
+
+  /** Wide web: under-map tool panels match the floating pill (blue glass). Narrow keeps white cards. */
+  const webWideMapToolPanelGlass: CSSProperties = {
+    marginTop: 0,
+    maxHeight: 'none',
+    overflowY: 'visible',
+    overflowX: 'hidden',
+    width: '100%',
+    alignSelf: 'stretch',
+    boxSizing: 'border-box',
+    padding: 10,
+    ...liquidGlassToolbarBlue,
+    borderRadius: 16,
+  }
+  const mapDockNarrowToolPanelGlass: CSSProperties = {
+    ...liquidGlassToolbarBlue,
+    borderRadius: 14,
+    marginTop: 4,
+    padding: 10,
+    maxHeight: 'min(48vh, 360px)',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    WebkitOverflowScrolling: 'touch',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+  }
+  const mapDockPanelShellForMapTools: CSSProperties = isNarrow ? mapDockNarrowToolPanelGlass : webWideMapToolPanelGlass
+  const mapDockFilterPanelShellForMapTools: CSSProperties = isNarrow
+    ? { ...mapDockNarrowToolPanelGlass, maxHeight: 'none', overflowY: 'visible', padding: 8, marginTop: 4 }
+    : { ...webWideMapToolPanelGlass, padding: 8 }
+
   /** Narrow ☰: extra left padding pulls over the flex gap so misses don’t hit the map. */
   const narrowMapMenuSlop = { left: 24, right: 12, top: 10, bottom: 10 } as const
   const narrowMapMenuOuterW = narrowMapMenuSlop.left + 44 + narrowMapMenuSlop.right
   const narrowMapMenuOuterH = narrowMapMenuSlop.top + 44 + narrowMapMenuSlop.bottom
-  const narrowMapMenuHitSlopBtnStyle: CSSProperties = {
+  /** Right-docked track chips: same `top` / edge inset as ☰, padding mirrors ☰ TRBL (10,24,10,12 → 10,12,10,24). */
+  const narrowMapTrackChipsDockWrapStyle: CSSProperties = {
+    position: 'absolute',
+    top: 'max(6px, env(safe-area-inset-top, 0px))',
+    right: 'max(6px, env(safe-area-inset-right, 0px))',
+    zIndex: 1,
+    pointerEvents: 'auto',
+    boxSizing: 'border-box',
+    padding: `${narrowMapMenuSlop.top}px ${narrowMapMenuSlop.right}px ${narrowMapMenuSlop.bottom}px ${narrowMapMenuSlop.left}px`,
+  }
+  /** Left-docked ☰: slop extends rightward so misses don’t hit the map. */
+  const narrowMapMenuHitSlopBtnStyleLeft: CSSProperties = {
     border: 'none',
     background: 'transparent',
-    padding: `${narrowMapMenuSlop.top}px ${narrowMapMenuSlop.right}px ${narrowMapMenuSlop.bottom}px ${narrowMapMenuSlop.left}px`,
+    padding: `${narrowMapMenuSlop.top}px ${narrowMapMenuSlop.left}px ${narrowMapMenuSlop.bottom}px ${narrowMapMenuSlop.right}px`,
     margin: 0,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
     flexShrink: 0,
     width: narrowMapMenuOuterW,
     height: narrowMapMenuOuterH,
@@ -2237,84 +2330,28 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     WebkitTapHighlightColor: 'transparent',
   }
 
-  const mapDockColumnStyle: CSSProperties = {
-    flexShrink: 0,
+  /** Left inset for map top chrome (zoom controls removed). */
+  const narrowMapTopReserveLeft = 'max(10px, env(safe-area-inset-left, 0px))'
+
+  const narrowMapDockExpandedGlassShell: CSSProperties = {
+    ...liquidGlassToolbarBlue,
+    borderRadius: 16,
+    padding: 8,
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'flex-end',
     gap: 6,
-    minWidth: narrowMapMenuOuterW,
-    width: 'auto',
-    maxWidth: 'min(calc(100vw - 32px), 300px)',
+    alignItems: 'stretch',
+    minWidth: 0,
+    width: 'max-content',
+    maxWidth: 'min(280px, calc(100vw - 48px))',
     maxHeight:
       detailOverlayHeightPx > 0
-        ? `calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${detailOverlayHeightPx}px - clamp(8px, 1.2vw, 14px))`
-        : undefined,
-    position: 'relative',
-    /** Above narrowFloatingAddressCard inner stack (z-index 8) so ☰ / Views / Map view receive taps on small screens. */
-    zIndex: 12,
-    pointerEvents: 'auto',
-    boxSizing: 'border-box',
-  }
-
-  /** Same chrome for map overlay + list header on narrow — matches Video canvassing / Subject tracking map. */
-  const narrowFloatingAddressCardStyle: CSSProperties = {
-    padding: 5,
-    boxSizing: 'border-box',
-    background: 'rgba(255,255,255,0.96)',
-    backdropFilter: 'blur(8px)',
-    WebkitBackdropFilter: 'blur(8px)',
-    borderRadius: 9,
-    border: '1px solid #e5e7eb',
-    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-    minWidth: 0,
-    maxWidth: '100%',
-  }
-
-  /** Skip MapLibre top-left zoom stack (~30px + control margins) so the search card does not cover +/- . */
-  const narrowMapTopReserveLeft = 'calc(max(10px, env(safe-area-inset-left, 0px)) + 58px)'
-
-  const narrowMapToolsScrollStyle: CSSProperties = {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    gap: 6,
-    minWidth: 0,
-    maxHeight:
-      detailOverlayHeightPx > 0
-        ? `min(70vh, 540px, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${detailOverlayHeightPx + 14}px))`
-        : 'min(70vh, 540px, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 72px))',
+        ? `min(65vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${detailOverlayHeightPx + 100}px))`
+        : 'min(65vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 120px))',
     overflowY: 'auto',
     overflowX: 'hidden',
     WebkitOverflowScrolling: 'touch',
-    paddingBottom: 2,
     boxSizing: 'border-box',
-  }
-
-  /**
-   * Outer shell: pointer-events none so taps on the map “under” empty overlay space still hit the map/backdrop
-   * (closes menu). Inner column below keeps pointer-events auto for real controls only.
-   */
-  const narrowMapToolsOverlayPassThroughStyle: CSSProperties = {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    zIndex: 2,
-    width: 'min(280px, calc(100vw - 48px))',
-    minWidth: 0,
-    boxSizing: 'border-box',
-    pointerEvents: 'none',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-  }
-
-  const narrowMapToolsOverlayInteractiveStyle: CSSProperties = {
-    ...narrowMapToolsScrollStyle,
-    pointerEvents: 'auto',
-    width: 'max-content',
-    maxWidth: 'min(280px, calc(100vw - 48px))',
-    alignSelf: 'flex-end',
   }
 
   const mapDockNavBtnBase: CSSProperties = {
@@ -2350,6 +2387,43 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     ...mapDockMenuToggleBtnStyle,
     pointerEvents: 'none',
   }
+  const mapDockMenuToggleFaceNarrowStyle: CSSProperties = {
+    width: 44,
+    height: 44,
+    minWidth: 44,
+    padding: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 20,
+    lineHeight: 1,
+    borderRadius: 12,
+    border: '1px solid rgba(255,255,255,0.28)',
+    boxShadow: '0 8px 28px rgba(6, 16, 42, 0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
+    pointerEvents: 'none',
+    color: '#f8fafc',
+    background: 'linear-gradient(160deg, rgba(44, 74, 128, 0.55) 0%, rgba(26, 44, 78, 0.5) 45%, rgba(18, 32, 58, 0.55) 100%)',
+    backdropFilter: 'blur(18px) saturate(1.35)',
+    WebkitBackdropFilter: 'blur(18px) saturate(1.35)',
+  }
+  const mapDockNavBtnNarrowGlass = (active: boolean): CSSProperties => ({
+    alignSelf: 'stretch',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    padding: '9px 12px',
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    whiteSpace: 'nowrap',
+    borderRadius: 10,
+    border: active ? '1px solid rgba(255,255,255,0.42)' : '1px solid rgba(255,255,255,0.2)',
+    background: active ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)',
+    color: '#f8fafc',
+    cursor: 'pointer',
+    textAlign: 'left',
+    flexShrink: 0,
+  })
   const renderDockSectionButton = (section: MapToolsDockSection, label: string) => (
     <button
       type="button"
@@ -2362,39 +2436,123 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         if (section === 'dvr') setProbativeFlow(null)
         setMapLeftToolSection((s) => (s === section ? null : section))
       }}
-      style={{
-        ...mapDockNavBtnBase,
-        textAlign: 'left',
-        background: mapLeftToolSection === section ? '#f3f4f6' : 'white',
-      }}
+      style={
+        isNarrow
+          ? mapDockNavBtnNarrowGlass(mapLeftToolSection === section)
+          : {
+              ...mapDockNavBtnBase,
+              textAlign: 'left',
+              background: mapLeftToolSection === section ? '#f3f4f6' : 'white',
+            }
+      }
     >
       {label}
     </button>
   )
 
-  const webDockNavBtnBase: CSSProperties = {
-    ...btn,
-    width: '100%',
-    fontWeight: 700,
-    fontSize: 12,
-    textAlign: 'left',
+  /** Wide web only: icon dock on translucent glass pill; labels via native `title` (hover). */
+  const webWideMapToolsPillWrap: CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 4,
+    padding: '8px 5px',
+    ...liquidGlassToolbarBlue,
+    borderRadius: 22,
+    minWidth: 0,
+    flexShrink: 0,
   }
-  const renderWebDockSectionButton = (section: MapToolsDockSection, label: string) => (
-    <button
-      type="button"
-      onClick={() => {
-        if (section === 'dvr') setProbativeFlow(null)
-        if (!isNarrow) setWideSidebarListReveal(false)
-        setMapLeftToolSection((s) => (s === section ? null : section))
-      }}
-      style={{
-        ...webDockNavBtnBase,
-        background: mapLeftToolSection === section ? '#f3f4f6' : 'white',
-      }}
-    >
-      {label}
-    </button>
-  )
+  const webDockIconBtn = (active: boolean): CSSProperties => ({
+    width: 40,
+    height: 40,
+    padding: 0,
+    borderRadius: 11,
+    border: active ? '1px solid rgba(255,255,255,0.35)' : '1px solid transparent',
+    background: active ? 'rgba(255,255,255,0.2)' : 'transparent',
+    color: '#f8fafc',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    lineHeight: 0,
+    boxSizing: 'border-box',
+    flexShrink: 0,
+  })
+  const webDockToolIconSvg = (section: MapToolsDockSection) => {
+    const sw = 1.75
+    const p = {
+      width: 22,
+      height: 22,
+      viewBox: '0 0 24 24',
+      fill: 'none' as const,
+      stroke: 'currentColor',
+      strokeWidth: sw,
+      strokeLinecap: 'round' as const,
+      strokeLinejoin: 'round' as const,
+    }
+    switch (section) {
+      case 'views':
+        return (
+          <svg {...p} aria-hidden>
+            <rect x="3" y="3" width="7" height="7" rx="1.25" />
+            <rect x="14" y="3" width="7" height="7" rx="1.25" />
+            <rect x="3" y="14" width="7" height="7" rx="1.25" />
+            <rect x="14" y="14" width="7" height="7" rx="1.25" />
+          </svg>
+        )
+      case 'filters':
+        return (
+          <svg {...p} aria-hidden>
+            <path d="M4 5h16l-5.5 7.2V19l-3 1.5v-8.3L4 5z" />
+          </svg>
+        )
+      case 'tracks':
+        return (
+          <svg {...p} aria-hidden>
+            <path d="M4 18c2.5-6 4-9 8-9s5.5 3 8 9" />
+            <circle cx="6" cy="18" r="1.6" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="9" r="1.6" fill="currentColor" stroke="none" />
+            <circle cx="18" cy="18" r="1.6" fill="currentColor" stroke="none" />
+          </svg>
+        )
+      case 'photos':
+        return (
+          <svg {...p} aria-hidden>
+            <rect x="4" y="6" width="16" height="13" rx="2" />
+            <circle cx="9" cy="10.5" r="1.8" />
+            <path d="M4 16l4.5-4.5 3 3L15 11l5 5" />
+          </svg>
+        )
+      case 'dvr':
+        return (
+          <svg {...p} aria-hidden>
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M12 7.5V12l4 2.5" />
+          </svg>
+        )
+      default:
+        return null
+    }
+  }
+  const renderWebDockSectionButton = (section: MapToolsDockSection, label: string) => {
+    const active = mapLeftToolSection === section
+    return (
+      <button
+        type="button"
+        title={label}
+        aria-label={label}
+        aria-pressed={active}
+        onClick={() => {
+          if (section === 'dvr') setProbativeFlow(null)
+          if (!isNarrow) setWideSidebarListReveal(false)
+          setMapLeftToolSection((s) => (s === section ? null : section))
+        }}
+        style={webDockIconBtn(active)}
+      >
+        {webDockToolIconSvg(section)}
+      </button>
+    )
+  }
 
   const visitHeatmapDockRow = (
     <label
@@ -2405,7 +2563,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         marginTop: 2,
         fontSize: 12,
         fontWeight: 600,
-        color: '#374151',
+        color: isNarrow ? '#374151' : '#cbd5e1',
         cursor: 'pointer',
         userSelect: 'none',
       }}
@@ -2422,7 +2580,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const mapToolsDockViewsPanel =
     mapLeftToolSection === 'views' ? (
-      <div style={mapDockPanelStyle}>
+      <div style={mapDockPanelShellForMapTools}>
         <div
           className="case-pane-actions-row"
           style={{
@@ -2444,8 +2602,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     mapLeftToolSection === 'dvr' ? (
       <div
         style={{
-          ...mapDockPanelStyle,
-          ...(!isNarrow
+          ...mapDockPanelShellForMapTools,
+          ...(isNarrow
             ? {
                 minHeight: 0,
                 maxHeight: 'min(52vh, 480px)',
@@ -2455,12 +2613,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 padding: 6,
                 marginTop: 4,
               }
-            : {}),
+            : {
+                padding: 6,
+              }),
         }}
       >
         <div
           style={
-            !isNarrow
+            isNarrow
               ? {
                   minHeight: 0,
                   flex: 1,
@@ -2468,7 +2628,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   overflowY: 'auto',
                   WebkitOverflowScrolling: 'touch',
                 }
-              : undefined
+              : {
+                  minWidth: 0,
+                  width: '100%',
+                  overflowX: 'hidden',
+                }
           }
         >
           <DvrCalculatorStep
@@ -2489,15 +2653,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const mapToolsDockSubPanels = (
     <>
       {mapLeftToolSection === 'filters' ? (
-        <div style={mapDockFilterPanelStyle}>
-          <div style={{ fontWeight: 800, fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+        <div style={mapDockFilterPanelShellForMapTools}>
+          <div
+            style={{
+              fontWeight: 800,
+              fontSize: 10,
+              color: isNarrow ? '#6b7280' : '#94a3b8',
+              marginBottom: 4,
+            }}
+          >
             Result ({locations.length} total)
           </div>
           {filterLegendChipsGridDock}
         </div>
       ) : null}
       {mapLeftToolSection === 'tracks' ? (
-        <div style={mapDockPanelStyle}>
+        <div style={mapDockPanelShellForMapTools}>
           <div style={{ display: 'grid', gap: 8, width: '100%', minWidth: 0 }}>
             <button
               type="button"
@@ -2514,7 +2685,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               New Track
             </button>
             {caseTracks.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
+              <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.4 }}>
                 No tracks yet — add one to plot steps on the map.
               </div>
             ) : (
@@ -2533,18 +2704,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       gap: 8,
                       minWidth: 0,
                       padding: '6px 8px',
-                      border: '1px solid #e5e7eb',
+                      border: isNarrow ? '1px solid #e5e7eb' : '1px solid rgba(255,255,255,0.2)',
                       borderRadius: 10,
-                      background: '#fafafa',
+                      background: isNarrow ? '#fafafa' : 'rgba(255,255,255,0.08)',
                       boxSizing: 'border-box',
                     }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      title={on ? 'Hide path on map' : 'Show path on map'}
-                      onChange={(e) => setVisibleTrackIds((prev) => ({ ...prev, [t.id]: e.target.checked }))}
-                      style={{ flexShrink: 0, width: 18, height: 18, cursor: 'pointer' }}
+                    <TrackMapVisibilityButton
+                      visible={on}
+                      trackLabel={t.label}
+                      variant={isNarrow ? 'mapDockLight' : 'mapDockGlass'}
+                      onToggle={() =>
+                        setVisibleTrackIds((prev) => {
+                          const wasVisible = prev[t.id] !== false
+                          return { ...prev, [t.id]: !wasVisible }
+                        })
+                      }
                     />
                     <label
                       htmlFor={colorPickerId}
@@ -2665,10 +2840,10 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         </div>
       ) : null}
       {mapLeftToolSection === 'photos' ? (
-        <div style={{ ...mapDockPanelStyle, padding: 8 }}>
+        <div style={{ ...mapDockPanelShellForMapTools, padding: 8 }}>
           <div style={{ minWidth: 0, overflow: 'hidden' }}>
             {casePhotosSidebarBlock ?? (
-              <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
+              <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.4 }}>
                 No reference photos yet{canAddCaseContentHere ? '. Use Add photo in this panel.' : '.'}
               </div>
             )}
@@ -2686,14 +2861,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </>
   )
 
-  /** Wide web: sidebar list after explicit List view click; hidden while any toolbar section is open or after other toolbar actions. */
-  const wideWebListInToolbar =
-    !isNarrow &&
-    webToolsCanCollapse &&
+  /** Bottom sheet on map: narrow when list; wide when list revealed (left column removed on web). */
+  const showAddressesListBottomSheet =
     caseTab === 'addresses' &&
     viewMode === 'list' &&
-    mapLeftToolSection === null &&
-    wideSidebarListReveal
+    (isNarrow || (!isNarrow && mapLeftToolSection === null && wideSidebarListReveal))
   /** Map stays in the main pane for both map and list on addresses (list is a panel, not a replacement). */
   const showMapInMapColumn = caseTab === 'tracking' || caseTab === 'addresses'
 
@@ -3063,243 +3235,357 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }
 
   const narrowMapTopShowsFloatingAddress = caseTab === 'tracking' || caseTab === 'addresses'
-  const showTrackQuickPickRow = narrowMapTopShowsFloatingAddress && (caseTracks.length > 0 || canAddCaseContentHere)
-  const addTrackQuickPickButton = canAddCaseContentHere ? (
-    <button
-      type="button"
-      onClick={openAddTrackFromQuickPick}
-      title="Add a movement track"
+  const showMapTopTrackSelector = narrowMapTopShowsFloatingAddress && caseTracks.length > 0
+
+  const viewModeBtnGlass = (active: boolean): CSSProperties => ({
+    border: `1px solid ${active ? 'rgba(255,255,255,0.52)' : 'rgba(255,255,255,0.2)'}`,
+    borderRadius: 'var(--vc-radius-sm)',
+    padding: 'var(--vc-space-sm) var(--vc-space-md)',
+    background: active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.12)',
+    color: active ? '#0f172a' : 'rgba(248,250,252,0.95)',
+    cursor: 'pointer',
+    fontWeight: 800,
+    fontSize: 'var(--vc-fs-sm)',
+    whiteSpace: 'nowrap',
+  })
+
+  const caseModeToggleBarGlass = (
+    <div
+      data-vc-tour={VC_TOUR.caseWorkspaceTabs}
       style={{
-        ...btnPrimary,
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '6px 14px',
-        borderRadius: 999,
-        fontWeight: 900,
-        fontSize: 13,
+        display: 'grid',
+        gridTemplateColumns: 'max-content max-content',
+        gap: 6,
+        flexShrink: 0,
       }}
     >
-      Add Track
-    </button>
-  ) : null
-  const trackQuickPickRowInner = (
-    <>
-      {addTrackQuickPickButton}
-      {caseTracks.length > 0 ? trackQuickPickButtons : null}
-    </>
+      <button
+        type="button"
+        style={viewModeBtnGlass(caseTab === 'addresses')}
+        onClick={() => setWorkspaceCaseTab('addresses')}
+      >
+        Video canvassing
+      </button>
+      <button
+        type="button"
+        style={viewModeBtnGlass(caseTab === 'tracking')}
+        onClick={() => setWorkspaceCaseTab('tracking')}
+      >
+        Subject tracking
+      </button>
+    </div>
   )
-  const mapTopFloatingAddressEl = narrowMapTopShowsFloatingAddress ? (
+
+  const mapTopTrackSelectorGlassStyle: CSSProperties = {
+    ...liquidGlassToolbarBlue,
+    borderRadius: 18,
+    display: 'inline-flex',
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 8px',
+    flex: '0 0 auto',
+    width: 'max-content',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    pointerEvents: 'auto',
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
+  }
+
+  const mapTopAddressSearchBlock = narrowMapTopShowsFloatingAddress ? (
     <div
       ref={narrowMapAddressRef}
       data-vc-tour={VC_TOUR.caseFloatingSearch}
       style={{
         ...(isNarrow
-          ? { flex: 1, minWidth: 0 }
-          : {
-              flex: '0 1 auto',
-              width: 'min(400px, 100%)',
-              minWidth: 0,
-              maxWidth: '100%',
-            }),
+          ? { width: '100%', flex: 'none', minWidth: 0, alignSelf: 'stretch' }
+          : { flex: '1 1 140px', minWidth: 0, maxWidth: '100%', alignSelf: 'center' }),
+        opacity: addrSearchProminent ? 1 : 0.52,
+        transition: 'opacity 0.2s ease',
         pointerEvents: 'auto',
         position: 'relative',
         zIndex: 8,
       }}
     >
-      <div
-        style={{
-          ...narrowFloatingAddressCardStyle,
-          opacity: addrSearchProminent ? 1 : 0.52,
-          transition: 'opacity 0.2s ease',
-        }}
-      >
-        {renderAddAddressSearch(true)}
-      </div>
+      {renderAddAddressSearch(true, {
+        glassChrome: true,
+        ...(isNarrow ? { narrowCondensed: true } : {}),
+      })}
     </div>
   ) : null
-  const webToolsArrowOnly = !isNarrow && webToolsCanCollapse && webToolsCollapsed
-  /** Outer pane stays overflow-visible so the collapse tab can extend into the grid gap; scroll lives in an inner div. */
-  const wideToolsExpandedScrollFix = !isNarrow && webToolsCanCollapse && !webToolsCollapsed
 
-  const webWideToolbarBody = (
-    <>
-      {renderWebDockSectionButton('views', 'Views')}
-      {renderWebDockSectionButton('filters', 'Filters')}
-      {renderWebDockSectionButton('tracks', 'Tracks')}
-      {renderWebDockSectionButton('photos', 'Photos')}
-      {renderWebDockSectionButton('dvr', 'DVR calculator')}
-      {mapToolsDockSectionPanels}
-    </>
+  const renderMapTopTrackSelector = (styleOverride?: CSSProperties) => {
+    if (!showMapTopTrackSelector) return null
+    return (
+      <div style={{ ...mapTopTrackSelectorGlassStyle, ...styleOverride }} aria-label="Track selector">
+        {caseTracks.map((t) => {
+          const active = activeTrackQuickPickId === t.id
+          const color = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+          return (
+            <button
+              key={`map-top-track-quick-${t.id}`}
+              type="button"
+              onClick={() => selectTrackQuickPick(t.id)}
+              onDoubleClick={(e) => {
+                e.preventDefault()
+                openTrackManagerInMenu()
+              }}
+              style={{
+                border: '1px solid',
+                borderColor: active ? color : 'rgba(255,255,255,0.28)',
+                borderRadius: 999,
+                padding: '5px 9px',
+                background: active ? `${color}50` : 'rgba(255,255,255,0.1)',
+                color: active ? '#ffffff' : 'rgba(248,250,252,0.92)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontWeight: active ? 900 : 800,
+                fontSize: 12,
+                transition: 'opacity 0.15s ease',
+                opacity: active ? 1 : 0.75,
+              }}
+              aria-pressed={active}
+              aria-label={`Use ${t.label || 'Track'} for subject tracking. Double-click to open track manager.`}
+              title={`Edit/add points on ${t.label || 'this track'}. Double-click opens Tracks in the menu.`}
+            >
+              <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: color, display: 'inline-block' }} />
+              <span style={{ whiteSpace: 'nowrap' }}>{t.label || 'Track'}</span>
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
+
+  const mapTopModeAndSearchGlassPanel = (
+    <div style={mapTopModeAndSearchGlassStyle}>
+      {caseModeToggleBarGlass}
+      {mapTopAddressSearchBlock}
+    </div>
   )
 
-  const controlPaneDockInner = !webToolsCollapsed || isNarrow ? (
-    <>
-      {isNarrow ? (
-        <div style={{ padding: 8, display: 'grid', gap: 6, borderBottom: '1px solid #e5e7eb' }}>
-          <div data-vc-tour={VC_TOUR.caseWorkspaceTabs} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            <button
-              type="button"
-              style={{ ...viewModeBtn(caseTab === 'addresses'), width: '100%' }}
-              onClick={() => setWorkspaceCaseTab('addresses')}
-            >
-              Video canvassing
-            </button>
-            <button
-              type="button"
-              style={{ ...viewModeBtn(caseTab === 'tracking'), width: '100%' }}
-              onClick={() => setWorkspaceCaseTab('tracking')}
-            >
-              Subject tracking
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div ref={wideAddrSearchRef} />
-      )}
-      {!isNarrow && webToolsCanCollapse ? (
-        <div style={{ padding: 8, display: 'grid', gap: 6 }}>
-          {webWideToolbarBody}
-        </div>
-      ) : !isNarrow ? (
-        <div style={{ ...mapTopBar, flexDirection: 'column', alignItems: 'stretch' }}>
-          <button
-            type="button"
-            onClick={() => setFilterLegendOpen((v) => !v)}
-            aria-expanded={filterLegendOpen}
-            style={{
-              ...btn,
-              width: '100%',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: 8,
-              fontWeight: 800,
-              fontSize: 12,
-              textAlign: 'left',
-            }}
-          >
-            <span>Total locations selected ({locations.length})</span>
-            <span style={{ flexShrink: 0, opacity: 0.65, fontSize: 10 }} aria-hidden>
-              {filterLegendOpen ? '▼' : '▶'}
-            </span>
-          </button>
-          {filterLegendOpen ? filterLegendChipsGridDock : null}
-          <div
-            className="case-pane-actions-row"
-            style={{
-              display: 'grid',
-              gap: 6,
-              gridTemplateColumns: '1fr',
-              alignItems: 'stretch',
-            }}
-          >
-            {mapViewFitLocateButtons}
-          </div>
-          <button
-            type="button"
-            style={{ ...btn, width: '100%', fontWeight: 800, fontSize: 12 }}
-            onClick={() => setShowManageTracks(true)}
-          >
-            Manage tracks
-          </button>
-          <button
-            type="button"
-            style={{ ...btn, width: '100%', fontWeight: 800, fontSize: 12 }}
-            onClick={() => setProbativeFlow({ step: 'calc', target: { kind: 'dvr_only' } })}
-          >
-            DVR calculator
-          </button>
-          {casePhotosSidebarBlock}
-        </div>
-      ) : (
-        <div style={{ ...mapTopBar, flexDirection: 'column', alignItems: 'stretch' }} />
-      )}
-    </>
-  ) : null
-
-  const controlPaneBlock = (
+  const mapTopWideChromeRow = (
     <div
-      className="case-control-pane"
       data-vc-tour={VC_TOUR.caseControlPane}
       style={{
-        gridArea: 'controls',
-        ...card,
-        padding: 0,
-        minHeight: 0,
+        flex: 1,
         minWidth: 0,
-        height: isNarrow ? 'auto' : '100%',
-        maxWidth: '100%',
-        boxSizing: 'border-box',
-        borderRadius: webToolsArrowOnly ? 0 : 12,
-        position: 'relative',
-        zIndex: webToolsArrowOnly ? 30 : undefined,
-        background: webToolsArrowOnly ? 'transparent' : undefined,
-        border: webToolsArrowOnly ? 'none' : undefined,
-        boxShadow: webToolsArrowOnly ? 'none' : undefined,
-        display: wideToolsExpandedScrollFix ? 'flex' : undefined,
-        flexDirection: wideToolsExpandedScrollFix ? 'column' : undefined,
-        overflowY: wideToolsExpandedScrollFix ? 'visible' : webToolsArrowOnly ? 'visible' : 'auto',
-        overflowX:
-          webToolsArrowOnly || wideToolsExpandedScrollFix ? 'visible' : 'hidden',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        pointerEvents: 'none',
       }}
     >
-      {!isNarrow && webToolsCanCollapse && !webToolsCollapsed ? (
-        <MapPaneEdgeAnchor placement="verticalRail">
-          <MapPaneEdgeToggle
-            placement="verticalRail"
-            expanded
-            ariaLabel="Collapse map tools"
-            onClick={() => {
-              setMapLeftToolSection(null)
-              setWebToolsCollapsed(true)
-            }}
-          />
-        </MapPaneEdgeAnchor>
-      ) : null}
-      {wideToolsExpandedScrollFix && wideWebListInToolbar ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            minWidth: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-        >
-          <div ref={wideAddrSearchRef} style={{ flexShrink: 0 }} />
-          <div
-            style={{
-              flexShrink: 0,
-              padding: 8,
-              display: 'grid',
-              gap: 6,
-              overflowX: 'hidden',
-              overflowY: 'visible',
-            }}
-          >
-            {webWideToolbarBody}
-          </div>
-          {renderAddressesListContent('controlColumn')}
-        </div>
-      ) : wideToolsExpandedScrollFix ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            WebkitOverflowScrolling: 'touch',
-          }}
-        >
-          {controlPaneDockInner}
-        </div>
-      ) : (
-        controlPaneDockInner
-      )}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          flexWrap: 'nowrap',
+          alignItems: 'center',
+          gap: 16,
+          pointerEvents: 'auto',
+          maxWidth: '100%',
+          width: 'auto',
+          minWidth: 0,
+          boxSizing: 'border-box',
+        }}
+      >
+        {mapTopModeAndSearchGlassPanel}
+        {renderMapTopTrackSelector()}
+      </div>
     </div>
   )
+
+  const mapTopNarrowSearchOnlyGlassStyle: CSSProperties = {
+    ...liquidGlassToolbarBlue,
+    borderRadius: 18,
+    padding: '6px 10px',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    pointerEvents: 'auto',
+  }
+
+  /** Narrow: ☰-width spacers | centered search (track chips docked right, same inset/slop as ☰). */
+  const mapTopNarrowTopChromeSearchOnly = (
+    <div
+      data-vc-tour={VC_TOUR.caseControlPane}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        pointerEvents: 'none',
+      }}
+    >
+      <div
+        style={{
+          width: '100%',
+          maxWidth: 'min(228px, 100%)',
+          minWidth: 0,
+          boxSizing: 'border-box',
+        }}
+      >
+        <div style={mapTopNarrowSearchOnlyGlassStyle}>{mapTopAddressSearchBlock}</div>
+      </div>
+    </div>
+  )
+
+  const mapNarrowBottomModesChrome =
+    isNarrow && !probativePlacementSession && showMapInMapColumn ? (
+      <div
+        ref={narrowMapBottomChromeRef}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 10px)`,
+          zIndex: 45,
+          pointerEvents: 'none',
+          display: 'flex',
+          justifyContent: 'center',
+          paddingLeft: 'max(10px, env(safe-area-inset-left, 0px))',
+          paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
+            maxWidth: '100%',
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              ...liquidGlassToolbarBlue,
+              borderRadius: 20,
+              padding: '8px 10px',
+              display: 'flex',
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: 8,
+              maxWidth: '100%',
+              boxSizing: 'border-box',
+            }}
+          >
+            {caseModeToggleBarGlass}
+          </div>
+        </div>
+      </div>
+    ) : null
+  /**
+   * Wide map tools: inset from map interior (page gutter is outside the map card). Zoom UI hidden.
+   * Pill + panel left-aligned: shared left edge, panel grows to the right. Slightly tighter top/bottom gaps for Views panel room.
+   */
+  const webWideMapToolsRailEdgeGap = 'clamp(6px, 1vw, 12px)'
+  const webWideMapToolsZoomMargin = '10px'
+  /** No top-left NavigationControl; only top breathing room. */
+  const webWideMapToolsZoomStackH = '0px'
+  const webWideMapToolsBelowZoomGap = 'clamp(2px, 0.45vw, 5px)'
+  const webWideMapToolsPillPanelGapPx = 6
+  const webWideMapToolsLeft = `max(${webWideMapToolsZoomMargin}, env(safe-area-inset-left, 0px))`
+  const webWideMapToolsMapRightPad = '10px'
+  const webWideMapToolsLayerWidth = `min(280px, calc(100% - max(${webWideMapToolsZoomMargin}, env(safe-area-inset-left, 0px)) - ${webWideMapToolsMapRightPad}))`
+  const webWideMapToolsPillTop = `calc(${webWideMapToolsZoomMargin} + ${webWideMapToolsZoomStackH} + ${webWideMapToolsBelowZoomGap})`
+  const webWideMapToolsPanelTop = `calc(${webWideMapToolsZoomMargin} + ${webWideMapToolsZoomStackH} + ${webWideMapToolsBelowZoomGap} + ${webWideMapDockPillFullPx}px + ${webWideMapToolsPillPanelGapPx}px)`
+
+  const webWideMapToolsLayerShell: CSSProperties = {
+    position: 'absolute',
+    left: webWideMapToolsLeft,
+    top: 0,
+    bottom: 0,
+    width: webWideMapToolsLayerWidth,
+    zIndex: 40,
+    pointerEvents: 'none',
+    boxSizing: 'border-box',
+  }
+  const webWideMapToolsPillAnchor: CSSProperties = {
+    position: 'absolute',
+    top: webWideMapToolsPillTop,
+    left: 0,
+    right: 0,
+    width: '100%',
+    display: 'flex',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-start',
+    transform: 'none',
+    pointerEvents: 'none',
+  }
+  const webWideMapToolsPanelShell: CSSProperties = {
+    position: 'absolute',
+    top: webWideMapToolsPanelTop,
+    left: 0,
+    right: 0,
+    bottom: webWideMapToolsRailEdgeGap,
+    overflowX: 'hidden',
+    overflowY: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    boxSizing: 'border-box',
+    pointerEvents: 'auto',
+    minWidth: 0,
+  }
+
+  const webWideMapToolsFloatingPill =
+    !isNarrow && showMapInMapColumn ? (
+      <>
+        {mapLeftToolSection != null ? (
+          <div
+            role="presentation"
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 38,
+              background: 'rgba(17, 24, 39, 0.1)',
+              pointerEvents: 'auto',
+              touchAction: 'none',
+            }}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              mapRef.current?.clearPendingMapTap()
+              setMapLeftToolSection(null)
+            }}
+          />
+        ) : null}
+        <div style={webWideMapToolsLayerShell} data-vc-tour={VC_TOUR.caseMapToolsWide}>
+          <div style={webWideMapToolsPillAnchor}>
+            <div ref={webWideMapDockPillRef} style={{ ...webWideMapToolsPillWrap, pointerEvents: 'auto' }}>
+              {renderWebDockSectionButton('views', 'Views')}
+              {renderWebDockSectionButton('filters', 'Filters')}
+              {renderWebDockSectionButton('tracks', 'Tracks')}
+              {renderWebDockSectionButton('photos', 'Photos')}
+              {renderWebDockSectionButton('dvr', 'DVR calculator')}
+            </div>
+          </div>
+          {mapLeftToolSection != null ? (
+            <div
+              style={webWideMapToolsPanelShell}
+              role="region"
+              aria-label="Map tool panel"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <div style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}>{mapToolsDockSectionPanels}</div>
+            </div>
+          ) : null}
+        </div>
+      </>
+    ) : null
+
+  const controlPaneBlock = null
   const WorkspaceShell = WebCaseWorkspace
   const mapDetailLayout = isNarrow ? 'stack' : 'wide'
   const workspaceShellProps = { workspaceGridStyle } as const
@@ -3479,18 +3765,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     top: 'max(6px, env(safe-area-inset-top, 0px))',
                     left: 0,
                     right: 0,
-                    zIndex: 45,
-                    paddingLeft: narrowMapTopShowsFloatingAddress ? narrowMapTopReserveLeft : 'max(10px, env(safe-area-inset-left, 0px))',
+                    zIndex: isNarrow ? 44 : 45,
+                    paddingLeft: isNarrow
+                      ? 'max(10px, env(safe-area-inset-left, 0px))'
+                      : narrowMapTopShowsFloatingAddress
+                        ? narrowMapTopReserveLeft
+                        : 'max(10px, env(safe-area-inset-left, 0px))',
                     paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
                     boxSizing: 'border-box',
                     display: 'flex',
                     flexDirection: 'row',
                     alignItems: isNarrow ? 'center' : 'flex-start',
-                    gap: isNarrow ? 0 : 8,
+                    gap: isNarrow ? 8 : 8,
                     pointerEvents: 'none',
                   }}
                 >
-                  {narrowMapTopShowsFloatingAddress && mapLeftToolDockOpen ? (
+                  {!isNarrow && narrowMapTopShowsFloatingAddress && mapLeftToolDockOpen ? (
                     <div
                       role="presentation"
                       aria-hidden
@@ -3516,142 +3806,147 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                     />
                   ) : null}
-                  {!isNarrow ? (
-                    <div
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        display: 'flex',
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        gap: 8,
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      {caseModeToggleBar}
-                      {mapTopFloatingAddressEl}
-                      {showTrackQuickPickRow ? (
-                        <div
-                          style={{
-                            pointerEvents: 'auto',
-                            position: 'relative',
-                            zIndex: 8,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          {trackQuickPickRowInner}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {isNarrow ? mapTopFloatingAddressEl : null}
-                  {isNarrow && showTrackQuickPickRow ? (
+                  {isNarrow ? (
+                    <>
+                      <div
+                        aria-hidden
+                        style={{ flexShrink: 0, width: narrowMapMenuOuterW, pointerEvents: 'none' }}
+                      />
+                      {mapTopNarrowTopChromeSearchOnly}
+                      <div
+                        aria-hidden
+                        style={{ flexShrink: 0, width: narrowMapMenuOuterW, pointerEvents: 'none' }}
+                      />
+                    </>
+                  ) : (
+                    mapTopWideChromeRow
+                  )}
+                </div>
+              ) : null}
+              {isNarrow && showMapInMapColumn && !probativePlacementSession ? (
+                <div
+                  ref={mapToolsDockRef}
+                  data-vc-tour={VC_TOUR.caseMapToolsMobile}
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    bottom: mapStackBottom,
+                    zIndex: 46,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {!mapLeftToolDockOpen ? (
                     <div
                       style={{
                         position: 'absolute',
-                        left: '50%',
-                        top: 'calc(100% + 6px)',
-                        transform: 'translateX(-50%)',
-                        zIndex: 8,
+                        top: 'max(6px, env(safe-area-inset-top, 0px))',
+                        left: 'max(6px, env(safe-area-inset-left, 0px))',
                         pointerEvents: 'auto',
-                        display: 'flex',
-                        gap: 6,
-                        flexWrap: 'wrap',
-                        justifyContent: 'center',
-                        width: 'min(94vw, 560px)',
+                        opacity: mapLeftDockProminent ? 1 : 0.45,
+                        transition: 'opacity 0.2s ease',
                       }}
                     >
-                      {trackQuickPickRowInner}
+                      <button
+                        type="button"
+                        aria-label="Open map tools: views, filters, tracks, and photos"
+                        onClick={() => {
+                          mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
+                          if (caseTab === 'addresses' && locationDetailOpen) {
+                            setLocationDetailOpen(false)
+                          }
+                          if (caseTab === 'tracking' && selectedTrackPointId) {
+                            setSelectedTrackPointId(null)
+                          }
+                          setAddressDrawerDetailsOpen(false)
+                          setTrackDrawerDetailsOpen(false)
+                          setMapLeftToolDockOpen(true)
+                        }}
+                        style={narrowMapMenuHitSlopBtnStyleLeft}
+                      >
+                        <span style={mapDockMenuToggleFaceNarrowStyle} aria-hidden>
+                          ☰
+                        </span>
+                      </button>
                     </div>
-                  ) : null}
-                  {isNarrow ? (
-                    <div
-                      ref={mapToolsDockRef}
-                      data-vc-tour={VC_TOUR.caseMapToolsMobile}
-                      style={{
-                        ...mapDockColumnStyle,
-                        marginLeft: narrowMapTopShowsFloatingAddress ? undefined : 'auto',
-                      }}
-                    >
+                  ) : (
+                    <>
+                      <div
+                        role="presentation"
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 0,
+                          background: 'rgba(17,24,39,0.22)',
+                          touchAction: 'none',
+                          pointerEvents: 'auto',
+                        }}
+                        onPointerDown={(e) => {
+                          if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            return
+                          }
+                          e.preventDefault()
+                          e.stopPropagation()
+                          mapRef.current?.clearPendingMapTap()
+                          closeMapToolsDock()
+                        }}
+                      />
                       <div
                         style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'flex-end',
-                          gap: 6,
-                          opacity: mapLeftDockProminent ? 1 : 0.45,
-                          transition: 'opacity 0.2s ease',
-                          minWidth: 0,
+                          position: 'absolute',
+                          top: 'max(6px, env(safe-area-inset-top, 0px))',
+                          left: 'max(6px, env(safe-area-inset-left, 0px))',
+                          zIndex: 1,
+                          maxWidth: 'min(280px, calc(100vw - 24px))',
+                          pointerEvents: 'auto',
                         }}
                       >
-                        {!mapLeftToolDockOpen ? (
+                        <div style={narrowMapDockExpandedGlassShell}>
                           <button
                             type="button"
-                            aria-label="Open map tools: views, filters, tracks, and photos"
-                            onClick={() => {
-                              mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
-                              if (isNarrow) {
-                                if (caseTab === 'addresses' && locationDetailOpen) {
-                                  setLocationDetailOpen(false)
-                                }
-                                if (caseTab === 'tracking' && selectedTrackPointId) {
-                                  setSelectedTrackPointId(null)
-                                }
-                                setAddressDrawerDetailsOpen(false)
-                                setTrackDrawerDetailsOpen(false)
-                              }
-                              setMapLeftToolDockOpen(true)
-                            }}
-                            style={narrowMapMenuHitSlopBtnStyle}
+                            aria-label="Close map tools"
+                            onClick={closeMapToolsDock}
+                            style={narrowMapMenuHitSlopBtnStyleLeft}
                           >
-                            <span style={mapDockMenuToggleFaceStyle} aria-hidden>
+                            <span style={mapDockMenuToggleFaceNarrowStyle} aria-hidden>
                               ☰
                             </span>
                           </button>
-                        ) : (
-                          <>
-                            {/** Keeps the top bar’s right edge aligned with the collapsed ☰ while the menu overlays leftward. */}
-                            <div
-                              style={{
-                                width: narrowMapMenuOuterW,
-                                height: narrowMapMenuOuterH,
-                                flexShrink: 0,
-                                pointerEvents: 'none',
-                              }}
-                              aria-hidden
-                            />
-                            <div style={narrowMapToolsOverlayPassThroughStyle}>
-                              <div style={narrowMapToolsOverlayInteractiveStyle}>
-                                <button
-                                  type="button"
-                                  aria-label="Close map tools"
-                                  onClick={closeMapToolsDock}
-                                  style={narrowMapMenuHitSlopBtnStyle}
-                                >
-                                  <span style={mapDockMenuToggleFaceStyle} aria-hidden>
-                                    ☰
-                                  </span>
-                                </button>
-                                {renderDockSectionButton('views', 'Views')}
-                                {renderDockSectionButton('filters', 'Filters')}
-                                {renderDockSectionButton('tracks', 'Tracks')}
-                                {renderDockSectionButton('photos', 'Photos')}
-                                {renderDockSectionButton('dvr', 'DVR calculator')}
-                                {mapToolsDockSectionPanels}
-                              </div>
-                            </div>
-                          </>
-                        )}
+                          {renderDockSectionButton('views', 'Views')}
+                          {renderDockSectionButton('filters', 'Filters')}
+                          {renderDockSectionButton('tracks', 'Tracks')}
+                          {renderDockSectionButton('photos', 'Photos')}
+                          {renderDockSectionButton('dvr', 'DVR calculator')}
+                          {mapToolsDockSectionPanels}
+                        </div>
                       </div>
+                    </>
+                  )}
+                  {showMapTopTrackSelector ? (
+                    <div style={narrowMapTrackChipsDockWrapStyle}>
+                      {renderMapTopTrackSelector({
+                        flexDirection: 'column',
+                        flexWrap: 'nowrap',
+                        alignItems: 'stretch',
+                        justifyContent: 'flex-start',
+                        gap: 5,
+                        padding: '5px 6px',
+                        width: 'max-content',
+                        maxWidth: 'min(140px, calc(100vw - 220px))',
+                        maxHeight: 'min(240px, 42vh)',
+                        overflowX: 'visible',
+                        overflowY: 'auto',
+                        WebkitOverflowScrolling: 'touch',
+                      })}
                     </div>
                   ) : null}
                 </div>
               ) : null}
+              {mapNarrowBottomModesChrome}
               {showMapInMapColumn ? (
                 <div
                   style={{
@@ -3664,7 +3959,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     zIndex: 1,
                   }}
                 >
-                  {mapLeftToolDockOpen && !probativePlacementSession ? (
+                  {webWideMapToolsFloatingPill}
+                  {mapLeftToolDockOpen && !probativePlacementSession && !isNarrow ? (
                     <div
                       role="presentation"
                       aria-hidden
@@ -3789,7 +4085,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 </div>
               ) : null}
 
-              {isNarrow && caseTab === 'addresses' && viewMode === 'list' ? (
+              {showAddressesListBottomSheet ? (
                 <div
                   style={{
                     position: 'absolute',
@@ -3813,33 +4109,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   }}
                 >
                   {renderAddressesListContent('mapColumn')}
-                </div>
-              ) : null}
-
-              {webToolsArrowOnly ? (
-                <div
-                  ref={mapToolbarExpandToggleRef}
-                  data-vc-tour={VC_TOUR.caseMapToolsWide}
-                  role="presentation"
-                  className="case-map-toolbar-expand-anchor"
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: 0,
-                    zIndex: 5110,
-                    pointerEvents: 'none',
-                  }}
-                >
-                  <MapPaneEdgeAnchor placement="toolbarOverMap">
-                    <MapPaneEdgeToggle
-                      placement="toolbarOverMap"
-                      expanded={false}
-                      ariaLabel="Expand map tools"
-                      onClick={() => setWebToolsCollapsed(false)}
-                    />
-                  </MapPaneEdgeAnchor>
                 </div>
               ) : null}
 
@@ -4125,6 +4394,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         {caseTracks.map((t) => {
           const canEditT = canEditTrack(data, actorId, t)
           const canDelT = canDeleteTrack(data, actorId, t)
+          const trackVisibleOnMap = visibleTrackIds[t.id] !== false
+          const toggleTrackMapVisibility = () =>
+            setVisibleTrackIds((prev) => {
+              const wasVisible = prev[t.id] !== false
+              return { ...prev, [t.id]: !wasVisible }
+            })
           const colorInput = (
             <input
               type="color"
@@ -4184,25 +4459,33 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             <div key={t.id} style={{ minWidth: 0, width: '100%', boxSizing: 'border-box' }}>
               {isNarrow ? (
                 <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
-                  <input
-                    value={trackLabelDrafts[t.id] ?? t.label}
-                    readOnly={!canEditT}
-                    onFocus={() => {
-                      trackLabelFocusRef.current[t.id] = true
-                    }}
-                    onBlur={(e) => {
-                      trackLabelFocusRef.current[t.id] = false
-                      const v = e.currentTarget.value
-                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                      flushTrackLabelPersist(t.id, v)
-                    }}
-                    onChange={(e) => {
-                      const v = e.target.value
-                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                      scheduleTrackLabelPersist(t.id, v)
-                    }}
-                    style={field}
-                  />
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+                    <TrackMapVisibilityButton
+                      visible={trackVisibleOnMap}
+                      trackLabel={t.label}
+                      variant="modal"
+                      onToggle={toggleTrackMapVisibility}
+                    />
+                    <input
+                      value={trackLabelDrafts[t.id] ?? t.label}
+                      readOnly={!canEditT}
+                      onFocus={() => {
+                        trackLabelFocusRef.current[t.id] = true
+                      }}
+                      onBlur={(e) => {
+                        trackLabelFocusRef.current[t.id] = false
+                        const v = e.currentTarget.value
+                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                        flushTrackLabelPersist(t.id, v)
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+                        scheduleTrackLabelPersist(t.id, v)
+                      }}
+                      style={{ ...field, flex: 1, minWidth: 0 }}
+                    />
+                  </div>
                   <div
                     style={{
                       display: 'flex',
@@ -4222,11 +4505,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: 'minmax(0, 1fr) minmax(88px, 120px) 40px auto',
+                    gridTemplateColumns: '40px minmax(0, 1fr) minmax(88px, 120px) 40px auto',
                     gap: 10,
                     alignItems: 'center',
                   }}
                 >
+                  <TrackMapVisibilityButton
+                    visible={trackVisibleOnMap}
+                    trackLabel={t.label}
+                    variant="modal"
+                    onToggle={toggleTrackMapVisibility}
+                  />
                   <input
                     value={trackLabelDrafts[t.id] ?? t.label}
                     readOnly={!canEditT}

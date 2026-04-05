@@ -298,16 +298,28 @@ export function MapPaneEdgeToggle(props: {
   placement: MapPaneEdgeTogglePlacement
 }) {
   const toggleStyle = (() => {
+    let s: CSSProperties
     if (props.placement === 'verticalRail') {
-      return props.expanded ? mapPaneEdgeToggleVerticalRailCollapse : mapPaneEdgeToggleBase
+      s = props.expanded ? mapPaneEdgeToggleVerticalRailCollapse : mapPaneEdgeToggleBase
+    } else if (props.placement === 'drawerSheetTopSeam') {
+      s = mapPaneEdgeToggleDrawerSheetTopSeam
+    } else if (props.placement === 'drawerTopSeam') {
+      s = mapPaneEdgeToggleDrawerBottomSeam
+    } else {
+      s = mapPaneEdgeToggleBase
     }
-    if (props.placement === 'drawerSheetTopSeam') {
-      return mapPaneEdgeToggleDrawerSheetTopSeam
+    if (props.placement === 'verticalRail' || props.placement === 'toolbarOverMap') {
+      return {
+        ...s,
+        border: '1px solid rgba(255,255,255,0.28)',
+        background: 'linear-gradient(165deg, rgba(44, 72, 124, 0.78) 0%, rgba(22, 38, 68, 0.82) 100%)',
+        backdropFilter: 'blur(14px) saturate(1.35)',
+        WebkitBackdropFilter: 'blur(14px) saturate(1.35)',
+        color: '#f1f5f9',
+        boxShadow: '0 8px 28px rgba(6, 16, 40, 0.4), inset 0 1px 0 rgba(255,255,255,0.18)',
+      }
     }
-    if (props.placement === 'drawerTopSeam') {
-      return mapPaneEdgeToggleDrawerBottomSeam
-    }
-    return mapPaneEdgeToggleBase
+    return s
   })()
 
   const drawerChevron = (

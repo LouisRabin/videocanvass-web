@@ -14,10 +14,6 @@ async function openViewTools(page: Page) {
       await openMobileTools.click()
     }
   }
-  const expandTools = page.getByRole('button', { name: 'Expand map tools' }).first()
-  if (await expandTools.isVisible().catch(() => false)) {
-    await expandTools.click()
-  }
   await page.getByRole('button', { name: 'Views' }).first().click()
 }
 
@@ -88,23 +84,10 @@ test.describe('CasePage stability checks', () => {
     await expect(openToggle).toBeVisible()
   })
 
-  test('web seam toggles and layering remain clickable', async ({ page }) => {
+  test('web map chrome layering remains clickable', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 })
     await enterFirstCase(page)
-    test.skip(await isMobileDockMode(page), 'Edge-rail seam toggle is only present in full web tools layout.')
-
-    const railToggle = page
-      .getByRole('button', { name: /Expand map tools|Collapse map tools/ })
-      .first()
-    await expect(railToggle).toBeVisible()
-    if ((await railToggle.getAttribute('aria-label')) === 'Expand map tools') {
-      await railToggle.click()
-    }
-    await expect(page.getByRole('button', { name: 'Collapse map tools' })).toBeVisible()
-    await railToggle.click()
-    await expect(page.getByRole('button', { name: 'Expand map tools' })).toBeVisible()
-    await page.getByRole('button', { name: 'Expand map tools' }).click()
-    await expect(railToggle).toBeVisible()
+    test.skip(await isMobileDockMode(page), 'Full-web map tools use the floating rail, not the mobile dock.')
 
     // Layering contract: map detail overlay sits above map content and remains interactive.
     await openViewTools(page)

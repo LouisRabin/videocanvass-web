@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "ensure-deps": "node scripts/ensure-deps.mjs",
+    "startdev": "node scripts/ensure-deps.mjs && vite --host 0.0.0.0 --port 5173",
     "dev": "vite",
     "dev:lan": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc -b && vite build",
