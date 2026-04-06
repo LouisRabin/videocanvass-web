@@ -96,7 +96,9 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
     bias && Number.isFinite(bias.lat) && Number.isFinite(bias.lon)
       ? `@${bias.lat.toFixed(3)},${bias.lon.toFixed(3)}`
       : ''
-  const cacheKey = usOnly ? `${q.toLowerCase()}|${limit}|us${biasKey}` : `${q.toLowerCase()}|${limit}${biasKey}`
+  const cacheKey = usOnly
+    ? `${q.toLowerCase()}|${limit}|us|v2${biasKey}`
+    : `${q.toLowerCase()}|${limit}|v2${biasKey}`
   const cached = memCache.get(cacheKey)
   if (cached && Date.now() - cached.at < TTL_MS) {
     if (cached.value.length) return cached.value
@@ -143,7 +145,7 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
       const streetLine = [p.housenumber, p.street].filter(Boolean).join(' ').trim()
       const poiName = (p.name ?? '').trim()
       const head = streetLine || poiName
-      const parts = [head, p.city, p.state, p.postcode, p.country]
+      const parts = [head, p.city, p.state]
         .map((x) => (x ?? '').trim())
         .filter(Boolean)
 

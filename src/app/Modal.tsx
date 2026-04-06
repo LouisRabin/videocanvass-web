@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
+import { vcGlassFgDarkReadable, vcLiquidGlassInnerSurface, vcLiquidGlassPanel } from '../lib/vcLiquidGlass'
 
 export function Modal(props: {
-  title: string
+  title: ReactNode
+  /** When `title` is not a string, set this for screen readers. */
+  ariaLabel?: string
   open: boolean
   onClose: () => void
   children: React.ReactNode
@@ -77,6 +80,9 @@ export function Modal(props: {
 
   if (!props.open) return null
 
+  const dialogAriaLabel =
+    typeof props.title === 'string' ? props.title : (props.ariaLabel ?? 'Dialog')
+
   const backdropStyle: React.CSSProperties = narrow
     ? {
         position: 'fixed',
@@ -98,7 +104,7 @@ export function Modal(props: {
     : backdrop
 
   const node = (
-    <div style={{ ...backdropStyle, zIndex: zBackdrop }} role="dialog" aria-modal="true" aria-label={props.title}>
+    <div style={{ ...backdropStyle, zIndex: zBackdrop }} role="dialog" aria-modal="true" aria-label={dialogAriaLabel}>
       <div
         style={{ ...panelMerged, zIndex: zPanel }}
         onMouseDown={(e) => e.stopPropagation()}
@@ -165,9 +171,10 @@ const panel: React.CSSProperties = {
   position: 'relative',
   width: 'min(720px, calc(100vw - 24px))',
   borderRadius: 16,
-  background: 'white',
-  border: '1px solid #e5e7eb',
-  boxShadow: '0 20px 40px rgba(0,0,0,0.18)',
+  ...vcLiquidGlassInnerSurface,
+  boxShadow: '0 24px 48px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.85)',
+  color: vcGlassFgDarkReadable,
+  overflow: 'hidden',
 }
 
 const header: React.CSSProperties = {
@@ -175,14 +182,20 @@ const header: React.CSSProperties = {
   alignItems: 'center',
   gap: 10,
   padding: 14,
-  borderBottom: '1px solid #e5e7eb',
+  ...vcLiquidGlassPanel,
+  borderRadius: 0,
+  border: 'none',
+  borderBottom: '1px solid rgba(255,255,255,0.14)',
+  color: '#f8fafc',
+  boxShadow: 'none',
 }
 
 const iconBtn: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(255,255,255,0.28)',
   borderRadius: 10,
   padding: '6px 10px',
-  background: 'white',
+  background: 'rgba(255,255,255,0.14)',
+  color: '#f8fafc',
   cursor: 'pointer',
   fontWeight: 900,
 }

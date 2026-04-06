@@ -20,9 +20,11 @@ type UseMapPaneOutsideDismissArgs = {
   addrDismissIgnoreUntilRef: MutableRefObject<number>
   addrBlurClearRef: MutableRefObject<number | null>
   mapClearPendingTap: () => void
-  closeMapToolsDock: () => void
+  closeMapToolsDock: (opts?: { suppressMapFollowupMs?: number }) => void
   onDismissAddress: () => void
   addrDismissGraceMs: number
+  /** Applied when an outside tap closes the map tools dock (blocks deferred map clicks). */
+  dockOutsideDismissSuppressMs: number
 }
 
 function containsNode(ref: RefObject<HTMLElement | null>, target: Node) {
@@ -50,6 +52,7 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
     closeMapToolsDock,
     onDismissAddress,
     addrDismissGraceMs,
+    dockOutsideDismissSuppressMs,
   } = args
 
   useEffect(() => {
@@ -69,7 +72,9 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
     }
 
     const onMapPaneOutsideCapture = (e: Event) => {
-      if (!mapPaneShowsNow()) return
+      if (!mapPaneShowsNow()) {
+        return
+      }
       const t = e.target
       if (!(t instanceof Node)) return
       const eventPath = 'composedPath' in e ? e.composedPath() : null
@@ -81,7 +86,9 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
       if (!menuOpen && !addrMapDismiss) return
 
       const shell = mapPaneShellRef.current
-      if (!shell?.contains(targetNode)) return
+      if (!shell?.contains(targetNode)) {
+        return
+      }
       if (performance.now() < addrDismissIgnoreUntilRef.current) {
         mapClearPendingTap()
         e.preventDefault()
@@ -91,8 +98,13 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
       }
 
       let consumed = false
-      if (menuOpen && performance.now() >= mapToolsDockIgnoreOutsideUntilRef.current) {
-        closeMapToolsDock()
+      // While the tools menu is open, any outside tap must not reach the map (deferred taps still pick/add).
+      // During the open grace window we swallow the gesture without closing so the opening tap does not dismiss.
+      if (menuOpen) {
+        mapClearPendingTap()
+        if (performance.now() >= mapToolsDockIgnoreOutsideUntilRef.current) {
+          closeMapToolsDock({ suppressMapFollowupMs: dockOutsideDismissSuppressMs })
+        }
         consumed = true
       }
       if (addrMapDismiss) {
@@ -114,9 +126,11 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
 
     window.addEventListener('pointerdown', onMapPaneOutsideCapture, true)
     window.addEventListener('touchstart', onMapPaneOutsideCapture, touchOpts)
+    window.addEventListener('touchend', onMapPaneOutsideCapture, touchOpts)
     return () => {
       window.removeEventListener('pointerdown', onMapPaneOutsideCapture, true)
       window.removeEventListener('touchstart', onMapPaneOutsideCapture, touchOpts)
+      window.removeEventListener('touchend', onMapPaneOutsideCapture, touchOpts)
     }
   }, [
     mapPaneShowsNow,
@@ -138,5 +152,6 @@ export function useMapPaneOutsideDismiss(args: UseMapPaneOutsideDismissArgs) {
     closeMapToolsDock,
     onDismissAddress,
     addrDismissGraceMs,
+    dockOutsideDismissSuppressMs,
   ])
 }

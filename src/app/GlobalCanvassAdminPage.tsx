@@ -5,6 +5,13 @@ import { Layout } from './Layout'
 import { CARTO_VOYAGER_STYLE } from './addressesMapLibreHelpers'
 import { relationalBackendEnabled } from '../lib/backendMode'
 import { supabase } from '../lib/supabase'
+import {
+  vcGlassFgDarkReadable,
+  vcGlassFgMutedOnPanel,
+  vcGlassHeaderBtn,
+  vcGlassHeaderBtnPrimary,
+  vcLiquidGlassInnerSurface,
+} from '../lib/vcLiquidGlass'
 
 type GlobalRow = {
   id: string
@@ -121,13 +128,13 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
       subtitle="Administrator view — canvass outcome and camera flag only (no notes)."
       right={
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <button type="button" style={btn} onClick={() => void load()} disabled={loading}>
+          <button type="button" style={vcGlassHeaderBtn} onClick={() => void load()} disabled={loading}>
             Refresh
           </button>
-          <button type="button" style={btn} onClick={exportCsv} disabled={!rows.length}>
+          <button type="button" style={vcGlassHeaderBtn} onClick={exportCsv} disabled={!rows.length}>
             Export CSV
           </button>
-          <button type="button" style={btnPrimary} onClick={props.onBack}>
+          <button type="button" style={vcGlassHeaderBtnPrimary} onClick={props.onBack}>
             Back to cases
           </button>
         </div>
@@ -142,12 +149,20 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
         </div>
       ) : null}
       {loading ? (
-        <div style={{ color: '#6b7280' }}>Loading…</div>
+        <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
       ) : (
-        <div style={{ overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, maxHeight: 'min(70vh, 720px)' }}>
+        <div
+          style={{
+            overflow: 'auto',
+            ...vcLiquidGlassInnerSurface,
+            borderRadius: 12,
+            maxHeight: 'min(70vh, 720px)',
+            color: vcGlassFgDarkReadable,
+          }}
+        >
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ background: '#f9fafb', textAlign: 'left' }}>
+              <tr style={{ background: 'rgba(203, 213, 225, 0.35)', textAlign: 'left' }}>
                 <th style={th}>Address key</th>
                 <th style={th}>Status</th>
                 <th style={th}>Cameras</th>
@@ -173,12 +188,12 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
               ))}
             </tbody>
           </table>
-          {!rows.length && !error ? <div style={{ padding: 16, color: '#6b7280' }}>No rows yet.</div> : null}
+          {!rows.length && !error ? <div style={{ padding: 16, color: '#64748b' }}>No rows yet.</div> : null}
         </div>
       )}
       {globalHeatmapFc ? (
         <div style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8, color: '#111827' }}>
+          <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8, color: vcGlassFgMutedOnPanel }}>
             Visit density (global submissions)
           </div>
           <div
@@ -234,18 +249,3 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
 const th: React.CSSProperties = { padding: '10px 12px', fontWeight: 800, whiteSpace: 'nowrap' }
 const td: React.CSSProperties = { padding: '8px 12px', verticalAlign: 'top', wordBreak: 'break-word' }
 
-const btn: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 10,
-  padding: '8px 10px',
-  background: 'white',
-  cursor: 'pointer',
-}
-
-const btnPrimary: CSSProperties = {
-  ...btn,
-  borderColor: '#111827',
-  background: '#111827',
-  color: 'white',
-  fontWeight: 700,
-}

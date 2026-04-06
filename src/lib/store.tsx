@@ -784,6 +784,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         routeColor,
         createdByUserId: input.createdByUserId.trim(),
         createdAt: now,
+        updatedAt: now,
       }
 
       const next: AppData = {
@@ -815,6 +816,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
                 ...patch,
                 label: (patch.label ?? t.label).trim() || 'Track',
                 routeColor: typeof patch.routeColor === 'string' ? patch.routeColor.trim().slice(0, 32) : t.routeColor ?? '',
+                updatedAt: now,
               }
             : t,
         ),

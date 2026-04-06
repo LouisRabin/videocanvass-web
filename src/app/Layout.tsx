@@ -2,6 +2,7 @@ import React from 'react'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 import { dismissRemoteMergeNotice, useSyncStatus } from '../lib/syncStatus'
 import { relationalBackendEnabled } from '../lib/backendMode'
+import { vcGlassFgMutedOnPanel, vcGlassFgOnPanel, vcLiquidGlassAppHeader } from '../lib/vcLiquidGlass'
 
 export function Layout(props: {
   title?: React.ReactNode
@@ -33,9 +34,7 @@ export function Layout(props: {
           position: 'sticky',
           top: 0,
           zIndex: 10,
-          background: 'rgba(255,255,255,0.9)',
-          backdropFilter: 'blur(8px)',
-          borderBottom: '1px solid #e5e7eb',
+          ...vcLiquidGlassAppHeader,
         }}
       >
         <div
@@ -53,12 +52,21 @@ export function Layout(props: {
           }}
         >
           <div style={{ display: 'grid', gap: 'var(--vc-space-2xs)', flex: 1, minWidth: 0, maxWidth: '100%' }}>
-            <div style={{ fontWeight: 800, minWidth: 0, overflowWrap: 'anywhere' }}>{props.title ?? 'VideoCanvass'}</div>
+            <div
+              style={{
+                fontWeight: 800,
+                minWidth: 0,
+                overflowWrap: 'anywhere',
+                color: vcGlassFgOnPanel,
+              }}
+            >
+              {props.title ?? 'VideoCanvass'}
+            </div>
             {props.subtitle ? (
               <div
                 style={{
                   fontSize: 'var(--vc-fs-sm)',
-                  color: '#4b5563',
+                  color: vcGlassFgMutedOnPanel,
                   minWidth: 0,
                   overflowWrap: 'anywhere',
                   wordBreak: 'break-word',
@@ -90,9 +98,9 @@ export function Layout(props: {
                 width: 'clamp(22px, 5.5vw, 26px)',
                 height: 'clamp(22px, 5.5vw, 26px)',
                 padding: 0,
-                border: '1px solid #e5e7eb',
+                border: '1px solid rgba(255,255,255,0.28)',
                 borderRadius: 999,
-                background: '#fafafa',
+                background: 'rgba(255,255,255,0.12)',
                 cursor: 'default',
                 flexShrink: 0,
               }}

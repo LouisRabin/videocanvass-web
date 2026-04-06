@@ -31,8 +31,8 @@ import { caseAttachmentKindLabel, statusColor, statusLabel } from '../lib/types'
 import { GEOCODE_SCOPE, reverseGeocodeAddressText, type PlaceSuggestion } from '../lib/geocode'
 import { fetchBuildingFootprint } from '../lib/building'
 import { buildResolvedTrackColorMap, TRACK_DEFAULT_COLORS_FIRST_FOUR } from '../lib/trackColors'
-import { formatAppDateTime } from '../lib/timeFormat'
-import { DvrCalculatorStep, ProbativeDvrFlowModals } from './ProbativeDvrFlow'
+import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../lib/timeFormat'
+import { DvrCalculatorStep, DvrSingleDateTimePicker, ProbativeDvrFlowModals } from './ProbativeDvrFlow'
 import { CASE_DESCRIPTION_MAX_CHARS, clampCaseDescription } from '../lib/caseMeta'
 import {
   getMobileOS,
@@ -42,6 +42,7 @@ import {
 } from '../lib/mobilePlatform'
 import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
 import { useTargetMode } from '../lib/targetMode'
+import { COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 
 // See docs/CODEMAP.md; geocode/footprint policy in HANDOFF.md.
 
@@ -50,6 +51,7 @@ import {
   casePhotoCarouselArrowStyle,
   extendBoundsWithLocations,
   extendBoundsWithPathPoints,
+  findExistingLocationForCanvassAdd,
   findLocationByAddressText,
   findLocationHitByMapClick,
   formatAddressLineForMapList,
@@ -63,7 +65,10 @@ import {
   writeStoredCaseMapFocus,
 } from './casePageHelpers'
 
-import { buildVisitDensityHeatmapCollection } from './addressesMapLibreHelpers'
+import {
+  buildVisitDensityHeatmapCollection,
+  type VcCaseMapBasemapId,
+} from './addressesMapLibreHelpers'
 
 import {
   LegendChip,
@@ -83,13 +88,16 @@ import {
   listHeaderRow,
   listRow,
   listRowMainBtn,
-  MapPaneEdgeAnchor,
-  MapPaneEdgeToggle,
   select,
   statusBadge,
   suggestionBtn,
   viewModeBtn,
 } from './case/CasePageChrome'
+import {
+  MapAddressSelectionPill,
+  MapTrackQuickPickChip,
+  MapTrackSelectionPill,
+} from './case/MapSelectionGlassPills'
 import { useCaseGeocodeSearch } from './case/hooks/useCaseGeocodeSearch'
 import { useMapPaneOutsideDismiss } from './case/hooks/useMapPaneOutsideDismiss'
 import { WebCaseWorkspace } from './case/web/WebCaseWorkspace'
@@ -97,76 +105,103 @@ import { CaseAttachmentImage } from './CaseAttachmentImage'
 import { useTour } from './tour/TourContext'
 import { TOUR_UI_ENABLED } from './tour/tourFlags'
 import { VC_TOUR } from './tour/tourSteps'
+import {
+  vcGlassFieldFloatingMapSearch,
+  vcGlassFieldOnPanel,
+  vcGlassFgDarkReadable,
+  vcGlassFgMutedOnPanel,
+  vcGlassFgOnPanel,
+  vcGlassHeaderBtn,
+  vcGlassHeaderBtnPrimary,
+  vcGlassSuggestionRow,
+  vcLiquidGlassInnerSurface,
+  vcLiquidGlassPanel,
+  vcLiquidGlassPanelDense,
+} from '../lib/vcLiquidGlass'
 
 /** Longer than AddressesMapLibre SINGLE_TAP_DEFER_MS (270) so open + deferred map tap don't dismiss the dock. */
 const MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS = 350
+/** Longer than AddressesMapLibre `SINGLE_TAP_DEFER_MS` (270) so a dock outside-dismiss cannot release a deferred map click. */
+const MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS = 400
 /** Ignore the very next map press after dismissing address search so it does not select/add. */
 const ADDR_DISMISS_GRACE_MS = 360
 /** After closing floating address search, block map click handling this long (longer than SINGLE_TAP_DEFER_MS). */
 const ADDR_MAP_INTERACTION_FREEZE_MS = 450
 /** Default inset below map canvas (attribution / breathing room). */
 const MAP_CANVAS_BOTTOM_RESERVE = 'clamp(8px, 1.2vw, 14px)'
+const MAP_BASEMAP_STORAGE_KEY = 'vc-case-map-basemap'
 
-/** Wide web: notes seam expanded with no map selection — no full white “dead” bar; only this sheet when opened. */
-function WideMapNotesPlaceholder(props: { onDismiss: () => void }) {
+function readStoredCaseMapBasemap(): VcCaseMapBasemapId {
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(MAP_BASEMAP_STORAGE_KEY) : null
+    if (v === 'dark' || v === 'satellite' || v === 'streets') return v
+  } catch {
+    /* ignore */
+  }
+  return 'streets'
+}
+
+/** Cycle order: default (streets) → satellite → dark → … */
+const CASE_BASEMAP_CYCLE: VcCaseMapBasemapId[] = ['streets', 'satellite', 'dark']
+
+function nextCaseBasemap(current: VcCaseMapBasemapId): VcCaseMapBasemapId {
+  const i = CASE_BASEMAP_CYCLE.indexOf(current)
+  const idx = i < 0 ? 0 : (i + 1) % CASE_BASEMAP_CYCLE.length
+  return CASE_BASEMAP_CYCLE[idx]
+}
+
+function caseBasemapAriaLabel(id: VcCaseMapBasemapId): string {
+  switch (id) {
+    case 'satellite':
+      return 'Satellite'
+    case 'dark':
+      return 'Dark map'
+    default:
+      return 'Streets'
+  }
+}
+
+/** Icon size inside the 44×44 map glass chips (menu + basemap). */
+const MAP_LAYERS_GLYPH_PX = 22
+
+/** Stacked layers glyph: narrow map tools menu only (`vcGlassFgOnPanel`, fillOpacity 0.92). */
+function VcCaseMapLayersGlyph(props: { size?: number }) {
+  const size = props.size ?? MAP_LAYERS_GLYPH_PX
   return (
-    <div
-      style={{
-        ...card,
-        position: 'relative',
-        width: 'min(980px, calc(100% - 48px))',
-        margin: '0 auto',
-        maxHeight: 'min(220px, 30svh)',
-        boxSizing: 'border-box',
-        padding: '14px 16px',
-        overflow: 'hidden',
-      }}
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      style={{ color: vcGlassFgOnPanel }}
     >
-      <div style={{ position: 'absolute', right: 10, top: 10, zIndex: 2 }}>
-        <button type="button" onClick={props.onDismiss} style={btn} aria-label="Close notes panel">
-          ✕
-        </button>
-      </div>
-      <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, paddingRight: 40 }}>
-        Address notes
-      </div>
-      <div style={{ marginTop: 10, color: '#6b7280', fontSize: 13, fontWeight: 600, lineHeight: 1.45 }}>
-        Select a location on the map to view and edit notes, status, and building outline for that address.
-      </div>
-    </div>
+      <rect x="3" y="5" width="18" height="4.5" rx="2" fill="currentColor" fillOpacity={0.92} />
+      <rect x="3" y="10.75" width="18" height="4.5" rx="2" fill="currentColor" fillOpacity={0.92} />
+      <rect x="3" y="16.5" width="18" height="4.5" rx="2" fill="currentColor" fillOpacity={0.92} />
+    </svg>
   )
 }
 
-/** Wide web: tracking seam expanded with no step selected — mirrors {@link WideMapNotesPlaceholder}. */
-function WideMapTrackStepPlaceholder(props: { onDismiss: () => void }) {
+/** Satellite silhouette: basemap cycle control only — same color/opacity recipe as `VcCaseMapLayersGlyph`. */
+function VcCaseMapBasemapSatelliteGlyph(props: { size?: number }) {
+  const size = props.size ?? MAP_LAYERS_GLYPH_PX
   return (
-    <div
-      style={{
-        ...card,
-        position: 'relative',
-        width: 'min(980px, calc(100% - 48px))',
-        margin: '0 auto',
-        maxHeight: 'min(220px, 30svh)',
-        boxSizing: 'border-box',
-        padding: '14px 16px',
-        overflow: 'hidden',
-      }}
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      style={{ color: vcGlassFgOnPanel }}
     >
-      <div style={{ position: 'absolute', right: 10, top: 10, zIndex: 2 }}>
-        <button type="button" onClick={props.onDismiss} style={btn} aria-label="Close step details panel">
-          ✕
-        </button>
-      </div>
-      <div style={{ fontWeight: 900, fontSize: 'var(--vc-fs-md)', lineHeight: 1.2, paddingRight: 40 }}>
-        Step details
-      </div>
-      <div style={{ marginTop: 10, color: '#6b7280', fontSize: 13, fontWeight: 600, lineHeight: 1.45 }}>
-        Select a location on the map to view and edit notes, status, and building outline for that address.
-      </div>
-    </div>
+      <rect x="2" y="9.5" width="6.5" height="5" rx="1.25" fill="currentColor" fillOpacity={0.92} />
+      <rect x="9.25" y="7.5" width="5.5" height="9" rx="1.75" fill="currentColor" fillOpacity={0.92} />
+      <rect x="15.5" y="9.5" width="6.5" height="5" rx="1.25" fill="currentColor" fillOpacity={0.92} />
+      <rect x="10.5" y="3.5" width="3" height="3.5" rx="0.75" fill="currentColor" fillOpacity={0.92} />
+    </svg>
   )
 }
-
 function EyeOpenIcon() {
   return (
     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -224,8 +259,8 @@ function TrackMapVisibilityButton(props: {
           opacity: visible ? 1 : 0.78,
         }
       : {
-          border: '1px solid #e5e7eb',
-          background: visible ? '#ffffff' : '#f3f4f6',
+          border: '1px solid rgba(148, 163, 184, 0.45)',
+          background: visible ? 'rgba(241, 245, 249, 0.92)' : 'rgba(226, 232, 240, 0.5)',
           color: visible ? '#111827' : '#9ca3af',
           opacity: visible ? 1 : 0.9,
         }),
@@ -295,18 +330,34 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [photoViewerIndex, setPhotoViewerIndex] = useState<number | null>(null)
   const targetMode = useTargetMode()
   const isNarrow = targetMode === 'mobile'
+  const isCompactWebMapTop = useMediaQuery(COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY) && !isNarrow
   const { startTour, tourOpen } = useTour()
   const mobileOS = useMemo(() => (targetMode === 'mobile' ? getMobileOS() : null), [targetMode])
   const [geoBias, setGeoBias] = useState<{ lat: number; lon: number } | null>(null)
   const mapRef = useRef<UnifiedCaseMapHandle | null>(null)
   const mapSearchCenterFallback = useCallback(() => mapRef.current?.getCenter() ?? null, [])
+  const [mapBasemap, setMapBasemap] = useState<VcCaseMapBasemapId>(() => readStoredCaseMapBasemap())
+  useEffect(() => {
+    try {
+      localStorage.setItem(MAP_BASEMAP_STORAGE_KEY, mapBasemap)
+    } catch {
+      /* ignore */
+    }
+  }, [mapBasemap])
+  const cycleCaseBasemap = useCallback(() => {
+    setMapBasemap((b) => nextCaseBasemap(b))
+  }, [])
   const [mapLeftToolDockOpen, setMapLeftToolDockOpen] = useState(false)
   type MapToolsDockSection = 'filters' | 'views' | 'photos' | 'tracks' | 'dvr'
   const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
   /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
   const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
+  /** Addresses list panel: status filter chips collapsed until user taps Filters. */
+  const [addressesListFiltersOpen, setAddressesListFiltersOpen] = useState(false)
   /** Full height of wide map tool pill (px); panel top = below pill with gap. */
   const [webWideMapDockPillFullPx, setWebWideMapDockPillFullPx] = useState(96)
+  /** Wide web: vertical tools pill width so top map chrome can pad left and avoid overlapping it. */
+  const [webWideMapDockPillWidthPx, setWebWideMapDockPillWidthPx] = useState(54)
   const { clear: clearQuickMenuSearch } = useCaseGeocodeSearch('', {
     bias: geoBias,
     mapCenterFallback: mapSearchCenterFallback,
@@ -335,13 +386,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }, [isNarrow])
 
   const mapToolsDockRef = useRef<HTMLDivElement>(null)
+  /** Map column dismiss scrims: native non-passive touch listeners (Safari) — see map dock touch effect. */
+  const mapDockDismissScrimColumnRef = useRef<HTMLDivElement>(null)
+  const mapDockDismissScrimInnerRef = useRef<HTMLDivElement>(null)
+  /** Dimmed overlay behind addresses list sheet; tap closes list and suppresses map click. */
+  const addressesListDismissScrimRef = useRef<HTMLDivElement>(null)
   /** Ignore outside-dismiss until this time (performance.now ms) so open + deferred map tap don't instantly close. */
   const mapToolsDockIgnoreOutsideUntilRef = useRef(0)
   const narrowMapAddressRef = useRef<HTMLDivElement>(null)
+  /** Wide map: row (glass + track) and search column — dropdown top = below search, z-index over tracks. */
+  const wideMapTopChromeRowRef = useRef<HTMLDivElement>(null)
+  const wideMapSearchFieldRef = useRef<HTMLDivElement>(null)
+  const [wideMapAddrSuggestTopPx, setWideMapAddrSuggestTopPx] = useState<number | null>(null)
+  const narrowMobileMapTopChromeRowRef = useRef<HTMLDivElement>(null)
+  const [narrowMapTopRowHeightPx, setNarrowMapTopRowHeightPx] = useState(56)
+  const [narrowMapBottomChromeHeightPx, setNarrowMapBottomChromeHeightPx] = useState(0)
   const narrowMapBottomChromeRef = useRef<HTMLDivElement>(null)
   const mapPaneShellRef = useRef<HTMLDivElement>(null)
   const caseMapDetailOverlayRef = useRef<HTMLDivElement>(null)
-  const mapDrawerSeamToggleRef = useRef<HTMLDivElement>(null)
   const webWideMapDockPillRef = useRef<HTMLDivElement>(null)
   const addrSearchInputRef = useRef<HTMLInputElement>(null)
   /** After address search dismiss, `performance.now()` deadline for ignoring map taps (see ADDR_MAP_INTERACTION_FREEZE_MS). */
@@ -354,8 +416,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const caseTabRef = useRef<'addresses' | 'tracking'>('addresses')
   const viewModeRef = useRef<'map' | 'list'>('map')
   const probativePlacementSessionRef = useRef<null | { trackId: string }>(null)
-  const closeMapToolsDock = useCallback(() => {
+  const closeMapToolsDock = useCallback((opts?: { suppressMapFollowupMs?: number }) => {
     mapToolsDockIgnoreOutsideUntilRef.current = 0
+    const ms = opts?.suppressMapFollowupMs
+    if (ms != null && ms > 0) {
+      mapRef.current?.suppressMapClicksFor(ms)
+    }
     setMapLeftToolDockOpen(false)
     setMapLeftToolSection(null)
     clearQuickMenuSearch()
@@ -536,6 +602,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   })
   const caseTab = workspaceMode.caseTab
   const viewMode = workspaceMode.viewMode
+  /** Addresses list as bottom sheet over map (narrow always; wide when list chosen and tools panel closed). */
+  const showAddressesListBottomSheet =
+    caseTab === 'addresses' &&
+    viewMode === 'list' &&
+    (isNarrow || (!isNarrow && mapLeftToolSection === null && wideSidebarListReveal))
+  useEffect(() => {
+    if (!showAddressesListBottomSheet) setAddressesListFiltersOpen(false)
+  }, [showAddressesListBottomSheet])
   useEffect(() => {
     if (caseTab !== 'addresses') setWideSidebarListReveal(false)
   }, [caseTab])
@@ -573,6 +647,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     [caseTab, closeMapToolsDock, isNarrow],
   )
 
+  const closeAddressesListViewFromOverlay = useCallback(() => {
+    mapRef.current?.clearPendingMapTap()
+    mapRef.current?.suppressMapClicksFor(MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS)
+    setWorkspaceViewMode('map')
+  }, [setWorkspaceViewMode])
+
   useEffect(() => {
     if (!isNarrow) {
       mapToolsDockIgnoreOutsideUntilRef.current = 0
@@ -582,12 +662,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }, [isNarrow])
 
   useLayoutEffect(() => {
-    if (isNarrow) return
-    if (caseTab !== 'tracking' && caseTab !== 'addresses') return
+    if (isNarrow) {
+      setWebWideMapDockPillWidthPx(0)
+      return
+    }
+    if (caseTab !== 'tracking' && caseTab !== 'addresses') {
+      setWebWideMapDockPillWidthPx(0)
+      return
+    }
     const el = webWideMapDockPillRef.current
     if (!el) return
     const measure = () => {
       setWebWideMapDockPillFullPx(Math.max(40, el.offsetHeight))
+      setWebWideMapDockPillWidthPx(Math.max(48, Math.round(el.offsetWidth)))
     }
     measure()
     const ro = new ResizeObserver(measure)
@@ -672,18 +759,41 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [trackLabelDrafts, setTrackLabelDrafts] = useState<Record<string, string>>({})
   const trackLabelFocusRef = useRef<Record<string, boolean>>({})
   const trackLabelDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
+  /** Map dock / manage-tracks modal: double-click name to edit; single click selects track for new points. */
+  const [trackListNameEditingId, setTrackListNameEditingId] = useState<string | null>(null)
+  const trackNameSelectClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const trackForMapAdd = useMemo(() => {
     if (autoContinuationTrackId && caseTracks.some((t) => t.id === autoContinuationTrackId)) return autoContinuationTrackId
     return caseTracks[0]?.id ?? null
   }, [autoContinuationTrackId, caseTracks])
   const [showManageTracks, setShowManageTracks] = useState(false)
+
+  useEffect(() => {
+    if (mapLeftToolSection !== 'tracks') setTrackListNameEditingId(null)
+  }, [mapLeftToolSection])
+
+  useEffect(() => {
+    if (!showManageTracks) setTrackListNameEditingId(null)
+  }, [showManageTracks])
+
+  useEffect(() => {
+    return () => {
+      if (trackNameSelectClickTimerRef.current) {
+        clearTimeout(trackNameSelectClickTimerRef.current)
+        trackNameSelectClickTimerRef.current = null
+      }
+    }
+  }, [])
   const [showAddTrack, setShowAddTrack] = useState(false)
   const [addTrackKind, setAddTrackKind] = useState<Track['kind']>('person')
   const [addTrackLabel, setAddTrackLabel] = useState('')
   const [selectedTrackPointId, setSelectedTrackPointId] = useState<string | null>(null)
-  const [trackDrawerDetailsOpen, setTrackDrawerDetailsOpen] = useState(false)
-  const [addressDrawerDetailsOpen, setAddressDrawerDetailsOpen] = useState(false)
+  const [addressMapModalOpen, setAddressMapModalOpen] = useState(false)
+  const [trackMapModalOpen, setTrackMapModalOpen] = useState(false)
+  const [trackMapTimeModalOpen, setTrackMapTimeModalOpen] = useState(false)
+  /** Narrow track pill: full chrome only after user opens step detail (modal or double-tap). */
+  const [trackMapPillShowFull, setTrackMapPillShowFull] = useState(false)
   /** While this equals the open step id, collapsed drawer shows Undo (delete) for the step just placed. */
   const [trackStepUndoTargetId, setTrackStepUndoTargetId] = useState<string | null>(null)
 
@@ -697,19 +807,23 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [selectedTrackPointId, trackStepUndoTargetId])
 
-  /** Keep wide tracking details expanded while switching between points; collapse only when selection clears. */
   useEffect(() => {
-    if (!selectedTrackPointId) setTrackDrawerDetailsOpen(false)
+    setTrackMapPillShowFull(false)
   }, [selectedTrackPointId])
 
-  /** Collapse wide notes sheet when nothing is selected; keep open when switching between pins. */
   useEffect(() => {
-    if (!selectedId) setAddressDrawerDetailsOpen(false)
-  }, [selectedId])
+    setAddressMapModalOpen(false)
+    setTrackMapModalOpen(false)
+    setTrackMapTimeModalOpen(false)
+  }, [caseTab])
 
   useEffect(() => {
-    if (caseTab === 'addresses' && viewMode === 'list') setAddressDrawerDetailsOpen(false)
-  }, [caseTab, viewMode])
+    if (viewMode === 'list') {
+      setAddressMapModalOpen(false)
+      setTrackMapModalOpen(false)
+      setTrackMapTimeModalOpen(false)
+    }
+  }, [viewMode])
 
   const onTabLongPressSwitchToTracking = useCallback(() => {
     setWorkspaceCaseTab('tracking')
@@ -958,6 +1072,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     probativePlacementSession,
   ])
 
+  const [footprintLoadingIds, setFootprintLoadingIds] = useState<Set<string>>(new Set())
+  const [footprintFailedIds, setFootprintFailedIds] = useState<Set<string>>(new Set())
+  const [outlineQueue, setOutlineQueue] = useState<
+    Array<{ id: string; lat: number; lon: number; addressText?: string; vectorTileBuildingRing?: LatLon[] }>
+  >([])
+  const outlineQueuedRef = useRef<Set<string>>(new Set())
+  const outlineDoneRef = useRef<Set<string>>(new Set())
+  const outlineInFlightRef = useRef<Set<string>>(new Set())
+  const locationsRef = useRef(locations)
+  locationsRef.current = locations
+
   const openAddLocationModal = useCallback(
     (payload: {
       lat: number
@@ -966,6 +1091,25 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       bounds?: Location['bounds'] | null
       vectorTileBuildingRing?: LatLon[] | null
     }) => {
+      const existing = findExistingLocationForCanvassAdd(
+        locations,
+        payload.lat,
+        payload.lon,
+        payload.addressText,
+        footprintLoadingIds,
+      )
+      if (existing) {
+        dismissAddressSearch()
+        setAddr('')
+        mapRef.current?.clearPendingMapTap()
+        setSelectedId(existing.id)
+        setLocationDetailOpen(true)
+        window.setTimeout(() => {
+          const m = mapRef.current
+          if (m) m.flyTo(existing.lat, existing.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+        }, 0)
+        return
+      }
       addCategoryInFlightRef.current = false
       setAddLocationSaving(false)
       setPendingAddQueue((q) => {
@@ -980,23 +1124,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         return [...q, item]
       })
     },
-    [],
+    [dismissAddressSearch, footprintLoadingIds, locations, setAddr],
   )
   const closeAddLocationModal = useCallback(() => {
     addCategoryInFlightRef.current = false
     setAddLocationSaving(false)
     setPendingAddQueue((q) => q.slice(1))
   }, [])
-  const [footprintLoadingIds, setFootprintLoadingIds] = useState<Set<string>>(new Set())
-  const [footprintFailedIds, setFootprintFailedIds] = useState<Set<string>>(new Set())
-  const [outlineQueue, setOutlineQueue] = useState<
-    Array<{ id: string; lat: number; lon: number; addressText?: string; vectorTileBuildingRing?: LatLon[] }>
-  >([])
-  const outlineQueuedRef = useRef<Set<string>>(new Set())
-  const outlineDoneRef = useRef<Set<string>>(new Set())
-  const outlineInFlightRef = useRef<Set<string>>(new Set())
-  const locationsRef = useRef(locations)
-  locationsRef.current = locations
 
   /** One in-flight reverse lookup per map coordinate so the add modal can fill in street text while you keep working. */
   const pendingQueueGeoKeysRef = useRef<Set<string>>(new Set())
@@ -1086,9 +1220,20 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const completePendingLocation = useCallback(
     async (snapshot: PendingAddItem, status: CanvassStatus, notes?: string) => {
       if (addCategoryInFlightRef.current) return
-      addCategoryInFlightRef.current = true
       const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
       const { addressText } = snapshot
+      const dup = findExistingLocationForCanvassAdd(locations, lat, lon, addressText, footprintLoadingIds)
+      if (dup) {
+        closeAddLocationModal()
+        setLocationDetailOpen(false)
+        setSelectedId(dup.id)
+        window.setTimeout(() => {
+          const m = mapRef.current
+          if (m) m.flyTo(dup.lat, dup.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+        }, 0)
+        return
+      }
+      addCategoryInFlightRef.current = true
       setAddLocationSaving(true)
       try {
         const id = await createLocation({
@@ -1125,7 +1270,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         addCategoryInFlightRef.current = false
       }
     },
-    [actorId, closeAddLocationModal, createLocation, enqueueOutlineForLocation, props.caseId, updateLocation],
+    [
+      actorId,
+      closeAddLocationModal,
+      createLocation,
+      enqueueOutlineForLocation,
+      footprintLoadingIds,
+      locations,
+      props.caseId,
+      updateLocation,
+    ],
   )
 
   const handleProbativeAccurate = useCallback(() => {
@@ -1356,8 +1510,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     locationDetailOpen,
     viewMode,
     isNarrow,
-    addressDrawerDetailsOpen,
-    trackDrawerDetailsOpen,
+    trackMapPillShowFull,
+    narrowMapBottomChromeHeightPx,
   ])
 
   const clearDvrLinkLocationUi = useCallback(() => {
@@ -1377,7 +1531,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ? `[Canvass — DVR link] Probative. ${s.label}`
         : `[Canvass — DVR link] Not probative. ${s.label}`
       const mergedNotes = appendToNotes(dvrLinkLocationSession.notesAppend, canvassLine)
-      const existing = findLocationByAddressText(locations, s.label)
+      const existing = findExistingLocationForCanvassAdd(locations, s.lat, s.lon, s.label, footprintLoadingIds)
 
       setDvrLinkSaving(true)
       try {
@@ -1438,6 +1592,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       dvrLinkLocationSession,
       dvrLinkPicked,
       enqueueOutlineForLocation,
+      footprintLoadingIds,
       locations,
       props.caseId,
       updateLocation,
@@ -1445,6 +1600,64 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   )
 
   mapLeftToolDockOpenRef.current = mapLeftToolDockOpen
+  useEffect(() => {
+    if (mapLeftToolDockOpen) {
+      mapRef.current?.clearPendingMapTap()
+    }
+  }, [mapLeftToolDockOpen])
+
+  useEffect(() => {
+    if (!mapLeftToolDockOpen || probativePlacementSession) return
+    const touchOpts: AddEventListenerOptions = { capture: true, passive: false }
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
+        mapRef.current?.clearPendingMapTap()
+        return
+      }
+      mapRef.current?.clearPendingMapTap()
+      closeMapToolsDock({ suppressMapFollowupMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS })
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    const z22 = mapDockDismissScrimColumnRef.current
+    const z80 = mapDockDismissScrimInnerRef.current
+    z22?.addEventListener('touchstart', onTouchStart, touchOpts)
+    z22?.addEventListener('touchmove', onTouchMove, touchOpts)
+    z80?.addEventListener('touchstart', onTouchStart, touchOpts)
+    z80?.addEventListener('touchmove', onTouchMove, touchOpts)
+    return () => {
+      z22?.removeEventListener('touchstart', onTouchStart, touchOpts)
+      z22?.removeEventListener('touchmove', onTouchMove, touchOpts)
+      z80?.removeEventListener('touchstart', onTouchStart, touchOpts)
+      z80?.removeEventListener('touchmove', onTouchMove, touchOpts)
+    }
+  }, [mapLeftToolDockOpen, probativePlacementSession, closeMapToolsDock])
+
+  useEffect(() => {
+    if (!showAddressesListBottomSheet) return
+    const touchOpts: AddEventListenerOptions = { capture: true, passive: false }
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      closeAddressesListViewFromOverlay()
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    const el = addressesListDismissScrimRef.current
+    el?.addEventListener('touchstart', onTouchStart, touchOpts)
+    el?.addEventListener('touchmove', onTouchMove, touchOpts)
+    return () => {
+      el?.removeEventListener('touchstart', onTouchStart, touchOpts)
+      el?.removeEventListener('touchmove', onTouchMove, touchOpts)
+    }
+  }, [showAddressesListBottomSheet, closeAddressesListViewFromOverlay])
+
   addrFieldFocusedRef.current = addrFieldFocused
   addrAutocompleteEngagedRef.current = addrAutocompleteEngaged
   caseTabRef.current = caseTab
@@ -1462,7 +1675,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     mapPaneShowsNow,
     mapToolsDockRef,
     caseMapDetailOverlayRef,
-    mapDrawerSeamToggleRef,
     narrowMapAddressRef,
     narrowMapBottomChromeRef,
     mapPaneShellRef,
@@ -1477,6 +1689,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     closeMapToolsDock,
     onDismissAddress: dismissAddressSearch,
     addrDismissGraceMs: ADDR_DISMISS_GRACE_MS,
+    dockOutsideDismissSuppressMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS,
   })
 
   /** MapLibre only: query Carto vector `building` layers at a pin (speeds queued fetches). */
@@ -1551,7 +1764,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       if (!caseTrackPoints.some((x) => x.id === pointId)) return
       setWorkspaceCaseTab('tracking')
       setSelectedTrackPointId(pointId)
-      setTrackDrawerDetailsOpen(true)
+      setTrackMapPillShowFull(true)
+      setTrackMapModalOpen(true)
       closeMapToolsDock()
     },
     [caseTrackPoints, setWorkspaceCaseTab, closeMapToolsDock],
@@ -1563,7 +1777,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setWorkspaceViewMode('map')
       setSelectedId(locationId)
       setLocationDetailOpen(true)
-      setAddressDrawerDetailsOpen(true)
+      setAddressMapModalOpen(true)
       closeMapToolsDock()
     },
     [locations, setWorkspaceCaseTab, setWorkspaceViewMode, closeMapToolsDock],
@@ -1641,7 +1855,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             gridTemplateColumns: '1fr',
             gridTemplateRows: 'minmax(0, 1fr)',
             gridTemplateAreas: '"map"',
-            gap: 'clamp(4px, 0.9vw, 10px)',
+            gap: 0,
             alignItems: 'stretch',
             flex: 1,
             minHeight: 0,
@@ -1660,83 +1874,55 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           },
     [isNarrow],
   )
-  const mapPaneDetailOverlay: CSSProperties = {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    maxHeight: isNarrow
-      ? 'min(220px, 42svh)'
-      : 'min(280px, 34svh, calc(100% - clamp(120px, 22vh, 220px)))',
-    // Wide: seam tab sits above drawer top (`translateY(-100%)`); keep overflow visible for anchor. Narrow: scroll.
-    ...(isNarrow ? { overflowY: 'auto', overflowX: 'hidden' } : { overflow: 'visible' }),
-    padding: isNarrow
-      ? 'var(--vc-space-xs) var(--vc-space-sm) var(--vc-space-md)'
-      : 'clamp(10px, 1.6vw, 18px) var(--vc-space-sm) var(--vc-space-md)',
-    boxSizing: 'border-box',
-    // Above MapLibre markers/track pins (~40) so status pills receive clicks; modals stay higher (~60000).
-    zIndex: 5000,
-    pointerEvents: 'auto',
-    isolation: 'isolate',
-    background: 'rgba(255,255,255,0.96)',
-    backdropFilter: 'blur(10px)',
-    WebkitBackdropFilter: 'blur(10px)',
-    borderTop: '1px solid #d1d5db',
-    borderBottomLeftRadius: 'var(--vc-radius-lg)',
-    borderBottomRightRadius: 'var(--vc-radius-lg)',
-  }
   /**
    * Map/dock interaction invariants:
-   * - detail overlay z-index must stay above map content (markers/paths) but below modal dialogs.
-   * - outside-dismiss only runs when taps are outside interactive zones (dock, search, detail drawer).
-   * - wide seam tab is pinned to the bottom inside edge of the map card (MapPaneEdgeAnchor), above the notes sheet.
+   * - selection pill z-index stays above map content (markers/paths) but below modal dialogs.
+   * - outside-dismiss treats the pill wrapper (`caseMapDetailOverlayRef`) as an interactive zone.
    */
-  const wideMapDetailCollapsed =
-    !isNarrow && caseTab === 'tracking' && !trackDrawerDetailsOpen
-  /** Wide web: seam on addresses map; on tracking whenever the tab is active (same flush expand control as canvassing). */
-  const showWideMapDrawerSeam = !isNarrow && (caseTab === 'addresses' || caseTab === 'tracking')
-  /** Bottom-center tab (compact): hidden while sheet is expanded — handle moves to top of sheet. */
-  const wideMapDrawerSeamBottomTab =
-    showWideMapDrawerSeam &&
-    !(
-      (caseTab === 'addresses' && addressDrawerDetailsOpen) ||
-      (caseTab === 'tracking' && trackDrawerDetailsOpen)
-    )
-  /** Wide: white notes/track sheet should paint (collapsed ⇒ display none on overlay). */
-  const wideMapDetailPanelOpen =
-    !isNarrow &&
-    showWideMapDrawerSeam &&
-    (caseTab === 'addresses' ? addressDrawerDetailsOpen : trackDrawerDetailsOpen)
   /** Flush map canvas to card bottom on wide map views — removes idle white strip from bottom inset. */
   const wideMapUsesFullBleedMapCanvas = !isNarrow && (caseTab === 'tracking' || caseTab === 'addresses')
   const mapStackBottom: CSSProperties['bottom'] = wideMapUsesFullBleedMapCanvas ? 0 : MAP_CANVAS_BOTTOM_RESERVE
-  const showMapDetailOverlayShell =
-    (caseTab === 'tracking' && (!isNarrow || !!selectedTrackPoint)) ||
-    (caseTab === 'addresses' && (!isNarrow || (!!selected && locationDetailOpen)))
-  const mapPaneDetailOverlayStyle: CSSProperties = {
-    ...(wideMapDetailCollapsed
-      ? {
-          ...mapPaneDetailOverlay,
-          maxHeight: 0,
-          padding: 0,
-          background: 'transparent',
-          borderTop: 'none',
-          borderBottomLeftRadius: 0,
-          borderBottomRightRadius: 0,
-          backdropFilter: 'none',
-          WebkitBackdropFilter: 'none',
-          overflow: 'visible',
-        }
-      : mapPaneDetailOverlay),
-    ...(!wideMapDetailPanelOpen && showWideMapDrawerSeam ? { display: 'none' } : {}),
-    ...(!isNarrow && wideMapDetailPanelOpen
-      ? {
-          background: 'transparent',
-          borderTop: 'none',
-          backdropFilter: 'none',
-          WebkitBackdropFilter: 'none',
-        }
-      : {}),
+  /** Floating on map near page/card bottom with comfortable inset (above narrow mode bar when present). */
+  /** Narrow: sibling of map layer (clears bottom mode bar). */
+  const mapSelectionPillWrapStyle: CSSProperties = {
+    position: 'absolute',
+    left: 'max(14px, env(safe-area-inset-left, 0px))',
+    right: 'max(14px, env(safe-area-inset-right, 0px))',
+    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 10px + ${narrowMapBottomChromeHeightPx}px + clamp(16px, 3.5vw, 28px))`,
+    zIndex: 44,
+    pointerEvents: 'auto',
+    isolation: 'isolate',
+    display: 'flex',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 0,
+  }
+  /**
+   * Web: must live inside the map layer wrapper (`z-index: 1`) so it anchors to the map viewport bottom
+   * and stays under the top mode/search row (`z-index: 45`). Sibling pills were painting at the top.
+   */
+  /**
+   * Wide web: selection pill band to the right of the fixed basemap chip (same bottom inset); outer layer
+   * ignores pointer events so the map stays clickable except on the pill.
+   */
+  const mapSelectionPillWrapStyleWebInMapLayer: CSSProperties = {
+    position: 'absolute',
+    left: `calc(max(10px, env(safe-area-inset-left, 0px)) + 44px + clamp(12px, 2.8vw, 24px))`,
+    right: 'max(10px, env(safe-area-inset-right, 0px))',
+    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 8px)`,
+    zIndex: 46,
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    pointerEvents: 'none',
+    minWidth: 0,
+    boxSizing: 'border-box',
+  }
+  const mapSelectionPillWrapStyleWebInMapLayerInteractive: CSSProperties = {
+    pointerEvents: 'auto',
+    maxWidth: '100%',
+    minWidth: 0,
   }
   const mapColumnWrapperStyle: CSSProperties = {
     gridArea: 'map',
@@ -1757,11 +1943,25 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     borderRadius: 12,
     borderBottom: card.border,
   }
+  /**
+   * Fill the map card: all children are position:absolute — a flex-only relative box would collapse to 0 height
+   * and pins `bottom:` UI (notes pill) to the top. Inset 0 ties coordinates to the real map viewport.
+   */
+  const mapPaneMapStackAreaStyle: CSSProperties = {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    minWidth: 0,
+    minHeight: 0,
+    overflow: 'hidden',
+  }
 
   if (!c) {
     return (
-      <Layout title="Case not found" right={<button onClick={props.onBack} style={btn}>Case List</button>}>
-        <div style={{ color: '#374151' }}>This case may have been deleted.</div>
+      <Layout title="Case not found" right={<button onClick={props.onBack} style={vcGlassHeaderBtn}>Case List</button>}>
+        <div style={{ color: vcGlassFgMutedOnPanel }}>This case may have been deleted.</div>
       </Layout>
     )
   }
@@ -1769,60 +1969,207 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const addrSearchProminent =
     addrFieldFocused || loadingSug || suggestions.length > 0 || addr.trim().length > 0
 
-  const renderAddAddressSearch = (floating: boolean, opts?: { glassChrome?: boolean; narrowCondensed?: boolean }) => {
+  const renderAddAddressSearch = (
+    floating: boolean,
+    opts?: { glassChrome?: boolean; narrowCondensed?: boolean; mapFloatingPart?: 'input' | 'dropdown' },
+  ) => {
     const glass = opts?.glassChrome === true
     const narrowCondensed = opts?.narrowCondensed === true && isNarrow
-    const hintColor = glass ? 'rgba(226, 232, 240, 0.9)' : '#374151'
-    const glassInput: CSSProperties = glass
-      ? {
-          background: 'rgba(255,255,255,0.94)',
-          borderColor: 'rgba(255,255,255,0.45)',
-          color: '#0f172a',
-        }
-      : {}
-    const glassSug: CSSProperties = glass
-      ? {
-          ...suggestionBtn,
-          border: '1px solid rgba(255,255,255,0.22)',
-          background: 'rgba(255,255,255,0.96)',
-          color: '#0f172a',
-        }
-      : suggestionBtn
+    const mapPart = opts?.mapFloatingPart
+    const hintColor = glass ? vcGlassFgMutedOnPanel : '#374151'
+    /** Floating map search: light field on blue map glass; modal / slab search uses on-panel frost. */
+    const glassInput: CSSProperties = glass ? (floating ? vcGlassFieldFloatingMapSearch : vcGlassFieldOnPanel) : {}
+    const glassSug: CSSProperties = glass ? { ...suggestionBtn, ...vcGlassSuggestionRow } : suggestionBtn
+    const floatingMapSearchIcon =
+      floating && glass ? (
+        <span
+          aria-hidden
+          style={{
+            position: 'absolute',
+            left: narrowCondensed ? 7 : 10,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: narrowCondensed ? 15 : 18,
+            height: narrowCondensed ? 15 : 18,
+            color: 'rgba(15, 23, 42, 0.38)',
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <svg
+            width="100%"
+            height="100%"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+        </span>
+      ) : null
+    const addrSearchAriaLabel =
+      GEOCODE_SCOPE === 'ny' ? 'Search for a New York address' : 'Search for an address'
+    const addrSearchPlaceholder =
+      floating && glass ? '' : GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'
+    const addrSearchInputStyle: CSSProperties = {
+      ...field,
+      maxWidth: '100%',
+      boxSizing: 'border-box',
+      minWidth: 0,
+      fontSize: isNarrow ? 16 : undefined,
+      ...glassInput,
+      ...(floating && glass
+        ? narrowCondensed
+          ? { padding: '3px 8px 3px 28px', minHeight: 26, lineHeight: 1.25, fontSize: 15 }
+          : { padding: '6px 10px 6px 36px', minHeight: 38, lineHeight: 1.25 }
+        : isNarrow
+          ? { padding: '8px 10px' }
+          : {}),
+    }
+    const addrSearchInputEl = (
+      <input
+        ref={addrSearchInputRef}
+        value={addr}
+        onChange={(e) => setAddr(e.target.value)}
+        onFocus={() => {
+          if (addrBlurClearRef.current) {
+            clearTimeout(addrBlurClearRef.current)
+            addrBlurClearRef.current = null
+          }
+          setAddrFieldFocused(true)
+        }}
+        onBlur={() => clearAddrFieldFocusSoon()}
+        placeholder={addrSearchPlaceholder}
+        {...(floating && glass ? { 'aria-label': addrSearchAriaLabel } : {})}
+        {...(isNarrow ? nativeMobileSearchInputProps(mobileOS) : {})}
+        style={addrSearchInputStyle}
+      />
+    )
+    /** Wide: measured top = just below search field; z-index over track column. Narrow: below full chrome strip. */
+    const wideSuggestBelowSearch =
+      !isNarrow && floating && glass && wideMapAddrSuggestTopPx != null
+    const mapFloatingDropdownPanelStyle: CSSProperties = {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: wideSuggestBelowSearch ? wideMapAddrSuggestTopPx : '100%',
+      marginTop: wideSuggestBelowSearch ? 0 : 6,
+      zIndex: wideSuggestBelowSearch ? 70 : 60,
+      padding: 8,
+      borderRadius: 14,
+      boxSizing: 'border-box',
+      maxHeight: 'min(48vh, 340px)',
+      overflowY: 'auto',
+      WebkitOverflowScrolling: 'touch',
+      pointerEvents: 'auto',
+      ...vcLiquidGlassPanel,
+    }
+    const mapFloatingDropdownBody = (
+      <>
+        {(!floating || addrSearchProminent) && GEOCODE_SCOPE === 'ny' ? (
+          <div
+            style={{
+              color: hintColor,
+              fontSize: floating ? 11 : 12,
+              lineHeight: 1.35,
+              marginBottom: suggestions.length || loadingSug ? 6 : 0,
+            }}
+          >
+            Autocomplete is currently scoped to New York addresses.
+          </div>
+        ) : null}
+        {!floating || addrSearchProminent ? (
+          loadingSug ? (
+            <div style={{ color: hintColor, fontSize: floating ? 11 : 12, marginBottom: suggestions.length ? 6 : 0 }}>
+              Searching…
+            </div>
+          ) : null
+        ) : null}
+        {suggestions.length ? (
+          <div style={{ display: 'grid', gap: 4 }}>
+            {suggestions.map((s) => (
+              <button
+                type="button"
+                key={`${s.lat},${s.lon},${s.label}`}
+                style={glassSug}
+                onClick={() => {
+                  if (addrBlurClearRef.current) {
+                    clearTimeout(addrBlurClearRef.current)
+                    addrBlurClearRef.current = null
+                  }
+                  dismissAddressSearch()
+                  setAddr('')
+                  openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
+                  const m = mapRef.current
+                  if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+                }}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        ) : !floating || addrSearchProminent ? (
+          addr.trim().length >= 3 ? (
+            /^\d{1,4}-\d{1,4}$/.test(addr.trim()) ? (
+              <div style={{ color: hintColor, fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
+                Add the street name after the house number (e.g., ‘120-37 170 Street’).
+              </div>
+            ) : (
+              <div style={{ color: hintColor, fontSize: floating ? 11 : 12, lineHeight: 1.35 }}>
+                No suggestions. Try adding city/state.
+              </div>
+            )
+          ) : null
+        ) : null}
+      </>
+    )
+    const inputGridOnly = (
+      <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
+        {!floating && !isNarrow ? (
+          <div style={{ fontWeight: 900, fontSize: 13 }}>Add address</div>
+        ) : null}
+        {floating && glass ? (
+          <div style={{ position: 'relative', width: '100%', minWidth: 0 }}>
+            {floatingMapSearchIcon}
+            {addrSearchInputEl}
+          </div>
+        ) : (
+          addrSearchInputEl
+        )}
+      </div>
+    )
+
+    if (floating && glass && mapPart === 'input') {
+      return inputGridOnly
+    }
+    if (floating && glass && mapPart === 'dropdown') {
+      const showMapFloatingDropdown = suggestions.length > 0 || loadingSug || addrSearchProminent
+      if (!showMapFloatingDropdown) return null
+      return <div style={mapFloatingDropdownPanelStyle}>{mapFloatingDropdownBody}</div>
+    }
+    if (floating && glass && !mapPart) {
+      return inputGridOnly
+    }
+
     return (
       <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
         {!floating && !isNarrow ? (
           <div style={{ fontWeight: 900, fontSize: 13 }}>Add address</div>
         ) : null}
-        <input
-          ref={addrSearchInputRef}
-          value={addr}
-          onChange={(e) => setAddr(e.target.value)}
-          onFocus={() => {
-            if (addrBlurClearRef.current) {
-              clearTimeout(addrBlurClearRef.current)
-              addrBlurClearRef.current = null
-            }
-            setAddrFieldFocused(true)
-          }}
-          onBlur={() => clearAddrFieldFocusSoon()}
-          placeholder={GEOCODE_SCOPE === 'ny' ? 'Search NY address…' : 'Search address…'}
-          {...(isNarrow ? nativeMobileSearchInputProps(mobileOS) : {})}
-          style={{
-            ...field,
-            maxWidth: '100%',
-            boxSizing: 'border-box',
-            minWidth: 0,
-            fontSize: isNarrow ? 16 : undefined,
-            ...glassInput,
-            ...(narrowCondensed && floating
-              ? { padding: '5px 8px', minHeight: 34, lineHeight: 1.25, fontSize: 15 }
-              : floating
-                ? { padding: '6px 9px', minHeight: 38, lineHeight: 1.25 }
-                : isNarrow
-                  ? { padding: '8px 10px' }
-                  : {}),
-          }}
-        />
+        {floating && glass ? (
+          <div style={{ position: 'relative', width: '100%', minWidth: 0 }}>
+            {floatingMapSearchIcon}
+            {addrSearchInputEl}
+          </div>
+        ) : (
+          addrSearchInputEl
+        )}
         {(!floating || addrSearchProminent) && GEOCODE_SCOPE === 'ny' ? (
           <div
             style={{
@@ -1888,25 +2235,36 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }
 
   const mapLeftDockProminent = mapLeftToolDockOpen || mapLeftToolSection !== null
-  const activeTrackQuickPickId = trackForMapAdd
-  const selectTrackQuickPick = (trackId: string) => {
-    setAutoContinuationTrackId(trackId)
-    setVisibleTrackIds((prev) => ({ ...prev, [trackId]: true }))
-    setWorkspaceCaseTab('tracking')
-  }
-  const openTrackManagerInMenu = useCallback(() => {
-    if (isNarrow) {
-      mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
-      setMapLeftToolDockOpen(true)
+  const selectTrackQuickPick = useCallback(
+    (trackId: string) => {
+      setAutoContinuationTrackId(trackId)
+      setVisibleTrackIds((prev) => ({ ...prev, [trackId]: true }))
+      setWorkspaceCaseTab('tracking')
+    },
+    [setWorkspaceCaseTab],
+  )
+  const cancelPendingTrackNameSelectClick = useCallback(() => {
+    if (trackNameSelectClickTimerRef.current) {
+      clearTimeout(trackNameSelectClickTimerRef.current)
+      trackNameSelectClickTimerRef.current = null
     }
-    setMapLeftToolSection('tracks')
-  }, [isNarrow])
+  }, [])
+  const scheduleSelectTrackFromNameClick = useCallback(
+    (trackId: string) => {
+      cancelPendingTrackNameSelectClick()
+      trackNameSelectClickTimerRef.current = setTimeout(() => {
+        trackNameSelectClickTimerRef.current = null
+        selectTrackQuickPick(trackId)
+      }, 280)
+    },
+    [cancelPendingTrackNameSelectClick, selectTrackQuickPick],
+  )
   const filterLegendChipsGridDock = (
     <div
       style={{
         display: 'grid',
         gap: 4,
-        gridTemplateColumns: '1fr 1fr',
+        gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr',
         alignItems: 'stretch',
         minWidth: 0,
       }}
@@ -2233,7 +2591,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     boxSizing: 'border-box',
   }
 
-  /** Filter chips are compact 2×2 — no inner scroll; outer tool menu scrolls if needed. */
+  /** Filter chips: narrow = one column; wide dock = 2×2. Outer tool menu scrolls if needed. */
   const mapDockFilterPanelStyle: CSSProperties = {
     ...mapDockPanelStyle,
     maxHeight: 'none',
@@ -2241,30 +2599,27 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     padding: 8,
   }
 
-  /** Shared “liquid glass” slab for wide map tools + top unified bar (cooler blue, blur, specular edge). */
-  const liquidGlassToolbarBlue: CSSProperties = {
-    background: 'linear-gradient(160deg, rgba(44, 74, 128, 0.5) 0%, rgba(26, 44, 78, 0.48) 45%, rgba(18, 32, 58, 0.52) 100%)',
-    backdropFilter: 'blur(22px) saturate(1.45)',
-    WebkitBackdropFilter: 'blur(22px) saturate(1.45)',
-    border: '1px solid rgba(255,255,255,0.28)',
-    boxShadow: '0 10px 36px rgba(6, 16, 42, 0.38), inset 0 1px 0 rgba(255,255,255,0.2)',
-  }
-
-  /** Left top slab: Video canvassing | Subject tracking | address search on one row (chips sit in a sibling slab). */
+  /**
+   * Left top slab: Video canvassing | Subject tracking | address search on one row (chips sit in a sibling slab).
+   * `pointer-events: none` on the slab so `flex: 1 1 0` empty glass does not cover the map — restores map cursor/hover.
+   * Interactive descendants set `pointer-events: auto` (mode bar grid, address search wrapper).
+   */
   const mapTopModeAndSearchGlassStyle: CSSProperties = {
-    ...liquidGlassToolbarBlue,
+    ...vcLiquidGlassPanel,
     borderRadius: 20,
     display: 'flex',
     flexDirection: 'row',
-    flexWrap: 'nowrap',
+    flexWrap: isCompactWebMapTop ? 'wrap' : 'nowrap',
     alignItems: 'center',
+    justifyContent: isCompactWebMapTop ? 'center' : undefined,
     gap: 10,
     padding: '8px 12px',
-    pointerEvents: 'auto',
-    flex: '1 1 0',
+    pointerEvents: 'none',
+    flex: isCompactWebMapTop ? '1 1 auto' : '1 1 0',
     minWidth: 0,
     maxWidth: '100%',
     boxSizing: 'border-box',
+    overflow: 'visible',
   }
 
   /** Wide web: under-map tool panels match the floating pill (blue glass). Narrow keeps white cards. */
@@ -2277,11 +2632,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     alignSelf: 'stretch',
     boxSizing: 'border-box',
     padding: 10,
-    ...liquidGlassToolbarBlue,
+    ...vcLiquidGlassPanel,
     borderRadius: 16,
   }
   const mapDockNarrowToolPanelGlass: CSSProperties = {
-    ...liquidGlassToolbarBlue,
+    ...vcLiquidGlassPanel,
     borderRadius: 14,
     marginTop: 4,
     padding: 10,
@@ -2299,42 +2654,37 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     ? { ...mapDockNarrowToolPanelGlass, maxHeight: 'none', overflowY: 'visible', padding: 8, marginTop: 4 }
     : { ...webWideMapToolPanelGlass, padding: 8 }
 
-  /** Narrow ☰: extra left padding pulls over the flex gap so misses don’t hit the map. */
-  const narrowMapMenuSlop = { left: 24, right: 12, top: 10, bottom: 10 } as const
-  const narrowMapMenuOuterW = narrowMapMenuSlop.left + 44 + narrowMapMenuSlop.right
-  const narrowMapMenuOuterH = narrowMapMenuSlop.top + 44 + narrowMapMenuSlop.bottom
-  /** Right-docked track chips: same `top` / edge inset as ☰, padding mirrors ☰ TRBL (10,24,10,12 → 10,12,10,24). */
-  const narrowMapTrackChipsDockWrapStyle: CSSProperties = {
-    position: 'absolute',
-    top: 'max(6px, env(safe-area-inset-top, 0px))',
-    right: 'max(6px, env(safe-area-inset-right, 0px))',
-    zIndex: 1,
-    pointerEvents: 'auto',
-    boxSizing: 'border-box',
-    padding: `${narrowMapMenuSlop.top}px ${narrowMapMenuSlop.right}px ${narrowMapMenuSlop.bottom}px ${narrowMapMenuSlop.left}px`,
-  }
-  /** Left-docked ☰: slop extends rightward so misses don’t hit the map. */
-  const narrowMapMenuHitSlopBtnStyleLeft: CSSProperties = {
-    border: 'none',
-    background: 'transparent',
-    padding: `${narrowMapMenuSlop.top}px ${narrowMapMenuSlop.left}px ${narrowMapMenuSlop.bottom}px ${narrowMapMenuSlop.right}px`,
-    margin: 0,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    flexShrink: 0,
-    width: narrowMapMenuOuterW,
-    height: narrowMapMenuOuterH,
-    boxSizing: 'border-box',
-    WebkitTapHighlightColor: 'transparent',
-  }
+  /** Match floating map top chrome — safe-area insets align with workspace padding. */
+  const narrowMapTopChromeInsetTopStr = 'max(6px, env(safe-area-inset-top, 0px))'
+  const narrowMapTopChromeInsetLeftStr = 'max(10px, env(safe-area-inset-left, 0px))'
+  const narrowMapTopChromeInsetRightStr = 'max(10px, env(safe-area-inset-right, 0px))'
 
   /** Left inset for map top chrome (zoom controls removed). */
   const narrowMapTopReserveLeft = 'max(10px, env(safe-area-inset-left, 0px))'
 
+  /**
+   * Narrow map top: one liquid-glass pill (matches web map top slab) with ☰, address search, and track chips in one row.
+   */
+  const mapTopNarrowUnifiedToolbarGlassStyle: CSSProperties = {
+    ...vcLiquidGlassPanel,
+    borderRadius: 20,
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: 8,
+    padding: '6px 8px',
+    pointerEvents: 'none',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    minHeight: 44,
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+  }
+
   const narrowMapDockExpandedGlassShell: CSSProperties = {
-    ...liquidGlassToolbarBlue,
+    ...vcLiquidGlassPanel,
     borderRadius: 16,
     padding: 8,
     display: 'flex',
@@ -2387,24 +2737,25 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     ...mapDockMenuToggleBtnStyle,
     pointerEvents: 'none',
   }
-  const mapDockMenuToggleFaceNarrowStyle: CSSProperties = {
+  /** Shared 44×44 glass chip: basemap cycle button + narrow map tools face (pixel-matched). */
+  const mapLayersGlassChipFaceStyle: CSSProperties = {
+    ...vcLiquidGlassPanelDense,
     width: 44,
-    height: 44,
     minWidth: 44,
+    maxWidth: 44,
+    minHeight: 44,
+    height: 44,
     padding: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: 20,
-    lineHeight: 1,
     borderRadius: 12,
-    border: '1px solid rgba(255,255,255,0.28)',
-    boxShadow: '0 8px 28px rgba(6, 16, 42, 0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
+    boxSizing: 'border-box',
+    WebkitTapHighlightColor: 'transparent',
+  }
+  const mapDockMenuToggleFaceNarrowStyle: CSSProperties = {
+    ...mapLayersGlassChipFaceStyle,
     pointerEvents: 'none',
-    color: '#f8fafc',
-    background: 'linear-gradient(160deg, rgba(44, 74, 128, 0.55) 0%, rgba(26, 44, 78, 0.5) 45%, rgba(18, 32, 58, 0.55) 100%)',
-    backdropFilter: 'blur(18px) saturate(1.35)',
-    WebkitBackdropFilter: 'blur(18px) saturate(1.35)',
   }
   const mapDockNavBtnNarrowGlass = (active: boolean): CSSProperties => ({
     alignSelf: 'stretch',
@@ -2442,7 +2793,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           : {
               ...mapDockNavBtnBase,
               textAlign: 'left',
-              background: mapLeftToolSection === section ? '#f3f4f6' : 'white',
+              background:
+                mapLeftToolSection === section ? 'rgba(203, 213, 225, 0.55)' : 'rgba(226, 232, 240, 0.42)',
             }
       }
     >
@@ -2457,7 +2809,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     alignItems: 'center',
     gap: 4,
     padding: '8px 5px',
-    ...liquidGlassToolbarBlue,
+    ...vcLiquidGlassPanel,
     borderRadius: 22,
     minWidth: 0,
     flexShrink: 0,
@@ -2598,6 +2950,81 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       </div>
     ) : null
 
+  const renderTrackManagerNameField = (t: Track, canEditT: boolean, inputStyle: CSSProperties) => {
+    const isEditing = trackListNameEditingId === t.id
+    const isActive = trackForMapAdd === t.id
+    const lineColor = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+    const inactiveBorder = isNarrow ? '1px solid rgba(148, 163, 184, 0.45)' : '1px solid rgba(255,255,255,0.28)'
+
+    if (isEditing && canEditT) {
+      return (
+        <input
+          autoFocus
+          value={trackLabelDrafts[t.id] ?? t.label}
+          aria-label="Track name"
+          placeholder="Track name"
+          title="Rename track"
+          onFocus={() => {
+            trackLabelFocusRef.current[t.id] = true
+          }}
+          onBlur={(e) => {
+            trackLabelFocusRef.current[t.id] = false
+            const v = e.currentTarget.value
+            setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+            setTrackListNameEditingId(null)
+            flushTrackLabelPersist(t.id, v)
+          }}
+          onChange={(e) => {
+            const v = e.target.value
+            setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+            scheduleTrackLabelPersist(t.id, v)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.currentTarget.blur()
+            }
+          }}
+          {...(isNarrow ? nativeMobileTextInputProps(mobileOS) : {})}
+          style={{
+            ...inputStyle,
+            border: isActive ? `2px solid ${lineColor}` : inactiveBorder,
+            fontWeight: isActive ? 800 : 600,
+          }}
+        />
+      )
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={() => scheduleSelectTrackFromNameClick(t.id)}
+        onDoubleClick={(e) => {
+          e.preventDefault()
+          cancelPendingTrackNameSelectClick()
+          if (!canEditT) return
+          trackLabelFocusRef.current[t.id] = true
+          setTrackListNameEditingId(t.id)
+        }}
+        style={{
+          ...inputStyle,
+          cursor: canEditT ? 'pointer' : 'default',
+          border: isActive ? `2px solid ${lineColor}` : inactiveBorder,
+          fontWeight: isActive ? 800 : 600,
+          textAlign: 'left',
+          boxSizing: 'border-box',
+        }}
+        aria-pressed={isActive}
+        title={
+          canEditT
+            ? 'Click to use this track for new map points. Double-click to rename.'
+            : 'Click to use this track for new map points.'
+        }
+      >
+        {(trackLabelDrafts[t.id] ?? t.label).trim() || 'Track'}
+      </button>
+    )
+  }
+
   const mapToolsDockDvrPanel =
     mapLeftToolSection === 'dvr' ? (
       <div
@@ -2704,10 +3131,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       gap: 8,
                       minWidth: 0,
                       padding: '6px 8px',
-                      border: isNarrow ? '1px solid #e5e7eb' : '1px solid rgba(255,255,255,0.2)',
+                      border: isNarrow ? '1px solid rgba(148, 163, 184, 0.45)' : '1px solid rgba(255,255,255,0.2)',
                       borderRadius: 10,
-                      background: isNarrow ? '#fafafa' : 'rgba(255,255,255,0.08)',
+                      background: isNarrow ? 'rgba(226, 232, 240, 0.4)' : 'rgba(255,255,255,0.08)',
                       boxSizing: 'border-box',
+                      boxShadow:
+                        trackForMapAdd === t.id ? `inset 0 0 0 1px ${lineColor}` : undefined,
                     }}
                   >
                     <TrackMapVisibilityButton
@@ -2756,32 +3185,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         }}
                       />
                     </label>
-                    <input
-                      value={trackLabelDrafts[t.id] ?? t.label}
-                      readOnly={!canEditT}
-                      placeholder="Track name"
-                      title={canEditT ? 'Rename track' : 'No permission to rename'}
-                      onFocus={() => {
-                        trackLabelFocusRef.current[t.id] = true
-                      }}
-                      onBlur={(e) => {
-                        trackLabelFocusRef.current[t.id] = false
-                        const v = e.currentTarget.value
-                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                        flushTrackLabelPersist(t.id, v)
-                      }}
-                      onChange={(e) => {
-                        const v = e.target.value
-                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                        scheduleTrackLabelPersist(t.id, v)
-                      }}
-                      style={{
-                        ...field,
-                        flex: 1,
-                        minWidth: 0,
-                        padding: '8px 10px',
-                      }}
-                    />
+                    {renderTrackManagerNameField(t, canEditT, {
+                      ...field,
+                      flex: 1,
+                      minWidth: 0,
+                      padding: '8px 10px',
+                    })}
                     {canDelT ? (
                       <button
                         type="button"
@@ -2861,15 +3270,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </>
   )
 
-  /** Bottom sheet on map: narrow when list; wide when list revealed (left column removed on web). */
-  const showAddressesListBottomSheet =
-    caseTab === 'addresses' &&
-    viewMode === 'list' &&
-    (isNarrow || (!isNarrow && mapLeftToolSection === null && wideSidebarListReveal))
   /** Map stays in the main pane for both map and list on addresses (list is a panel, not a replacement). */
   const showMapInMapColumn = caseTab === 'tracking' || caseTab === 'addresses'
 
   const renderAddressesListContent = (placement: 'mapColumn' | 'controlColumn') => {
+    const sheetGlass = placement === 'mapColumn'
     const listRowPad = placement === 'controlColumn' ? '6px 8px' : isNarrow ? '8px 10px' : '6px 10px'
     const listBadgeCompact: CSSProperties = {
       ...statusBadge,
@@ -2886,9 +3291,15 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
-            borderTop: '1px solid #e5e7eb',
+            borderTop: '1px solid rgba(148, 163, 184, 0.45)',
             marginTop: 0,
             paddingTop: 8,
+            ...vcLiquidGlassInnerSurface,
+            borderRadius: 0,
+            borderLeft: 'none',
+            borderRight: 'none',
+            borderBottom: 'none',
+            boxShadow: 'none',
           }
         : {
             display: 'flex',
@@ -2900,13 +3311,54 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             position: 'relative',
           }
 
+    const listCloseIconBtn: CSSProperties = {
+      ...vcLiquidGlassPanelDense,
+      width: 36,
+      minWidth: 36,
+      height: 36,
+      padding: 0,
+      margin: 0,
+      borderRadius: 10,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: vcGlassFgOnPanel,
+      cursor: 'pointer',
+      flexShrink: 0,
+      WebkitTapHighlightColor: 'transparent',
+    }
+
+    const listFiltersToggleBtn: CSSProperties = sheetGlass
+      ? {
+          ...vcLiquidGlassPanelDense,
+          height: 36,
+          minHeight: 36,
+          padding: '0 12px',
+          borderRadius: 10,
+          border: 'none',
+          fontSize: 12,
+          fontWeight: 800,
+          cursor: 'pointer',
+          flexShrink: 0,
+          WebkitTapHighlightColor: 'transparent',
+          background: addressesListFiltersOpen ? 'rgba(226, 232, 240, 0.9)' : 'rgba(255,255,255,0.14)',
+          color: addressesListFiltersOpen ? vcGlassFgDarkReadable : vcGlassFgOnPanel,
+        }
+      : {
+          ...btn,
+          fontSize: 12,
+          fontWeight: 800,
+          padding: '6px 12px',
+          flexShrink: 0,
+        }
+
     return (
       <div style={outerStyle}>
         <div
           style={{
             ...listHeaderRow,
             flexShrink: 0,
-            borderBottom: '1px solid #e5e7eb',
+            borderBottom: sheetGlass ? '1px solid rgba(255,255,255,0.14)' : '1px solid rgba(148, 163, 184, 0.4)',
             flexDirection: 'column',
             alignItems: 'stretch',
             gap: 8,
@@ -2919,64 +3371,112 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               flexWrap: 'wrap',
               gap: 8,
               alignItems: 'center',
-              justifyContent: placement === 'controlColumn' ? 'flex-start' : 'space-between',
-            }}
-          >
-            <div style={{ fontWeight: 900, fontSize: 13 }}>Locations ({filtered.length})</div>
-            {placement === 'mapColumn' ? (
-              <button type="button" style={{ ...btn, fontSize: 12, padding: '6px 10px' }} onClick={() => setWorkspaceViewMode('map')}>
-                Back to map
-              </button>
-            ) : null}
-          </div>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-              gap: 6,
               width: '100%',
               minWidth: 0,
             }}
-            role="group"
-            aria-label="Filter locations by result"
           >
-            <LegendChip
-              dense
-              dockCompact
-              allowMultiline
-              label={`No cameras (${counts.noCameras})`}
-              color={statusColor('noCameras')}
-              on={filters.noCameras}
-              onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
-            />
-            <LegendChip
-              dense
-              dockCompact
-              allowMultiline
-              label={`Needs Follow up (${counts.camerasNoAnswer})`}
-              color={statusColor('camerasNoAnswer')}
-              on={filters.camerasNoAnswer}
-              onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
-            />
-            <LegendChip
-              dense
-              dockCompact
-              allowMultiline
-              label={`Not probative (${counts.notProbativeFootage})`}
-              color={statusColor('notProbativeFootage')}
-              on={filters.notProbativeFootage}
-              onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
-            />
-            <LegendChip
-              dense
-              dockCompact
-              allowMultiline
-              label={`Probative (${counts.probativeFootage})`}
-              color={statusColor('probativeFootage')}
-              on={filters.probativeFootage}
-              onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
-            />
+            <div
+              style={{
+                fontWeight: 900,
+                fontSize: 13,
+                color: sheetGlass ? vcGlassFgOnPanel : vcGlassFgDarkReadable,
+                minWidth: 0,
+                flex: placement === 'mapColumn' ? '1 1 auto' : undefined,
+              }}
+            >
+              Locations ({filtered.length})
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 8,
+                marginLeft: placement === 'controlColumn' ? 'auto' : undefined,
+                flexShrink: 0,
+              }}
+            >
+              <button
+                type="button"
+                aria-expanded={addressesListFiltersOpen}
+                aria-controls="vc-addresses-list-status-filters"
+                style={listFiltersToggleBtn}
+                onClick={() => setAddressesListFiltersOpen((v) => !v)}
+              >
+                Filters
+              </button>
+              {placement === 'mapColumn' ? (
+                <button
+                  type="button"
+                  aria-label="Close list view"
+                  title="Close"
+                  style={listCloseIconBtn}
+                  onClick={() => closeAddressesListViewFromOverlay()}
+                >
+                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <path
+                      d="M18 6L6 18M6 6l12 12"
+                      stroke="currentColor"
+                      strokeWidth={2.2}
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              ) : null}
+            </div>
           </div>
+          {addressesListFiltersOpen ? (
+            <div
+              id="vc-addresses-list-status-filters"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                gap: 6,
+                width: '100%',
+                minWidth: 0,
+              }}
+              role="group"
+              aria-label="Filter locations by result"
+            >
+              <LegendChip
+                dense
+                dockCompact
+                allowMultiline
+                label={`No cameras (${counts.noCameras})`}
+                color={statusColor('noCameras')}
+                on={filters.noCameras}
+                onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
+              />
+              <LegendChip
+                dense
+                dockCompact
+                allowMultiline
+                label={`Needs Follow up (${counts.camerasNoAnswer})`}
+                color={statusColor('camerasNoAnswer')}
+                on={filters.camerasNoAnswer}
+                onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
+              />
+              <LegendChip
+                dense
+                dockCompact
+                allowMultiline
+                label={`Not probative (${counts.notProbativeFootage})`}
+                color={statusColor('notProbativeFootage')}
+                on={filters.notProbativeFootage}
+                onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
+              />
+              <LegendChip
+                dense
+                dockCompact
+                allowMultiline
+                label={`Probative (${counts.probativeFootage})`}
+                color={statusColor('probativeFootage')}
+                on={filters.probativeFootage}
+                onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
+              />
+            </div>
+          ) : null}
         </div>
         {filtered.length ? (
           <div
@@ -3007,9 +3507,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     alignItems: 'flex-start',
                     gap: 6,
                     padding: listRowPad,
-                    background: isListSelected ? '#ffffff' : dimListRow ? '#ececef' : 'white',
+                    borderBottom: sheetGlass ? '1px solid rgba(255,255,255,0.1)' : listRow.borderBottom,
+                    background: sheetGlass
+                      ? isListSelected
+                        ? 'rgba(226, 232, 240, 0.28)'
+                        : dimListRow
+                          ? 'rgba(15, 23, 42, 0.28)'
+                          : 'rgba(255,255,255, 0.1)'
+                      : isListSelected
+                        ? 'rgba(241, 245, 249, 0.95)'
+                        : dimListRow
+                          ? 'rgba(203, 213, 225, 0.55)'
+                          : 'rgba(226, 232, 240, 0.42)',
                     opacity: dimListRow ? 0.72 : 1,
-                    boxShadow: isListSelected ? 'inset 3px 0 0 #111827' : undefined,
+                    boxShadow: isListSelected
+                      ? sheetGlass
+                        ? 'inset 3px 0 0 rgba(248, 250, 252, 0.85)'
+                        : 'inset 3px 0 0 #111827'
+                      : undefined,
                     transition: 'background 0.15s ease, opacity 0.15s ease',
                   }}
                 >
@@ -3041,6 +3556,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         overflowWrap: 'anywhere',
                         lineHeight: 1.25,
                         fontSize: 13,
+                        color: sheetGlass ? vcGlassFgOnPanel : undefined,
                       }}
                     >
                       {listLineLabel}
@@ -3065,7 +3581,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       >
                         {statusLabel(l.status)}
                       </span>
-                      <span style={{ color: '#6b7280', fontSize: 10, fontWeight: 600, lineHeight: 1.2 }}>
+                      <span
+                        style={{
+                          color: sheetGlass ? vcGlassFgMutedOnPanel : '#6b7280',
+                          fontSize: 10,
+                          fontWeight: 600,
+                          lineHeight: 1.2,
+                        }}
+                      >
                         Updated {formatAppDateTime(l.updatedAt)}
                       </span>
                     </div>
@@ -3208,7 +3731,15 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             })}
           </div>
         ) : (
-          <div style={{ padding: 12, color: '#374151', flex: placement === 'mapColumn' ? 1 : undefined }}>
+          <div
+            style={{
+              padding: 12,
+              color: sheetGlass ? vcGlassFgMutedOnPanel : '#374151',
+              flex: placement === 'mapColumn' ? 1 : undefined,
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
             No locations in the selected filters.
           </div>
         )}
@@ -3226,7 +3757,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             onPointerDown={(e) => {
               e.preventDefault()
               e.stopPropagation()
-              closeMapToolsDock()
+              mapRef.current?.clearPendingMapTap()
+              closeMapToolsDock({ suppressMapFollowupMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS })
             }}
           />
         ) : null}
@@ -3235,137 +3767,179 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }
 
   const narrowMapTopShowsFloatingAddress = caseTab === 'tracking' || caseTab === 'addresses'
-  const showMapTopTrackSelector = narrowMapTopShowsFloatingAddress && caseTracks.length > 0
 
-  const viewModeBtnGlass = (active: boolean): CSSProperties => ({
+  const viewModeBtnGlass = (active: boolean, comfortableTouch?: boolean): CSSProperties => ({
     border: `1px solid ${active ? 'rgba(255,255,255,0.52)' : 'rgba(255,255,255,0.2)'}`,
     borderRadius: 'var(--vc-radius-sm)',
-    padding: 'var(--vc-space-sm) var(--vc-space-md)',
-    background: active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.12)',
+    padding: comfortableTouch ? '10px 14px' : 'var(--vc-space-sm) var(--vc-space-md)',
+    background: active ? 'rgba(226, 232, 240, 0.88)' : 'rgba(255,255,255,0.12)',
     color: active ? '#0f172a' : 'rgba(248,250,252,0.95)',
     cursor: 'pointer',
     fontWeight: 800,
     fontSize: 'var(--vc-fs-sm)',
     whiteSpace: 'nowrap',
+    ...(comfortableTouch ? { minHeight: 44, boxSizing: 'border-box' as const } : {}),
   })
 
-  const caseModeToggleBarGlass = (
-    <div
-      data-vc-tour={VC_TOUR.caseWorkspaceTabs}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'max-content max-content',
-        gap: 6,
-        flexShrink: 0,
-      }}
-    >
-      <button
-        type="button"
-        style={viewModeBtnGlass(caseTab === 'addresses')}
-        onClick={() => setWorkspaceCaseTab('addresses')}
-      >
-        Video canvassing
-      </button>
-      <button
-        type="button"
-        style={viewModeBtnGlass(caseTab === 'tracking')}
-        onClick={() => setWorkspaceCaseTab('tracking')}
-      >
-        Subject tracking
-      </button>
-    </div>
-  )
-
-  const mapTopTrackSelectorGlassStyle: CSSProperties = {
-    ...liquidGlassToolbarBlue,
-    borderRadius: 18,
-    display: 'inline-flex',
-    flexDirection: 'row',
-    flexWrap: 'nowrap',
-    alignItems: 'center',
-    gap: 6,
-    padding: '6px 8px',
-    flex: '0 0 auto',
-    width: 'max-content',
-    maxWidth: '100%',
-    minWidth: 0,
+  /** Mobile map bottom bar: text may wrap; flex shares width so labels stay inside the glass on narrow phones. */
+  const viewModeBtnGlassNarrowMapBottom = (active: boolean): CSSProperties => ({
+    border: `1px solid ${active ? 'rgba(255,255,255,0.52)' : 'rgba(255,255,255,0.2)'}`,
+    borderRadius: 'var(--vc-radius-sm)',
+    padding: '8px 10px',
+    minHeight: 40,
     boxSizing: 'border-box',
-    pointerEvents: 'auto',
-    overflowX: 'auto',
-    WebkitOverflowScrolling: 'touch',
-  }
+    background: active ? 'rgba(226, 232, 240, 0.88)' : 'rgba(255,255,255,0.12)',
+    color: active ? '#0f172a' : 'rgba(248,250,252,0.95)',
+    cursor: 'pointer',
+    fontWeight: 800,
+    fontSize: 12,
+    lineHeight: 1.25,
+    whiteSpace: 'normal',
+    textAlign: 'center',
+    wordBreak: 'break-word',
+    overflowWrap: 'break-word',
+  })
 
-  const mapTopAddressSearchBlock = narrowMapTopShowsFloatingAddress ? (
-    <div
-      ref={narrowMapAddressRef}
-      data-vc-tour={VC_TOUR.caseFloatingSearch}
-      style={{
-        ...(isNarrow
-          ? { width: '100%', flex: 'none', minWidth: 0, alignSelf: 'stretch' }
-          : { flex: '1 1 140px', minWidth: 0, maxWidth: '100%', alignSelf: 'center' }),
-        opacity: addrSearchProminent ? 1 : 0.52,
-        transition: 'opacity 0.2s ease',
-        pointerEvents: 'auto',
-        position: 'relative',
-        zIndex: 8,
-      }}
-    >
-      {renderAddAddressSearch(true, {
-        glassChrome: true,
-        ...(isNarrow ? { narrowCondensed: true } : {}),
-      })}
-    </div>
-  ) : null
-
-  const renderMapTopTrackSelector = (styleOverride?: CSSProperties) => {
-    if (!showMapTopTrackSelector) return null
+  const renderCaseModeToggleBarGlass = (
+    comfortableTouch: boolean,
+    opts?: { narrowMapBottom?: boolean },
+  ) => {
+    const narrowBottom = opts?.narrowMapBottom === true
+    const modeBtn = narrowBottom
+      ? viewModeBtnGlassNarrowMapBottom
+      : (active: boolean) => viewModeBtnGlass(active, comfortableTouch)
     return (
-      <div style={{ ...mapTopTrackSelectorGlassStyle, ...styleOverride }} aria-label="Track selector">
-        {caseTracks.map((t) => {
-          const active = activeTrackQuickPickId === t.id
-          const color = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
-          return (
-            <button
-              key={`map-top-track-quick-${t.id}`}
-              type="button"
-              onClick={() => selectTrackQuickPick(t.id)}
-              onDoubleClick={(e) => {
-                e.preventDefault()
-                openTrackManagerInMenu()
-              }}
-              style={{
-                border: '1px solid',
-                borderColor: active ? color : 'rgba(255,255,255,0.28)',
-                borderRadius: 999,
-                padding: '5px 9px',
-                background: active ? `${color}50` : 'rgba(255,255,255,0.1)',
-                color: active ? '#ffffff' : 'rgba(248,250,252,0.92)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
+      <div
+        data-vc-tour={VC_TOUR.caseWorkspaceTabs}
+        style={
+          narrowBottom
+            ? {
+                display: 'flex',
+                flexDirection: 'row',
+                flexWrap: 'nowrap',
+                alignItems: 'stretch',
+                gap: 8,
+                width: '100%',
+                minWidth: 0,
+                boxSizing: 'border-box',
+                pointerEvents: 'auto',
+              }
+            : {
+                display: 'grid',
+                gridTemplateColumns: 'max-content max-content',
                 gap: 6,
-                fontWeight: active ? 900 : 800,
-                fontSize: 12,
-                transition: 'opacity 0.15s ease',
-                opacity: active ? 1 : 0.75,
-              }}
-              aria-pressed={active}
-              aria-label={`Use ${t.label || 'Track'} for subject tracking. Double-click to open track manager.`}
-              title={`Edit/add points on ${t.label || 'this track'}. Double-click opens Tracks in the menu.`}
-            >
-              <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: color, display: 'inline-block' }} />
-              <span style={{ whiteSpace: 'nowrap' }}>{t.label || 'Track'}</span>
-            </button>
-          )
-        })}
+                flexShrink: 0,
+                pointerEvents: 'auto',
+              }
+        }
+      >
+        <button
+          type="button"
+          style={{
+            ...modeBtn(caseTab === 'addresses'),
+            ...(narrowBottom ? { flex: '1 1 0', minWidth: 0 } : {}),
+          }}
+          onClick={() => setWorkspaceCaseTab('addresses')}
+        >
+          Video canvassing
+        </button>
+        <button
+          type="button"
+          style={{
+            ...modeBtn(caseTab === 'tracking'),
+            ...(narrowBottom ? { flex: '1 1 0', minWidth: 0 } : {}),
+          }}
+          onClick={() => setWorkspaceCaseTab('tracking')}
+        >
+          Subject tracking
+        </button>
       </div>
     )
   }
 
-  const mapTopModeAndSearchGlassPanel = (
+  useLayoutEffect(() => {
+    if (!isNarrow || !showMapInMapColumn || probativePlacementSession || !narrowMapTopShowsFloatingAddress) return
+    const el = narrowMobileMapTopChromeRowRef.current
+    if (!el) return
+    const measure = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height)
+      setNarrowMapTopRowHeightPx(Math.max(44, h))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [
+    isNarrow,
+    showMapInMapColumn,
+    probativePlacementSession,
+    narrowMapTopShowsFloatingAddress,
+    mapLeftToolDockOpen,
+    caseTracks.length,
+    caseTab,
+  ])
+
+  useLayoutEffect(() => {
+    if (!isNarrow || !showMapInMapColumn || probativePlacementSession || showAddressesListBottomSheet) {
+      setNarrowMapBottomChromeHeightPx(0)
+      return
+    }
+    const el = narrowMapBottomChromeRef.current
+    if (!el) {
+      setNarrowMapBottomChromeHeightPx(0)
+      return
+    }
+    const measure = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height)
+      setNarrowMapBottomChromeHeightPx(Math.max(0, h))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [isNarrow, showMapInMapColumn, probativePlacementSession, showAddressesListBottomSheet, caseTab, viewMode])
+
+  useLayoutEffect(() => {
+    if (isNarrow || !narrowMapTopShowsFloatingAddress) {
+      setWideMapAddrSuggestTopPx(null)
+      return
+    }
+    const row = wideMapTopChromeRowRef.current
+    const search = wideMapSearchFieldRef.current
+    if (!row || !search) {
+      setWideMapAddrSuggestTopPx(null)
+      return
+    }
+    const measure = () => {
+      const sr = search.getBoundingClientRect()
+      const rr = row.getBoundingClientRect()
+      setWideMapAddrSuggestTopPx(Math.max(0, Math.ceil(sr.bottom - rr.top + 6)))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(row)
+    ro.observe(search)
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [
+    isNarrow,
+    narrowMapTopShowsFloatingAddress,
+    isCompactWebMapTop,
+    caseTab,
+    viewMode,
+    addrSearchProminent,
+    addr,
+    loadingSug,
+    suggestions.length,
+  ])
+
+  /** Wide without floating address search: mode toggles only in the blue glass slab. */
+  const mapTopModeOnlyGlassPanel = (
     <div style={mapTopModeAndSearchGlassStyle}>
-      {caseModeToggleBarGlass}
-      {mapTopAddressSearchBlock}
+      <div style={{ alignSelf: 'center', flexShrink: 0 }}>{renderCaseModeToggleBarGlass(false)}</div>
     </div>
   )
 
@@ -3385,60 +3959,86 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         style={{
           display: 'flex',
           flexDirection: 'row',
-          flexWrap: 'nowrap',
+          flexWrap: isCompactWebMapTop ? 'wrap' : 'nowrap',
           alignItems: 'center',
+          justifyContent: 'center',
           gap: 16,
-          pointerEvents: 'auto',
+          pointerEvents: 'none',
           maxWidth: '100%',
           width: 'auto',
           minWidth: 0,
           boxSizing: 'border-box',
+          overflow: 'visible',
         }}
       >
-        {mapTopModeAndSearchGlassPanel}
-        {renderMapTopTrackSelector()}
+        {narrowMapTopShowsFloatingAddress && !isNarrow ? (
+          <div
+            ref={narrowMapAddressRef}
+            data-vc-tour={VC_TOUR.caseFloatingSearch}
+            style={{
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              minWidth: 0,
+              maxWidth: '100%',
+              width: '100%',
+              pointerEvents: 'auto',
+            }}
+          >
+            <div
+              ref={wideMapTopChromeRowRef}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                flexWrap: isCompactWebMapTop ? 'wrap' : 'nowrap',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 16,
+                minWidth: 0,
+                width: '100%',
+                boxSizing: 'border-box',
+                position: 'relative',
+              }}
+            >
+              <div style={{ ...mapTopModeAndSearchGlassStyle, position: 'relative', zIndex: 3 }}>
+                <div style={{ alignSelf: 'center', flexShrink: 0 }}>{renderCaseModeToggleBarGlass(false)}</div>
+                <div
+                  ref={wideMapSearchFieldRef}
+                  style={{
+                    flex: '1 1 140px',
+                    minWidth: 0,
+                    maxWidth: '100%',
+                    alignSelf: 'center',
+                    opacity: addrSearchProminent ? 1 : 0.52,
+                    transition: 'opacity 0.2s ease',
+                    pointerEvents: 'auto',
+                    position: 'relative',
+                    zIndex: 4,
+                  }}
+                >
+                  {renderAddAddressSearch(true, { glassChrome: true, mapFloatingPart: 'input' })}
+                </div>
+              </div>
+            </div>
+            {renderAddAddressSearch(true, { glassChrome: true, mapFloatingPart: 'dropdown' })}
+          </div>
+        ) : (
+          mapTopModeOnlyGlassPanel
+        )}
       </div>
     </div>
   )
 
-  const mapTopNarrowSearchOnlyGlassStyle: CSSProperties = {
-    ...liquidGlassToolbarBlue,
-    borderRadius: 18,
-    padding: '6px 10px',
-    width: '100%',
-    maxWidth: '100%',
-    boxSizing: 'border-box',
-    pointerEvents: 'auto',
-  }
-
-  /** Narrow: ☰-width spacers | centered search (track chips docked right, same inset/slop as ☰). */
-  const mapTopNarrowTopChromeSearchOnly = (
-    <div
-      data-vc-tour={VC_TOUR.caseControlPane}
-      style={{
-        flex: 1,
-        minWidth: 0,
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        pointerEvents: 'none',
-      }}
-    >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 'min(228px, 100%)',
-          minWidth: 0,
-          boxSizing: 'border-box',
-        }}
-      >
-        <div style={mapTopNarrowSearchOnlyGlassStyle}>{mapTopAddressSearchBlock}</div>
-      </div>
-    </div>
-  )
+  /**
+   * Mobile map bottom mode bar: clear 44×44 basemap chip on the left only. Mirroring that reserve on both
+   * sides made the shell too narrow on small phones so “Subject tracking” overflowed the glass.
+   */
+  const narrowMapBottomModesPadLeft = `calc(max(10px, env(safe-area-inset-left, 0px)) + 44px + clamp(8px, 2.5vw, 14px))`
+  const narrowMapBottomModesPadRight = `calc(max(10px, env(safe-area-inset-right, 0px)) + clamp(8px, 2.5vw, 14px))`
 
   const mapNarrowBottomModesChrome =
-    isNarrow && !probativePlacementSession && showMapInMapColumn ? (
+    isNarrow && !probativePlacementSession && showMapInMapColumn && !showAddressesListBottomSheet ? (
       <div
         ref={narrowMapBottomChromeRef}
         style={{
@@ -3450,8 +4050,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           pointerEvents: 'none',
           display: 'flex',
           justifyContent: 'center',
-          paddingLeft: 'max(10px, env(safe-area-inset-left, 0px))',
-          paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+          alignItems: 'center',
+          paddingLeft: narrowMapBottomModesPadLeft,
+          paddingRight: narrowMapBottomModesPadRight,
           boxSizing: 'border-box',
         }}
       >
@@ -3462,26 +4063,29 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             flexWrap: 'wrap',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 10,
+            width: '100%',
             maxWidth: '100%',
+            minWidth: 0,
             pointerEvents: 'auto',
           }}
         >
           <div
             style={{
-              ...liquidGlassToolbarBlue,
+              ...vcLiquidGlassPanel,
               borderRadius: 20,
               padding: '8px 10px',
               display: 'flex',
               flexDirection: 'row',
               flexWrap: 'wrap',
-              alignItems: 'center',
-              gap: 8,
+              alignItems: 'stretch',
+              gap: 0,
+              width: '100%',
               maxWidth: '100%',
+              minWidth: 0,
               boxSizing: 'border-box',
             }}
           >
-            {caseModeToggleBarGlass}
+            {renderCaseModeToggleBarGlass(true, { narrowMapBottom: true })}
           </div>
         </div>
       </div>
@@ -3587,7 +4191,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const controlPaneBlock = null
   const WorkspaceShell = WebCaseWorkspace
-  const mapDetailLayout = isNarrow ? 'stack' : 'wide'
   const workspaceShellProps = { workspaceGridStyle } as const
 
   return (
@@ -3653,10 +4256,10 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             </div>
             {isNarrow ? (
               <div style={{ display: 'flex', gap: 8, width: '100%', boxSizing: 'border-box' }}>
-                <button type="button" onClick={saveCaseMetaEdit} style={{ ...btnPrimary, flex: 1, minWidth: 0 }}>
+                <button type="button" onClick={saveCaseMetaEdit} style={{ ...vcGlassHeaderBtnPrimary, flex: 1, minWidth: 0 }}>
                   Save
                 </button>
-                <button type="button" onClick={discardCaseMetaEdit} style={{ ...btn, flex: 1, minWidth: 0 }}>
+                <button type="button" onClick={discardCaseMetaEdit} style={{ ...vcGlassHeaderBtn, flex: 1, minWidth: 0 }}>
                   Discard
                 </button>
               </div>
@@ -3709,20 +4312,20 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {caseMetaEditing && !isNarrow ? (
             <>
-              <button type="button" onClick={saveCaseMetaEdit} style={btnPrimary}>
+              <button type="button" onClick={saveCaseMetaEdit} style={vcGlassHeaderBtnPrimary}>
                 Save
               </button>
-              <button type="button" onClick={discardCaseMetaEdit} style={btn}>
+              <button type="button" onClick={discardCaseMetaEdit} style={vcGlassHeaderBtn}>
                 Discard
               </button>
             </>
           ) : null}
           {TOUR_UI_ENABLED ? (
-            <button type="button" onClick={() => startTour('case')} style={btn} disabled={tourOpen}>
+            <button type="button" onClick={() => startTour('case')} style={vcGlassHeaderBtn} disabled={tourOpen}>
               Tour
             </button>
           ) : null}
-          <button type="button" data-vc-tour={VC_TOUR.caseBack} onClick={props.onBack} style={btn}>
+          <button type="button" data-vc-tour={VC_TOUR.caseBack} onClick={props.onBack} style={vcGlassHeaderBtn}>
             Case List
           </button>
         </div>
@@ -3732,6 +4335,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         {controlPaneBlock}
         <div ref={mapPaneShellRef} style={mapColumnWrapperStyle}>
           <div style={mapPaneInnerShellStyle}>
+            <div style={mapPaneMapStackAreaStyle}>
               {probativePlacementSession ? (
                 <div
                   style={{
@@ -3758,29 +4362,28 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   last seen). Press Esc to cancel.
                 </div>
               ) : null}
-              {!probativePlacementSession ? (
+              {!probativePlacementSession && !isNarrow ? (
                 <div
                   style={{
                     position: 'absolute',
                     top: 'max(6px, env(safe-area-inset-top, 0px))',
                     left: 0,
                     right: 0,
-                    zIndex: isNarrow ? 44 : 45,
-                    paddingLeft: isNarrow
-                      ? 'max(10px, env(safe-area-inset-left, 0px))'
-                      : narrowMapTopShowsFloatingAddress
-                        ? narrowMapTopReserveLeft
+                    zIndex: 45,
+                    paddingLeft:
+                      narrowMapTopShowsFloatingAddress && showMapInMapColumn
+                        ? `calc(${narrowMapTopReserveLeft} + ${webWideMapDockPillWidthPx}px + 10px)`
                         : 'max(10px, env(safe-area-inset-left, 0px))',
                     paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
                     boxSizing: 'border-box',
                     display: 'flex',
                     flexDirection: 'row',
-                    alignItems: isNarrow ? 'center' : 'flex-start',
-                    gap: isNarrow ? 8 : 8,
+                    alignItems: 'flex-start',
+                    gap: 8,
                     pointerEvents: 'none',
                   }}
                 >
-                  {!isNarrow && narrowMapTopShowsFloatingAddress && mapLeftToolDockOpen ? (
+                  {narrowMapTopShowsFloatingAddress && mapLeftToolDockOpen ? (
                     <div
                       role="presentation"
                       aria-hidden
@@ -3797,30 +4400,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
                           e.preventDefault()
                           e.stopPropagation()
+                          mapRef.current?.clearPendingMapTap()
                           return
                         }
                         e.preventDefault()
                         e.stopPropagation()
                         mapRef.current?.clearPendingMapTap()
-                        closeMapToolsDock()
+                        closeMapToolsDock({ suppressMapFollowupMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS })
                       }}
                     />
                   ) : null}
-                  {isNarrow ? (
-                    <>
-                      <div
-                        aria-hidden
-                        style={{ flexShrink: 0, width: narrowMapMenuOuterW, pointerEvents: 'none' }}
-                      />
-                      {mapTopNarrowTopChromeSearchOnly}
-                      <div
-                        aria-hidden
-                        style={{ flexShrink: 0, width: narrowMapMenuOuterW, pointerEvents: 'none' }}
-                      />
-                    </>
-                  ) : (
-                    mapTopWideChromeRow
-                  )}
+                  {mapTopWideChromeRow}
                 </div>
               ) : null}
               {isNarrow && showMapInMapColumn && !probativePlacementSession ? (
@@ -3837,112 +4427,121 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     pointerEvents: 'none',
                   }}
                 >
-                  {!mapLeftToolDockOpen ? (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: 'max(6px, env(safe-area-inset-top, 0px))',
-                        left: 'max(6px, env(safe-area-inset-left, 0px))',
-                        pointerEvents: 'auto',
-                        opacity: mapLeftDockProminent ? 1 : 0.45,
-                        transition: 'opacity 0.2s ease',
-                      }}
-                    >
-                      <button
-                        type="button"
-                        aria-label="Open map tools: views, filters, tracks, and photos"
-                        onClick={() => {
-                          mapToolsDockIgnoreOutsideUntilRef.current = performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
-                          if (caseTab === 'addresses' && locationDetailOpen) {
-                            setLocationDetailOpen(false)
-                          }
-                          if (caseTab === 'tracking' && selectedTrackPointId) {
-                            setSelectedTrackPointId(null)
-                          }
-                          setAddressDrawerDetailsOpen(false)
-                          setTrackDrawerDetailsOpen(false)
-                          setMapLeftToolDockOpen(true)
-                        }}
-                        style={narrowMapMenuHitSlopBtnStyleLeft}
-                      >
-                        <span style={mapDockMenuToggleFaceNarrowStyle} aria-hidden>
-                          ☰
-                        </span>
-                      </button>
-                    </div>
-                  ) : (
+                  {narrowMapTopShowsFloatingAddress ? (
                     <>
                       <div
-                        role="presentation"
-                        aria-hidden
+                        ref={narrowMobileMapTopChromeRowRef}
+                        data-vc-tour={VC_TOUR.caseControlPane}
                         style={{
                           position: 'absolute',
-                          inset: 0,
-                          zIndex: 0,
-                          background: 'rgba(17,24,39,0.22)',
-                          touchAction: 'none',
-                          pointerEvents: 'auto',
-                        }}
-                        onPointerDown={(e) => {
-                          if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
-                            e.preventDefault()
-                            e.stopPropagation()
-                            return
-                          }
-                          e.preventDefault()
-                          e.stopPropagation()
-                          mapRef.current?.clearPendingMapTap()
-                          closeMapToolsDock()
-                        }}
-                      />
-                      <div
-                        style={{
-                          position: 'absolute',
-                          top: 'max(6px, env(safe-area-inset-top, 0px))',
-                          left: 'max(6px, env(safe-area-inset-left, 0px))',
-                          zIndex: 1,
-                          maxWidth: 'min(280px, calc(100vw - 24px))',
-                          pointerEvents: 'auto',
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          zIndex: 3,
+                          paddingTop: narrowMapTopChromeInsetTopStr,
+                          paddingLeft: narrowMapTopChromeInsetLeftStr,
+                          paddingRight: narrowMapTopChromeInsetRightStr,
+                          boxSizing: 'border-box',
+                          pointerEvents: 'none',
                         }}
                       >
-                        <div style={narrowMapDockExpandedGlassShell}>
+                        <div style={mapTopNarrowUnifiedToolbarGlassStyle}>
                           <button
                             type="button"
-                            aria-label="Close map tools"
-                            onClick={closeMapToolsDock}
-                            style={narrowMapMenuHitSlopBtnStyleLeft}
+                            aria-label={
+                              mapLeftToolDockOpen
+                                ? 'Close map tools'
+                                : 'Open map tools: views, filters, tracks, and photos'
+                            }
+                            onClick={() => {
+                              mapToolsDockIgnoreOutsideUntilRef.current =
+                                performance.now() + MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS
+                              if (mapLeftToolDockOpen) {
+                                closeMapToolsDock()
+                                return
+                              }
+                              if (caseTab === 'addresses' && locationDetailOpen) {
+                                setLocationDetailOpen(false)
+                              }
+                              if (caseTab === 'tracking' && selectedTrackPointId) {
+                                setSelectedTrackPointId(null)
+                              }
+                              setAddressMapModalOpen(false)
+                              setTrackMapModalOpen(false)
+                              setTrackMapTimeModalOpen(false)
+                              setMapLeftToolDockOpen(true)
+                            }}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              padding: 0,
+                              margin: 0,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                              WebkitTapHighlightColor: 'transparent',
+                              pointerEvents: 'auto',
+                            }}
                           >
                             <span style={mapDockMenuToggleFaceNarrowStyle} aria-hidden>
-                              ☰
+                              <VcCaseMapLayersGlyph size={MAP_LAYERS_GLYPH_PX} />
                             </span>
                           </button>
-                          {renderDockSectionButton('views', 'Views')}
-                          {renderDockSectionButton('filters', 'Filters')}
-                          {renderDockSectionButton('tracks', 'Tracks')}
-                          {renderDockSectionButton('photos', 'Photos')}
-                          {renderDockSectionButton('dvr', 'DVR calculator')}
-                          {mapToolsDockSectionPanels}
+                          <div
+                            ref={narrowMapAddressRef}
+                            data-vc-tour={VC_TOUR.caseFloatingSearch}
+                            style={{
+                              flex: '1 1 0',
+                              minWidth: 0,
+                              pointerEvents: 'auto',
+                              position: 'relative',
+                              zIndex: 55,
+                            }}
+                          >
+                            {renderAddAddressSearch(true, {
+                              glassChrome: true,
+                              narrowCondensed: true,
+                              mapFloatingPart: 'input',
+                            })}
+                            {renderAddAddressSearch(true, {
+                              glassChrome: true,
+                              narrowCondensed: true,
+                              mapFloatingPart: 'dropdown',
+                            })}
+                          </div>
                         </div>
                       </div>
+                      {mapLeftToolDockOpen ? (
+                        <>
+                          {/*
+                            Dismiss scrim lives in the map column (same as wide web) so it sits above the
+                            map canvas stack. A full-screen layer here sits under pointer-events:none on the
+                            dock shell; on some mobile engines touches can still reach the map below.
+                          */}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: `calc(max(6px, env(safe-area-inset-top, 0px)) + ${narrowMapTopRowHeightPx}px + 8px)`,
+                              left: 'max(10px, env(safe-area-inset-left, 0px))',
+                              zIndex: 1,
+                              maxWidth: 'min(280px, calc(100vw - 24px))',
+                              pointerEvents: 'auto',
+                            }}
+                          >
+                            <div style={narrowMapDockExpandedGlassShell}>
+                              {renderDockSectionButton('views', 'Views')}
+                              {renderDockSectionButton('filters', 'Filters')}
+                              {renderDockSectionButton('tracks', 'Tracks')}
+                              {renderDockSectionButton('photos', 'Photos')}
+                              {renderDockSectionButton('dvr', 'DVR calculator')}
+                              {mapToolsDockSectionPanels}
+                            </div>
+                          </div>
+                        </>
+                      ) : null}
                     </>
-                  )}
-                  {showMapTopTrackSelector ? (
-                    <div style={narrowMapTrackChipsDockWrapStyle}>
-                      {renderMapTopTrackSelector({
-                        flexDirection: 'column',
-                        flexWrap: 'nowrap',
-                        alignItems: 'stretch',
-                        justifyContent: 'flex-start',
-                        gap: 5,
-                        padding: '5px 6px',
-                        width: 'max-content',
-                        maxWidth: 'min(140px, calc(100vw - 220px))',
-                        maxHeight: 'min(240px, 42vh)',
-                        overflowX: 'visible',
-                        overflowY: 'auto',
-                        WebkitOverflowScrolling: 'touch',
-                      })}
-                    </div>
                   ) : null}
                 </div>
               ) : null}
@@ -3960,8 +4559,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   }}
                 >
                   {webWideMapToolsFloatingPill}
-                  {mapLeftToolDockOpen && !probativePlacementSession && !isNarrow ? (
+                  {mapLeftToolDockOpen && !probativePlacementSession ? (
                     <div
+                      ref={mapDockDismissScrimColumnRef}
                       role="presentation"
                       aria-hidden
                       style={{
@@ -3970,22 +4570,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         zIndex: 22,
                         background: 'rgba(17,24,39,0.16)',
                         touchAction: 'none',
+                        pointerEvents: 'auto',
                       }}
                       onPointerDown={(e) => {
                         if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
                           e.preventDefault()
                           e.stopPropagation()
+                          mapRef.current?.clearPendingMapTap()
                           return
                         }
                         e.preventDefault()
                         e.stopPropagation()
                         mapRef.current?.clearPendingMapTap()
-                        closeMapToolsDock()
+                        closeMapToolsDock({ suppressMapFollowupMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS })
                       }}
                     />
                   ) : null}
                   <div data-vc-tour={VC_TOUR.caseMapCanvas} style={{ position: 'absolute', inset: 0, zIndex: 1, minHeight: 0 }}>
-                  <AddressesMapLibre
+                    <AddressesMapLibre
                     key={props.caseId}
                     ref={mapRef}
                     caseTab={caseTab}
@@ -4010,6 +4612,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onEnsureFootprint={enqueueOutlineForLocation}
                     addrSearchBlocksMapClicks={addrSearchMapShieldActive}
                     mapInteractionFreezeUntilRef={addrMapInteractionFreezeUntilRef}
+                    mapLeftToolDockOpenRef={mapLeftToolDockOpenRef}
+                    blockMapCanvasPointerEvents={mapLeftToolDockOpen && !probativePlacementSession}
                     onRequestCanvassAdd={(input) => {
                       openAddLocationModal({
                         lat: input.lat,
@@ -4056,7 +4660,35 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onDoubleTapLocation={onDoubleTapLocationFromMap}
                     visitHeatmapGeojson={visitHeatmapGeojson}
                     showVisitHeatmap={canUseVisitHeatmap && visitHeatmapOn && caseTab === 'addresses'}
+                    basemap={mapBasemap}
                   />
+                    {mapLeftToolDockOpen && !probativePlacementSession ? (
+                      <div
+                        ref={mapDockDismissScrimInnerRef}
+                        role="presentation"
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 80,
+                          pointerEvents: 'auto',
+                          touchAction: 'none',
+                          background: 'transparent',
+                        }}
+                        onPointerDown={(e) => {
+                          if (performance.now() < mapToolsDockIgnoreOutsideUntilRef.current) {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            mapRef.current?.clearPendingMapTap()
+                            return
+                          }
+                          e.preventDefault()
+                          e.stopPropagation()
+                          mapRef.current?.clearPendingMapTap()
+                          closeMapToolsDock({ suppressMapFollowupMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS })
+                        }}
+                      />
+                    ) : null}
                   </div>
                   {addrSearchMapShieldActive ? (
                     <div
@@ -4082,129 +4714,208 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                     />
                   ) : null}
+                  {!(isNarrow && showAddressesListBottomSheet) ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        cycleCaseBasemap()
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      aria-label={`Basemap: ${caseBasemapAriaLabel(mapBasemap)}. Click for next.`}
+                      title={`Basemap: ${caseBasemapAriaLabel(mapBasemap)} — click to cycle (streets → satellite → dark)`}
+                      style={{
+                        position: 'absolute',
+                        left: 'max(10px, env(safe-area-inset-left, 0px))',
+                        bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 8px)`,
+                        zIndex: 44,
+                        ...mapLayersGlassChipFaceStyle,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <VcCaseMapBasemapSatelliteGlyph size={MAP_LAYERS_GLYPH_PX} />
+                    </button>
+                  ) : null}
+                  {!isNarrow && viewMode === 'map' && caseTab === 'addresses' && selected && locationDetailOpen ? (
+                    <div style={mapSelectionPillWrapStyleWebInMapLayer}>
+                      <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyleWebInMapLayerInteractive}>
+                        <MapAddressSelectionPill
+                          pillChrome="webDock"
+                          addressText={selected.addressText}
+                          status={selected.status}
+                          canDelete={canDeleteLocation(data, actorId, selected)}
+                          onOpenDetail={() => setAddressMapModalOpen(true)}
+                          onRemove={() => {
+                            void deleteLocation(actorId, selected.id)
+                            setSelectedId(null)
+                            setLocationDetailOpen(false)
+                            setAddressMapModalOpen(false)
+                          }}
+                          onDismissSelection={() => {
+                            setSelectedId(null)
+                            setLocationDetailOpen(false)
+                            setAddressMapModalOpen(false)
+                            setProbativeFlow(null)
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : !isNarrow && viewMode === 'map' && caseTab === 'tracking' && selectedTrackPoint ? (
+                    <div style={mapSelectionPillWrapStyleWebInMapLayer}>
+                      <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyleWebInMapLayerInteractive}>
+                        <MapTrackSelectionPill
+                          pillChrome="webDock"
+                          trackLabel={selectedTrackLabel}
+                          stepIndex={selectedTrackPointStepIndex}
+                          trackColor={
+                            resolvedTrackColors.get(selectedTrackPoint.trackId) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+                          }
+                          canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
+                          condensed={false}
+                          onOpenDetail={() => {
+                            setTrackMapModalOpen(true)
+                          }}
+                          onRemove={() => {
+                            void deleteTrackPoint(actorId, selectedTrackPoint.id)
+                            setSelectedTrackPointId(null)
+                            setTrackStepUndoTargetId(null)
+                            setTrackMapPillShowFull(false)
+                            setTrackMapModalOpen(false)
+                            setTrackMapTimeModalOpen(false)
+                          }}
+                          onDismissSelection={() => {
+                            setSelectedTrackPointId(null)
+                            setTrackMapPillShowFull(false)
+                            setTrackMapModalOpen(false)
+                            setTrackMapTimeModalOpen(false)
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
               {showAddressesListBottomSheet ? (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    right: 0,
-                    bottom: mapStackBottom,
-                    maxHeight: 'min(48vh, 420px)',
-                    minHeight: 140,
-                    height: 'min(48vh, 420px)',
-                    zIndex: 35,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    pointerEvents: 'auto',
-                    background: '#fff',
-                    borderTop: '1px solid #e5e7eb',
-                    borderTopLeftRadius: 12,
-                    borderTopRightRadius: 12,
-                    boxShadow: '0 -4px 24px rgba(0,0,0,0.12)',
-                    overflow: 'hidden',
-                    minWidth: 0,
-                  }}
-                >
-                  {renderAddressesListContent('mapColumn')}
-                </div>
+                <>
+                  <div
+                    ref={addressesListDismissScrimRef}
+                    role="presentation"
+                    aria-hidden
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      bottom: mapStackBottom,
+                      zIndex: 34,
+                      background: 'rgba(17,24,39,0.2)',
+                      touchAction: 'none',
+                      pointerEvents: 'auto',
+                    }}
+                    onPointerDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      closeAddressesListViewFromOverlay()
+                    }}
+                  />
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      bottom: mapStackBottom,
+                      zIndex: 35,
+                      display: 'flex',
+                      flexDirection: 'row',
+                      justifyContent: 'center',
+                      alignItems: 'flex-end',
+                      paddingLeft: 'max(10px, env(safe-area-inset-left, 0px))',
+                      paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+                      paddingBottom: 'max(8px, env(safe-area-inset-bottom, 0px))',
+                      boxSizing: 'border-box',
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <div
+                      style={{
+                        pointerEvents: 'auto',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        width: 'fit-content',
+                        maxWidth: 'min(520px, calc(100% - 8px))',
+                        minWidth: 'min(280px, 100%)',
+                        maxHeight: 'min(48vh, 420px)',
+                        minHeight: 120,
+                        flexShrink: 1,
+                        ...vcLiquidGlassPanel,
+                        borderRadius: 16,
+                        overflow: 'hidden',
+                        boxSizing: 'border-box',
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      {renderAddressesListContent('mapColumn')}
+                    </div>
+                  </div>
+                </>
               ) : null}
 
-              {wideMapDrawerSeamBottomTab ? (
-                <div
-                  ref={mapDrawerSeamToggleRef}
-                  role="presentation"
-                  className="case-map-drawer-seam-anchor"
-                  style={{
-                    position: 'absolute',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    width: 'min(980px, calc(100% - 48px))',
-                    bottom: 0,
-                    height: 0,
-                    zIndex: 5100,
-                    pointerEvents: 'none',
-                  }}
-                >
-                  <MapPaneEdgeAnchor placement="drawerTopSeam">
-                    {caseTab === 'addresses' ? (
-                      <MapPaneEdgeToggle
-                        placement="drawerTopSeam"
-                        expanded={false}
-                        ariaLabel="Expand address details"
-                        onClick={() => setAddressDrawerDetailsOpen(true)}
-                      />
-                    ) : caseTab === 'tracking' ? (
-                      <MapPaneEdgeToggle
-                        placement="drawerTopSeam"
-                        expanded={false}
-                        ariaLabel="Expand step details"
-                        onClick={() => setTrackDrawerDetailsOpen(true)}
-                      />
-                    ) : null}
-                  </MapPaneEdgeAnchor>
+              {isNarrow && viewMode === 'map' && caseTab === 'addresses' && selected && locationDetailOpen ? (
+                <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyle}>
+                  <MapAddressSelectionPill
+                    pillLayout="hug"
+                    pillChrome="webDock"
+                    addressText={selected.addressText}
+                    status={selected.status}
+                    canDelete={canDeleteLocation(data, actorId, selected)}
+                    onOpenDetail={() => setAddressMapModalOpen(true)}
+                    onRemove={() => {
+                      void deleteLocation(actorId, selected.id)
+                      setSelectedId(null)
+                      setLocationDetailOpen(false)
+                      setAddressMapModalOpen(false)
+                    }}
+                    onDismissSelection={() => {
+                      setSelectedId(null)
+                      setLocationDetailOpen(false)
+                      setAddressMapModalOpen(false)
+                      setProbativeFlow(null)
+                    }}
+                  />
                 </div>
               ) : null}
-
-              {showMapDetailOverlayShell ? (
-                <div ref={caseMapDetailOverlayRef} style={mapPaneDetailOverlayStyle}>
-                  {caseTab === 'addresses' && selected && locationDetailOpen ? (
-                    <LocationDrawer
-                      key={selected.id}
-                      layout={mapDetailLayout}
-                      detailsOpen={addressDrawerDetailsOpen}
-                      onDetailsOpenChange={setAddressDrawerDetailsOpen}
-                      location={selected}
-                      buildingOutlineLoading={footprintLoadingIds.has(selected.id)}
-                      buildingOutlineFailed={footprintFailedIds.has(selected.id)}
-                      canEdit={canEditLocation(data, actorId, selected)}
-                      canDelete={canDeleteLocation(data, actorId, selected)}
-                      onClose={() => {
-                        setLocationDetailOpen(false)
-                        setProbativeFlow(null)
-                      }}
-                      onUpdate={(patch) => {
-                        if (patch.status != null && patch.status !== 'probativeFootage') {
-                          setProbativeFlow(null)
-                        }
-                        void updateLocation(actorId, selected.id, patch)
-                      }}
-                      onProbativeRequest={() =>
-                        setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: selected.id } })
-                      }
-                      onDelete={() => {
-                        void deleteLocation(actorId, selected.id)
-                        setSelectedId(null)
-                      }}
-                    />
-                  ) : caseTab === 'addresses' && !isNarrow && addressDrawerDetailsOpen ? (
-                    <WideMapNotesPlaceholder onDismiss={() => setAddressDrawerDetailsOpen(false)} />
-                  ) : caseTab === 'tracking' && selectedTrackPoint ? (
-                    <TrackPointDrawer
-                      key={selectedTrackPoint.id}
-                      layout={mapDetailLayout}
-                      detailsOpen={trackDrawerDetailsOpen}
-                      onDetailsOpenChange={setTrackDrawerDetailsOpen}
-                      point={selectedTrackPoint}
-                      trackLabel={selectedTrackLabel}
-                      stepIndex={selectedTrackPointStepIndex}
-                      canEdit={canEditTrackPoint(data, actorId, selectedTrackPoint)}
-                      canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
-                      onClose={() => setSelectedTrackPointId(null)}
-                      onUpdate={(patch) => void updateTrackPoint(actorId, selectedTrackPoint.id, patch)}
-                      onDelete={() => {
-                        void deleteTrackPoint(actorId, selectedTrackPoint.id)
-                        setSelectedTrackPointId(null)
-                        setTrackStepUndoTargetId(null)
-                      }}
-                    />
-                  ) : caseTab === 'tracking' && !isNarrow && trackDrawerDetailsOpen ? (
-                    <WideMapTrackStepPlaceholder onDismiss={() => setTrackDrawerDetailsOpen(false)} />
-                  ) : null}
+              {isNarrow && viewMode === 'map' && caseTab === 'tracking' && selectedTrackPoint ? (
+                <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyle}>
+                  <MapTrackSelectionPill
+                    pillLayout="hug"
+                    pillChrome="webDock"
+                    trackLabel={selectedTrackLabel}
+                    stepIndex={selectedTrackPointStepIndex}
+                    trackColor={
+                      resolvedTrackColors.get(selectedTrackPoint.trackId) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+                    }
+                    canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
+                    condensed={!trackMapPillShowFull}
+                    onOpenDetail={() => {
+                      setTrackMapPillShowFull(true)
+                      setTrackMapModalOpen(true)
+                    }}
+                    onRemove={() => {
+                      void deleteTrackPoint(actorId, selectedTrackPoint.id)
+                      setSelectedTrackPointId(null)
+                      setTrackStepUndoTargetId(null)
+                      setTrackMapPillShowFull(false)
+                      setTrackMapModalOpen(false)
+                      setTrackMapTimeModalOpen(false)
+                    }}
+                    onDismissSelection={() => {
+                      setSelectedTrackPointId(null)
+                      setTrackMapPillShowFull(false)
+                      setTrackMapModalOpen(false)
+                      setTrackMapTimeModalOpen(false)
+                    }}
+                  />
                 </div>
               ) : null}
+            </div>
           </div>
         </div>
       </WorkspaceShell>
@@ -4245,6 +4956,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   addCategoryInFlightRef.current = true
                   const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
                   const { addressText } = snapshot
+                  const dup = findExistingLocationForCanvassAdd(
+                    locations,
+                    lat,
+                    lon,
+                    addressText,
+                    footprintLoadingIds,
+                  )
+                  if (dup) {
+                    addCategoryInFlightRef.current = false
+                    closeAddLocationModal()
+                    setLocationDetailOpen(false)
+                    setSelectedId(dup.id)
+                    window.setTimeout(() => {
+                      const m = mapRef.current
+                      if (m) m.flyTo(dup.lat, dup.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+                    }, 0)
+                    return
+                  }
                   setAddLocationSaving(true)
                   try {
                     const id = await createLocation({
@@ -4289,7 +5018,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   fontWeight: 900,
                   fontSize: 12,
                   borderColor: statusColor(s),
-                  background: addLocationSaving ? 'white' : `${statusColor(s)}22`,
+                  background: addLocationSaving ? 'rgba(241, 245, 249, 0.92)' : `${statusColor(s)}22`,
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 8,
@@ -4315,6 +5044,133 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         </div>
       ) : null}
       </Modal>
+
+    <Modal
+      title={selected ? formatAddressLineForMapList(selected.addressText) : 'Address'}
+      open={addressMapModalOpen && !!selected}
+      onClose={() => setAddressMapModalOpen(false)}
+    >
+      {selected ? (
+        <LocationDrawer
+          key={selected.id}
+          layout="stack"
+          embedInModal
+          location={selected}
+          buildingOutlineLoading={footprintLoadingIds.has(selected.id)}
+          buildingOutlineFailed={footprintFailedIds.has(selected.id)}
+          canEdit={canEditLocation(data, actorId, selected)}
+          canDelete={canDeleteLocation(data, actorId, selected)}
+          onClose={() => setAddressMapModalOpen(false)}
+          onUpdate={(patch) => {
+            if (patch.status != null && patch.status !== 'probativeFootage') {
+              setProbativeFlow(null)
+            }
+            void updateLocation(actorId, selected.id, patch)
+          }}
+          onProbativeRequest={() => {
+            setAddressMapModalOpen(false)
+            setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: selected.id } })
+          }}
+          onDelete={() => {
+            void deleteLocation(actorId, selected.id)
+            setSelectedId(null)
+            setLocationDetailOpen(false)
+            setAddressMapModalOpen(false)
+          }}
+        />
+      ) : null}
+    </Modal>
+
+    <Modal
+      ariaLabel={
+        selectedTrackPoint
+          ? `${selectedTrackLabel ? `${selectedTrackLabel} · ` : ''}Step ${selectedTrackPointStepIndex}`
+          : 'Step'
+      }
+      title={
+        selectedTrackPoint ? (
+          <MapTrackQuickPickChip
+            size="modal"
+            trackColor={
+              resolvedTrackColors.get(selectedTrackPoint.trackId) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+            }
+            trackLabel={selectedTrackLabel}
+            stepIndex={selectedTrackPointStepIndex}
+          />
+        ) : (
+          'Step'
+        )
+      }
+      open={trackMapModalOpen && !!selectedTrackPoint}
+      onClose={() => setTrackMapModalOpen(false)}
+    >
+      {selectedTrackPoint ? (
+        <TrackPointDrawer
+          key={selectedTrackPoint.id}
+          layout="stack"
+          embedInModal
+          point={selectedTrackPoint}
+          trackLabel={selectedTrackLabel}
+          stepIndex={selectedTrackPointStepIndex}
+          canEdit={canEditTrackPoint(data, actorId, selectedTrackPoint)}
+          canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
+          onClose={() => setTrackMapModalOpen(false)}
+          onUpdate={(patch) => void updateTrackPoint(actorId, selectedTrackPoint.id, patch)}
+          onDelete={() => {
+            void deleteTrackPoint(actorId, selectedTrackPoint.id)
+            setSelectedTrackPointId(null)
+            setTrackStepUndoTargetId(null)
+            setTrackMapModalOpen(false)
+            setTrackMapTimeModalOpen(false)
+          }}
+        />
+      ) : null}
+    </Modal>
+
+    <Modal
+      title="Time on map"
+      open={trackMapTimeModalOpen && !!selectedTrackPoint}
+      onClose={() => setTrackMapTimeModalOpen(false)}
+    >
+      {selectedTrackPoint ? (
+        <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+          <DvrSingleDateTimePicker
+            legend="Subject time at this point"
+            legendHint="Optional"
+            value={timestampToDatetimeLocalValue(selectedTrackPoint.visitedAt)}
+            onChange={(s) => {
+              const v = parseDatetimeLocalToTimestamp(s)
+              void updateTrackPoint(
+                actorId,
+                selectedTrackPoint.id,
+                v == null ? { visitedAt: null, displayTimeOnMap: false } : { visitedAt: v },
+              )
+            }}
+            isNarrow={isNarrow}
+            clearable
+          />
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              cursor: canEditTrackPoint(data, actorId, selectedTrackPoint) ? 'pointer' : 'default',
+              fontSize: 13,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={selectedTrackPoint.displayTimeOnMap === true}
+              disabled={!canEditTrackPoint(data, actorId, selectedTrackPoint) || selectedTrackPoint.visitedAt == null}
+              onChange={(e) =>
+                void updateTrackPoint(actorId, selectedTrackPoint.id, { displayTimeOnMap: e.target.checked })
+              }
+            />
+            <span>Show time on map next to pin</span>
+          </label>
+        </div>
+      ) : null}
+    </Modal>
 
     <Modal
       title="Add track"
@@ -4466,25 +5322,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       variant="modal"
                       onToggle={toggleTrackMapVisibility}
                     />
-                    <input
-                      value={trackLabelDrafts[t.id] ?? t.label}
-                      readOnly={!canEditT}
-                      onFocus={() => {
-                        trackLabelFocusRef.current[t.id] = true
-                      }}
-                      onBlur={(e) => {
-                        trackLabelFocusRef.current[t.id] = false
-                        const v = e.currentTarget.value
-                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                        flushTrackLabelPersist(t.id, v)
-                      }}
-                      onChange={(e) => {
-                        const v = e.target.value
-                        setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                        scheduleTrackLabelPersist(t.id, v)
-                      }}
-                      style={{ ...field, flex: 1, minWidth: 0 }}
-                    />
+                    {renderTrackManagerNameField(t, canEditT, { ...field, flex: 1, minWidth: 0 })}
                   </div>
                   <div
                     style={{
@@ -4516,25 +5354,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     variant="modal"
                     onToggle={toggleTrackMapVisibility}
                   />
-                  <input
-                    value={trackLabelDrafts[t.id] ?? t.label}
-                    readOnly={!canEditT}
-                    onFocus={() => {
-                      trackLabelFocusRef.current[t.id] = true
-                    }}
-                    onBlur={(e) => {
-                      trackLabelFocusRef.current[t.id] = false
-                      const v = e.currentTarget.value
-                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                      flushTrackLabelPersist(t.id, v)
-                    }}
-                    onChange={(e) => {
-                      const v = e.target.value
-                      setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-                      scheduleTrackLabelPersist(t.id, v)
-                    }}
-                    style={field}
-                  />
+                  {renderTrackManagerNameField(t, canEditT, field)}
                   {kindSelect}
                   {colorInput}
                   {deleteCell}

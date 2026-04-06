@@ -1,9 +1,15 @@
 import { useState, type CSSProperties } from 'react'
 import { supabase } from '../lib/supabase'
 import { getPreferredTotpFactorId, verifyTotpChallenge } from '../lib/mfaAuth'
+import {
+  vcGlassBtnPrimary,
+  vcGlassFgDarkReadable,
+  vcGlassFieldOnContentSurface,
+  vcLiquidGlassInnerSurface,
+} from '../lib/vcLiquidGlass'
 
 const field: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  ...vcGlassFieldOnContentSurface,
   borderRadius: 10,
   padding: '10px 12px',
   width: '100%',
@@ -12,13 +18,9 @@ const field: CSSProperties = {
 }
 
 const btnPrimary: CSSProperties = {
-  border: '1px solid #111827',
-  borderRadius: 10,
-  padding: '12px 14px',
-  background: '#111827',
-  color: 'white',
-  fontWeight: 800,
-  cursor: 'pointer',
+  ...vcGlassBtnPrimary,
+  width: '100%',
+  boxSizing: 'border-box',
 }
 
 type Props = {
@@ -54,9 +56,21 @@ export function MfaTotpChallengePanel(props: Props) {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 14, maxWidth: 420, width: '100%' }}>
+    <div
+      style={{
+        ...vcLiquidGlassInnerSurface,
+        display: 'grid',
+        gap: 14,
+        maxWidth: 420,
+        width: '100%',
+        padding: 20,
+        borderRadius: 16,
+        boxSizing: 'border-box',
+        color: vcGlassFgDarkReadable,
+      }}
+    >
       <div style={{ fontWeight: 900, fontSize: 18 }}>Two-step verification</div>
-      <p style={{ margin: 0, fontSize: 14, color: '#4b5563', lineHeight: 1.45 }}>
+      <p style={{ margin: 0, fontSize: 14, color: '#475569', lineHeight: 1.45 }}>
         Open your authenticator app and enter the current code for VideoCanvass.
       </p>
       <label style={{ display: 'grid', gap: 6 }}>

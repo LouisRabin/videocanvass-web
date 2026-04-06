@@ -26,6 +26,16 @@ function migrateTrackPointUpdatedAt(data: AppData): AppData {
   }
 }
 
+function migrateTrackUpdatedAt(data: AppData): AppData {
+  return {
+    ...data,
+    tracks: data.tracks.map((t) => ({
+      ...t,
+      updatedAt: t.updatedAt ?? t.createdAt,
+    })),
+  }
+}
+
 function normalizeTrackPointSequences(data: AppData): AppData {
   const byTrack = new Map<string, TrackPoint[]>()
   for (const p of data.trackPoints) {
@@ -219,7 +229,9 @@ function migrateCaseOrgAndAttachments(data: AppData): AppData {
 export function normalizeAppData(data: AppData): AppData {
   return dedupeNearbyCaseLocations(
     migrateCreatedByUserIds(
-      normalizeTrackPointSequences(migrateTrackPointUpdatedAt(migrateCaseOrgAndAttachments(data))),
+      normalizeTrackPointSequences(
+        migrateTrackPointUpdatedAt(migrateTrackUpdatedAt(migrateCaseOrgAndAttachments(data))),
+      ),
     ),
   )
 }
@@ -407,7 +419,7 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
     deletedCaseCollaboratorKeys: [...delCollabKeys],
     cases: mergeById(locCases, remCases, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     locations: mergeById(locLocs, remLocs, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
-    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.createdAt),
+    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     trackPoints: mergeById(locPts, remPts, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
     users: mergeById(local.users, remote.users, (x) => x.id, (x) => x.createdAt),
     caseCollaborators: mergeCollaborators(locCollab, remCollab),

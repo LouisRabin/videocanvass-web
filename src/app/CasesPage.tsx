@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Layout } from './Layout'
 import { useStore } from '../lib/store'
-import { caseLastActivityMs, caseQuickCounts, casesAccessibleToUser } from '../lib/caseDashboard'
+import { caseLastActivityMs, caseQuickCounts } from '../lib/caseDashboard'
 import { canEditCaseMeta } from '../lib/casePermissions'
 import { Modal } from './Modal'
 import type { AppData, AppUser, CaseFile } from '../lib/types'
@@ -19,6 +19,18 @@ import { useTour } from './tour/TourContext'
 import { SHOW_TOUR_FIRST_RUN_PROMPT, TOUR_UI_ENABLED } from './tour/tourFlags'
 import { readTourFlag, tourCasesDoneKey, TOUR_CASES_PROMPT_DISMISSED_KEY, writeTourFlag } from './tour/tourStorage'
 import { VC_TOUR } from './tour/tourSteps'
+import {
+  vcGlassBtnPrimary,
+  vcGlassBtnSecondary,
+  vcGlassFgDarkReadable,
+  vcGlassFgMetaOnContent,
+  vcGlassFgMutedOnPanel,
+  vcGlassFgSecondaryOnContent,
+  vcGlassFieldOnContentSurface,
+  vcGlassHeaderBtn,
+  vcGlassHeaderBtnPrimary,
+  vcLiquidGlassInnerSurface,
+} from '../lib/vcLiquidGlass'
 
 function TeamMembersModalBody(props: {
   caseId: string
@@ -29,18 +41,18 @@ function TeamMembersModalBody(props: {
   onRemove: (collaboratorUserId: string) => void
 }) {
   const c = props.data.cases.find((x) => x.id === props.caseId)
-  if (!c) return <div style={{ color: '#6b7280' }}>Case not found.</div>
+  if (!c) return <div style={{ color: vcGlassFgSecondaryOnContent }}>Case not found.</div>
   const members = props.data.caseCollaborators.filter((cc) => cc.caseId === props.caseId)
   const eligible = props.data.users.filter(
     (u) => u.id !== c.ownerUserId && !members.some((m) => m.userId === u.id),
   )
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <p style={{ margin: 0, fontSize: 13, color: '#4b5563', lineHeight: 1.45 }}>
+      <p style={{ margin: 0, fontSize: 13, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
         Detectives listed here can open this case and contribute. No invitation or acceptance step.
       </p>
       {members.length === 0 ? (
-        <div style={{ color: '#6b7280', fontSize: 13 }}>No team members yet.</div>
+        <div style={{ color: vcGlassFgSecondaryOnContent, fontSize: 13 }}>No team members yet.</div>
       ) : (
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           {members.map((m) => {
@@ -48,7 +60,7 @@ function TeamMembersModalBody(props: {
             return (
               <li key={m.userId} style={{ marginBottom: 8 }}>
                 <span style={{ fontWeight: 700 }}>{u?.displayName ?? m.userId}</span>
-                <span style={{ color: '#6b7280' }}> · {u?.taxNumber ?? ''}</span>
+                <span style={{ color: vcGlassFgSecondaryOnContent }}> · {u?.taxNumber ?? ''}</span>
                 <button
                   type="button"
                   style={{ ...btn, marginLeft: 8, padding: '4px 8px', fontSize: 12 }}
@@ -79,7 +91,7 @@ function TeamMembersModalBody(props: {
   )
 }
 
-type ListTab = 'mine' | 'team' | 'all'
+type ListTab = 'mine' | 'team'
 
 export function CasesPage(props: {
   onOpenCase: (caseId: string) => void
@@ -109,7 +121,6 @@ export function CasesPage(props: {
     removeCaseCollaborator,
   } = useStore()
   const [listTab, setListTab] = useState<ListTab>('mine')
-  const [q, setQ] = useState('')
   const [showNewCaseForm, setShowNewCaseForm] = useState(false)
   const [editingCaseId, setEditingCaseId] = useState<string | null>(null)
   const [draftName, setDraftName] = useState('')
@@ -134,58 +145,14 @@ export function CasesPage(props: {
     )
   }, [data.cases, data.caseCollaborators, props.currentUser.id])
 
-  const accessibleCases = useMemo(() => casesAccessibleToUser(data, props.currentUser.id), [data, props.currentUser.id])
-
-  const [ownerFilter, setOwnerFilter] = useState<'all' | 'me' | string>('all')
-  const [unitFilter, setUnitFilter] = useState<'all' | 'none' | string>('all')
-  const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'open' | 'closed'>('all')
-
-  const ownerOptions = useMemo(() => {
-    const ids = new Set<string>()
-    for (const c of accessibleCases) {
-      if (c.ownerUserId) ids.add(c.ownerUserId)
-    }
-    return [...ids].sort()
-  }, [accessibleCases])
-
-  const unitOptions = useMemo(() => {
-    const ids = new Set<string>()
-    for (const c of accessibleCases) {
-      const u = c.unitId?.trim()
-      if (u) ids.add(u)
-    }
-    return [...ids].sort()
-  }, [accessibleCases])
+  const [lifecycleFilter, setLifecycleFilter] = useState<'open' | 'closed'>('open')
 
   const filtered = useMemo(() => {
-    const base = listTab === 'mine' ? mineCases : listTab === 'team' ? teamMemberCases : accessibleCases
-    let rows = base
-    if (lifecycleFilter === 'open') rows = rows.filter((c) => c.lifecycle !== 'closed')
-    if (lifecycleFilter === 'closed') rows = rows.filter((c) => c.lifecycle === 'closed')
-    if (unitFilter === 'none') rows = rows.filter((c) => !(c.unitId?.trim()))
-    else if (unitFilter !== 'all') rows = rows.filter((c) => c.unitId === unitFilter)
-    if (ownerFilter === 'me') rows = rows.filter((c) => c.ownerUserId === props.currentUser.id)
-    else if (ownerFilter !== 'all') rows = rows.filter((c) => c.ownerUserId === ownerFilter)
-
-    const needle = q.trim().toLowerCase()
-    if (!needle) return rows
-    return rows.filter((c) => {
-      return (
-        c.caseNumber.toLowerCase().includes(needle) ||
-        (c.description ?? '').toLowerCase().includes(needle)
-      )
-    })
-  }, [
-    listTab,
-    mineCases,
-    teamMemberCases,
-    accessibleCases,
-    lifecycleFilter,
-    unitFilter,
-    ownerFilter,
-    props.currentUser.id,
-    q,
-  ])
+    const base = listTab === 'mine' ? mineCases : teamMemberCases
+    return lifecycleFilter === 'open'
+      ? base.filter((c) => c.lifecycle !== 'closed')
+      : base.filter((c) => c.lifecycle === 'closed')
+  }, [listTab, mineCases, teamMemberCases, lifecycleFilter])
 
   const beginEditCase = useCallback((row: CaseFile) => {
     setEditingCaseId(row.id)
@@ -227,6 +194,23 @@ export function CasesPage(props: {
     props.onOpenCase(id)
   }
 
+  const handleCaseRowEnter = useCallback(
+    (c: CaseFile) => {
+      if (c.lifecycle === 'closed' && canEditCaseMeta(data, c.id, props.currentUser.id)) {
+        void updateCase(props.currentUser.id, c.id, { lifecycle: 'open' }).then(() => props.onOpenCase(c.id))
+        return
+      }
+      props.onOpenCase(c.id)
+    },
+    [data, props.currentUser.id, props.onOpenCase, updateCase],
+  )
+
+  const caseRowEnterLabel = useCallback(
+    (c: CaseFile) =>
+      c.lifecycle === 'closed' && canEditCaseMeta(data, c.id, props.currentUser.id) ? 'Reopen' : 'Open',
+    [data, props.currentUser.id],
+  )
+
   return (
     <>
     <Layout
@@ -238,31 +222,31 @@ export function CasesPage(props: {
           style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', minWidth: 0, maxWidth: '100%' }}
         >
           {TOUR_UI_ENABLED ? (
-            <button type="button" onClick={() => startTour('cases')} style={btn} disabled={tourOpen}>
+            <button type="button" onClick={() => startTour('cases')} style={vcGlassHeaderBtn} disabled={tourOpen}>
               Tour
             </button>
           ) : null}
-          <button onClick={() => setShowNewCaseForm(true)} style={btnPrimary}>
+          <button onClick={() => setShowNewCaseForm(true)} style={vcGlassHeaderBtnPrimary}>
             + New case
           </button>
           {props.onOpenAdminGlobal ? (
-            <button type="button" onClick={props.onOpenAdminGlobal} style={btn}>
+            <button type="button" onClick={props.onOpenAdminGlobal} style={vcGlassHeaderBtn}>
               Global results
             </button>
           ) : null}
           {relationalBackendEnabled() ? (
-            <button type="button" onClick={() => setMfaSecurityOpen(true)} style={btn}>
+            <button type="button" onClick={() => setMfaSecurityOpen(true)} style={vcGlassHeaderBtn}>
               Security / 2FA
             </button>
           ) : null}
-          <button onClick={props.onLogout} style={btn}>
+          <button onClick={props.onLogout} style={vcGlassHeaderBtn}>
             Sign out
           </button>
         </div>
       }
     >
       {!ready ? (
-        <div style={{ color: '#6b7280' }}>Loading…</div>
+        <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
       ) : (
         <div style={{ minWidth: 0, maxWidth: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
           {TOUR_UI_ENABLED && showCasesTourBanner ? (
@@ -270,21 +254,21 @@ export function CasesPage(props: {
               style={{
                 marginBottom: 12,
                 padding: '12px 14px',
-                borderRadius: 12,
-                border: '1px solid #e5e7eb',
-                background: '#f9fafb',
+                ...vcLiquidGlassInnerSurface,
+                borderRadius: 14,
                 display: 'flex',
                 flexWrap: 'wrap',
                 gap: 10,
                 alignItems: 'center',
                 justifyContent: 'space-between',
+                color: vcGlassFgDarkReadable,
               }}
             >
-              <span style={{ fontSize: 14, color: '#374151', fontWeight: 600 }}>New here? Take a quick tour of the case list.</span>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>New here? Take a quick tour of the case list.</span>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button
                   type="button"
-                  style={btnPrimary}
+                  style={vcGlassBtnPrimary}
                   onClick={() => {
                     setShowCasesTourBanner(false)
                     startTour('cases')
@@ -294,7 +278,7 @@ export function CasesPage(props: {
                 </button>
                 <button
                   type="button"
-                  style={btn}
+                  style={vcGlassBtnSecondary}
                   onClick={() => {
                     writeTourFlag(TOUR_CASES_PROMPT_DISMISSED_KEY, true)
                     setShowCasesTourBanner(false)
@@ -305,98 +289,65 @@ export function CasesPage(props: {
               </div>
             </div>
           ) : null}
-          <div data-vc-tour={VC_TOUR.casesTabsSearch} style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              onClick={() => {
-                setListTab('mine')
-                setEditingCaseId(null)
-              }}
-              style={{ ...btn, fontWeight: listTab === 'mine' ? 800 : 600 }}
-            >
-              My cases
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setListTab('team')
-                setEditingCaseId(null)
-              }}
-              style={{ ...btn, fontWeight: listTab === 'team' ? 800 : 600 }}
-            >
-              Team member
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setListTab('all')
-                setEditingCaseId(null)
-              }}
-              style={{ ...btn, fontWeight: listTab === 'all' ? 800 : 600 }}
-            >
-              All accessible
-            </button>
-          </div>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search case names…"
-            style={search}
-          />
           <div
+            data-vc-tour={VC_TOUR.casesTabsSearch}
             style={{
               display: 'flex',
-              flexWrap: 'wrap',
-              gap: 10,
-              alignItems: 'center',
+              gap: 8,
               marginBottom: 12,
-              fontSize: 13,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              rowGap: 10,
             }}
           >
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontWeight: 700, color: '#4b5563' }}>Owner</span>
-              <select
-                value={ownerFilter}
-                onChange={(e) => setOwnerFilter(e.target.value as 'all' | 'me' | string)}
-                style={filterSelect}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setListTab('mine')
+                  setEditingCaseId(null)
+                }}
+                style={{
+                  ...vcGlassHeaderBtn,
+                  fontWeight: listTab === 'mine' ? 800 : 600,
+                  background: listTab === 'mine' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.12)',
+                }}
               >
-                <option value="all">All</option>
-                <option value="me">Me</option>
-                {ownerOptions
-                  .filter((id) => id !== props.currentUser.id)
-                  .map((id) => (
-                    <option key={id} value={id}>
-                      {data.users.find((u) => u.id === id)?.displayName ?? id}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontWeight: 700, color: '#4b5563' }}>Unit</span>
-              <select
-                value={unitFilter}
-                onChange={(e) => setUnitFilter(e.target.value as 'all' | 'none' | string)}
-                style={filterSelect}
+                My cases
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setListTab('team')
+                  setEditingCaseId(null)
+                }}
+                style={{
+                  ...vcGlassHeaderBtn,
+                  fontWeight: listTab === 'team' ? 800 : 600,
+                  background: listTab === 'team' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.12)',
+                }}
               >
-                <option value="all">All</option>
-                <option value="none">Unassigned</option>
-                {unitOptions.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontWeight: 700, color: '#4b5563' }}>Status</span>
+                Team member
+              </button>
+            </div>
+            <label
+              style={{
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 13,
+                marginLeft: 'auto',
+              }}
+            >
+              <span style={{ fontWeight: 700, color: vcGlassFgMutedOnPanel }}>Status</span>
               <select
                 value={lifecycleFilter}
-                onChange={(e) => setLifecycleFilter(e.target.value as 'all' | 'open' | 'closed')}
+                onChange={(e) => setLifecycleFilter(e.target.value as 'open' | 'closed')}
                 style={filterSelect}
               >
-                <option value="all">Open + closed</option>
-                <option value="open">Open only</option>
-                <option value="closed">Closed only</option>
+                <option value="open">Open</option>
+                <option value="closed">Closed</option>
               </select>
             </label>
           </div>
@@ -479,17 +430,19 @@ export function CasesPage(props: {
 
           {filtered.length === 0 ? (
             <div style={empty}>
-              {listTab === 'mine'
-                ? 'No cases for this profile yet. Create one to start tracking addresses.'
-                : listTab === 'team'
-                  ? 'No shared cases yet. When another detective adds you to a case, it appears here.'
-                  : 'No cases match these filters, or you have no accessible cases.'}
+              {listTab === 'mine' && lifecycleFilter === 'open'
+                ? 'No open cases yet. Create one to start tracking addresses.'
+                : listTab === 'mine' && lifecycleFilter === 'closed'
+                  ? 'No closed cases.'
+                  : listTab === 'team' && lifecycleFilter === 'open'
+                    ? 'No open shared cases yet. When another detective adds you to a case, it appears here.'
+                    : 'No closed shared cases.'}
             </div>
           ) : (
             <div data-vc-tour={VC_TOUR.casesList} style={{ display: 'grid', gap: 8 }}>
               {filtered.map((c) => (
                 <div key={c.id} style={card}>
-                  {listTab === 'team' || (listTab === 'all' && c.ownerUserId !== props.currentUser.id) ? (
+                  {listTab === 'team' ? (
                     <div style={{ display: 'grid', gap: 6, minWidth: 0, width: '100%' }}>
                       {isNarrow ? (
                         <>
@@ -509,7 +462,7 @@ export function CasesPage(props: {
                                 minWidth: 0,
                                 fontWeight: 800,
                                 fontSize: 15,
-                                color: '#111827',
+                                color: vcGlassFgDarkReadable,
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
@@ -519,10 +472,10 @@ export function CasesPage(props: {
                             </div>
                             <button
                               type="button"
-                              onClick={() => props.onOpenCase(c.id)}
+                              onClick={() => handleCaseRowEnter(c)}
                               style={{ ...btn, flexShrink: 0, padding: '6px 8px', minHeight: 40 }}
                             >
-                              Open
+                              {caseRowEnterLabel(c)}
                             </button>
                           </div>
                           <div style={{ ...caseDescReadonly, cursor: 'default', marginTop: 0, WebkitLineClamp: 3 }}>
@@ -547,12 +500,12 @@ export function CasesPage(props: {
                               {(c.description ?? '').trim() ? c.description : '—'}
                             </div>
                           </div>
-                          <button type="button" onClick={() => props.onOpenCase(c.id)} style={{ ...btn, flexShrink: 0 }}>
-                            Open
+                          <button type="button" onClick={() => handleCaseRowEnter(c)} style={{ ...btn, flexShrink: 0 }}>
+                            {caseRowEnterLabel(c)}
                           </button>
                         </div>
                       )}
-                      <div style={{ color: '#6b7280', fontSize: 11, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                      <div style={caseListMetaLine}>
                         Owner:{' '}
                         {data.users.find((u) => u.id === c.ownerUserId)?.displayName ?? c.ownerUserId} ·{' '}
                         {c.lifecycle === 'closed' ? 'Closed' : 'Open'} · Updated {formatAppDateTime(c.updatedAt)}
@@ -561,7 +514,7 @@ export function CasesPage(props: {
                         const q = caseQuickCounts(data, c.id)
                         const last = caseLastActivityMs(data, c.id)
                         return (
-                          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                          <div style={caseListMetaCounts}>
                             {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks · Last activity{' '}
                             {formatAppDateTime(last)}
                           </div>
@@ -609,8 +562,8 @@ export function CasesPage(props: {
                             <button type="button" onClick={discardEditCase} style={btn}>
                               Discard
                             </button>
-                            <button type="button" onClick={() => props.onOpenCase(c.id)} style={btn}>
-                              Open
+                            <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
+                              {caseRowEnterLabel(c)}
                             </button>
                             <button
                               type="button"
@@ -680,8 +633,8 @@ export function CasesPage(props: {
                             <button type="button" onClick={discardEditCase} style={btn}>
                               Discard
                             </button>
-                            <button type="button" onClick={() => props.onOpenCase(c.id)} style={btn}>
-                              Open
+                            <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
+                              {caseRowEnterLabel(c)}
                             </button>
                             <button
                               type="button"
@@ -742,10 +695,10 @@ export function CasesPage(props: {
                             >
                               <button
                                 type="button"
-                                onClick={() => props.onOpenCase(c.id)}
+                                onClick={() => handleCaseRowEnter(c)}
                                 style={{ ...btn, padding: '6px 8px', minHeight: 40 }}
                               >
-                                Open
+                                {caseRowEnterLabel(c)}
                               </button>
                               <button
                                 type="button"
@@ -812,8 +765,8 @@ export function CasesPage(props: {
                               flexDirection: 'row',
                             }}
                           >
-                            <button type="button" onClick={() => props.onOpenCase(c.id)} style={btn}>
-                              Open
+                            <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
+                              {caseRowEnterLabel(c)}
                             </button>
                             <button type="button" onClick={() => setTeamModalCaseId(c.id)} style={btn}>
                               Team
@@ -830,10 +783,7 @@ export function CasesPage(props: {
                       )}
                       <div
                         style={{
-                          color: '#6b7280',
-                          fontSize: 11,
-                          overflowWrap: 'anywhere',
-                          wordBreak: 'break-word',
+                          ...caseListMetaLine,
                           display: 'flex',
                           flexWrap: 'wrap',
                           gap: 8,
@@ -861,7 +811,7 @@ export function CasesPage(props: {
                         const q = caseQuickCounts(data, c.id)
                         const last = caseLastActivityMs(data, c.id)
                         return (
-                          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                          <div style={caseListMetaCounts}>
                             {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks · Last activity{' '}
                             {formatAppDateTime(last)}
                           </div>
@@ -881,31 +831,34 @@ export function CasesPage(props: {
   )
 }
 
+const caseListMetaLine: React.CSSProperties = {
+  color: vcGlassFgMetaOnContent,
+  fontSize: 12,
+  lineHeight: 1.45,
+  fontWeight: 600,
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+}
+
+const caseListMetaCounts: React.CSSProperties = {
+  ...caseListMetaLine,
+  marginTop: 4,
+  fontWeight: 500,
+}
+
 const card: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 10,
+  ...vcLiquidGlassInnerSurface,
+  borderRadius: 12,
   padding: '10px 12px',
-  background: 'white',
   minWidth: 0,
   maxWidth: '100%',
   overflow: 'hidden',
   boxSizing: 'border-box',
-}
-
-const search: React.CSSProperties = {
-  width: '100%',
-  maxWidth: '100%',
-  minWidth: 0,
-  boxSizing: 'border-box',
-  border: '1px solid #e5e7eb',
-  borderRadius: 12,
-  padding: '10px 12px',
-  marginBottom: 8,
-  fontSize: 16,
+  color: vcGlassFgDarkReadable,
 }
 
 const filterSelect: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
+  ...vcGlassFieldOnContentSurface,
   borderRadius: 8,
   padding: '6px 8px',
   fontSize: 14,
@@ -914,50 +867,44 @@ const filterSelect: React.CSSProperties = {
 }
 
 const empty: React.CSSProperties = {
-  color: '#6b7280',
-  border: '1px dashed #e5e7eb',
+  color: vcGlassFgMutedOnPanel,
+  border: '1px dashed rgba(148, 163, 184, 0.45)',
   borderRadius: 14,
   padding: 16,
-  background: '#fafafa',
+  background: 'rgba(203, 213, 225, 0.2)',
+  backdropFilter: 'blur(14px) saturate(1.2)',
+  WebkitBackdropFilter: 'blur(14px) saturate(1.2)',
+  boxSizing: 'border-box',
 }
 
 const label: React.CSSProperties = {
   fontSize: 12,
-  color: '#6b7280',
+  color: vcGlassFgMetaOnContent,
   fontWeight: 700,
   marginBottom: 6,
 }
 
 const field: React.CSSProperties = {
+  ...vcGlassFieldOnContentSurface,
   width: '100%',
   maxWidth: '100%',
   minWidth: 0,
   boxSizing: 'border-box',
-  border: '1px solid #e5e7eb',
   borderRadius: 10,
   padding: '10px 12px',
-  background: 'white',
   fontSize: 16,
 }
 
 const btn: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 10,
-  padding: '8px 10px',
-  background: 'white',
-  cursor: 'pointer',
+  ...vcGlassBtnSecondary,
 }
 
 const btnPrimary: React.CSSProperties = {
-  ...btn,
-  borderColor: '#111827',
-  background: '#111827',
-  color: 'white',
-  fontWeight: 700,
+  ...vcGlassBtnPrimary,
 }
 
 const btnDanger: React.CSSProperties = {
-  ...btn,
+  ...vcGlassBtnSecondary,
   borderColor: '#fecaca',
   background: '#fff1f2',
   color: '#9f1239',
@@ -974,7 +921,7 @@ const caseTitleReadonly: React.CSSProperties = {
   fontSize: 15,
   textAlign: 'left',
   cursor: 'pointer',
-  color: '#111827',
+  color: vcGlassFgDarkReadable,
   borderRadius: 6,
   flex: '0 1 auto',
   maxWidth: 'min(240px, 46%)',
@@ -993,7 +940,7 @@ const caseDescReadonly: React.CSSProperties = {
   fontSize: 13,
   textAlign: 'left',
   cursor: 'pointer',
-  color: '#6b7280',
+  color: vcGlassFgSecondaryOnContent,
   borderRadius: 6,
   flex: '1 1 0',
   minWidth: 0,

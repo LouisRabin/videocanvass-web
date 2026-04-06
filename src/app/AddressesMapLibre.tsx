@@ -23,11 +23,24 @@ import {
   buildingFootprintRingFromRenderedFeatures,
   CARTO_VECTOR_BUILDING_LAYER_IDS,
 } from '../lib/vectorTileBuilding'
+import { findExistingLocationForCanvassAdd } from './casePageHelpers'
 
 // See docs/CODEMAP.md; geocode/footprint policy in HANDOFF.md.
 
 const MAP_LONG_PRESS_MS = 550
 const MAP_LONG_PRESS_MOVE_PX2 = 64
+
+/**
+ * MapLibre's compact attribution initializes with `maplibregl-compact-show`, which shows full text.
+ * Strip it so only the "i" chip shows until the user toggles (same as MapLibre's own collapse state).
+ */
+function collapseMaplibreAttributionToCompactChip(map: GlMap) {
+  const el = map.getContainer().querySelector<HTMLElement>('.maplibregl-ctrl-attrib.maplibregl-compact')
+  if (!el?.classList.contains('maplibregl-compact-show')) return
+  el.classList.remove('maplibregl-compact-show')
+  el.setAttribute('open', '')
+}
+
 /*
  * Table of contents (main component below):
  * - Exported types: UnifiedCaseMapHandle, MapTrackingInteraction, AddressesMapLibreProps
@@ -41,7 +54,6 @@ import {
   buildPinCollection,
   buildTrackWaypointClusterCollection,
   buildTracksData,
-  CARTO_VOYAGER_STYLE,
   CLUSTER_MAX_ZOOM,
   CLUSTER_RADIUS_PX,
   easeClusterExpansion,
@@ -53,6 +65,8 @@ import {
   VIEWPORT_OUTLINE_PRELOAD_BOUNDS_PAD,
   VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS,
   VIEWPORT_OUTLINE_PRELOAD_MAX,
+  resolveCaseMapBasemapStyle,
+  type VcCaseMapBasemapId,
 } from './addressesMapLibreHelpers'
 
 export type UnifiedCaseMapHandle = {
@@ -63,6 +77,8 @@ export type UnifiedCaseMapHandle = {
   getCenter: () => { lat: number; lon: number } | null
   /** Cancel deferred canvass single-tap so a dismiss tap does not select/add after overlay/pointer guard handling. */
   clearPendingMapTap: () => void
+  /** Ignore map click handling until `performance.now()` + ms (extends any existing deadline). */
+  suppressMapClicksFor: (ms: number) => void
 }
 
 export type MapTrackingInteraction = {
@@ -88,6 +104,8 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
   onDoubleTapTrackPoint?: (pointId: string) => void
   /** When false, low-zoom cluster layers replace these markers. */
   showMarkers?: boolean
+  mapLeftToolDockOpenRef?: MutableRefObject<boolean>
+  blockMapCanvasPointerEvents?: boolean
 }) {
   const waypointDblTapRef = useRef<{ id: string; t: number; x: number; y: number } | null>(null)
   const WPT_DBL_MS = 340
@@ -110,7 +128,7 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
       const n = i + 1
       const ring = props.selectedPointId === p.id ? '0 0 0 3px #111827' : '0 0 0 2px #fff'
       const canManip = props.canManipulatePoint(p.id)
-      const draggable = !!(canManip && props.draggable && props.onDragEndPoint)
+      const draggable = !!(canManip && props.draggable && props.onDragEndPoint && !props.blockMapCanvasPointerEvents)
       const interactive =
         (!!canManip && (!!props.onSelectPoint || draggable)) || !!props.onDoubleTapTrackPoint
 
@@ -121,9 +139,14 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
           latitude={p.lat}
           anchor="center"
           draggable={draggable}
-          style={{ zIndex: props.selectedPointId === p.id ? 40 : 20 + Math.min(i, 15) }}
+          style={{
+            zIndex: props.selectedPointId === p.id ? 40 : 20 + Math.min(i, 15),
+            pointerEvents: props.blockMapCanvasPointerEvents ? 'none' : 'auto',
+          }}
           onClick={(ev) => {
             ev.originalEvent?.stopPropagation?.()
+            if (props.blockMapCanvasPointerEvents) return
+            if (props.mapLeftToolDockOpenRef?.current) return
             if (props.onDoubleTapTrackPoint) {
               const oe = ev.originalEvent
               if (oe && 'clientX' in oe) {
@@ -184,6 +207,12 @@ const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(
 })
 
 const MAP_TIME_LABEL_OFFSET_MAX = 800
+/**
+ * When no custom drag position is saved (0,0), place the time chip off the pin so it does not cover the step marker.
+ * Screen space: +x right, +y down. Marker uses anchor="bottom", so negative y pulls the label upward from the pin.
+ */
+const DEFAULT_MAP_TIME_LABEL_OFFSET_X = 40
+const DEFAULT_MAP_TIME_LABEL_OFFSET_Y = -56
 
 function clampTimeLabelOffset(n: number): number {
   if (!Number.isFinite(n)) return 0
@@ -207,6 +236,8 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
   onDragEndLabel?: (pointId: string, offsetX: number, offsetY: number) => void
   /** When false (zoomed out), time chips and tethers are hidden. */
   showLabels?: boolean
+  mapLeftToolDockOpenRef?: MutableRefObject<boolean>
+  blockMapCanvasPointerEvents?: boolean
 }) {
   const maps = useMap()
   const mapRefFromCtx = maps.current
@@ -261,8 +292,12 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
       for (let i = 0; i < pts.length; i++) {
         const p = pts[i]!
         if (!p.displayTimeOnMap || p.visitedAt == null) continue
-        const mx = p.mapTimeLabelOffsetX ?? 0
-        const my = p.mapTimeLabelOffsetY ?? 0
+        let mx = p.mapTimeLabelOffsetX ?? 0
+        let my = p.mapTimeLabelOffsetY ?? 0
+        if (mx === 0 && my === 0) {
+          mx = DEFAULT_MAP_TIME_LABEL_OFFSET_X
+          my = DEFAULT_MAP_TIME_LABEL_OFFSET_Y
+        }
         let destLng = p.lon
         let destLat = p.lat
         if (gl) {
@@ -341,7 +376,7 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
       </Source>
       {rows.map((r) => {
         const sel = props.selectedPointId === r.point.id
-        const draggable = !!(r.canManip && props.onDragEndLabel)
+        const draggable = !!(r.canManip && props.onDragEndLabel && !props.blockMapCanvasPointerEvents)
         const ring = sel ? '0 0 0 3px #111827' : '0 0 0 1px #e5e7eb'
         return (
           <Marker
@@ -350,9 +385,11 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
             latitude={r.destLat}
             anchor="bottom"
             draggable={draggable}
-            style={{ zIndex: r.z }}
+            style={{ zIndex: r.z, pointerEvents: props.blockMapCanvasPointerEvents ? 'none' : 'auto' }}
             onClick={(ev) => {
               ev.originalEvent?.stopPropagation?.()
+              if (props.blockMapCanvasPointerEvents) return
+              if (props.mapLeftToolDockOpenRef?.current) return
               if (props.onDoubleTapTrackPoint) {
                 const oe = ev.originalEvent
                 if (oe && 'clientX' in oe) {
@@ -502,6 +539,13 @@ export type AddressesMapLibreProps = {
   addrSearchBlocksMapClicks?: boolean
   /** Parent sets `current` to a `performance.now()` deadline after dismissing search so deferred taps are ignored. */
   mapInteractionFreezeUntilRef?: MutableRefObject<number>
+  /** Narrow map tools dock open: block all tap resolution (tracking pick/add, canvass add), not only `onSelectLocation`. */
+  mapLeftToolDockOpenRef?: MutableRefObject<boolean>
+  /**
+   * When true: MapLibre drag/touch handlers off, no `onClick` callback, `pointer-events: none` on container/canvas,
+   * and markers ignore hits. Used while the map tools dock is open so phones cannot select through WebGL/markers.
+   */
+  blockMapCanvasPointerEvents?: boolean
   onRequestCanvassAdd: (input: {
     lat: number
     lon: number
@@ -547,6 +591,7 @@ export type AddressesMapLibreProps = {
   /** Visit-density heatmap (GeoJSON points with `weight`); drawn under canvass polygons. */
   visitHeatmapGeojson?: FeatureCollection | null
   showVisitHeatmap?: boolean
+  basemap: VcCaseMapBasemapId
 }
 
 function peekNearestTrackPointId(
@@ -726,7 +771,13 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         }
         mapClickPendingEventRef.current = null
         mapClickFirstTapRef.current = null
-        mapClickSuppressUntilRef.current = 0
+      },
+      suppressMapClicksFor(ms: number) {
+        if (!(ms > 0)) return
+        const until = performance.now() + ms
+        if (until > mapClickSuppressUntilRef.current) {
+          mapClickSuppressUntilRef.current = until
+        }
       },
     }))
 
@@ -741,6 +792,21 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         zoom: 15,
       }
     }, [props.resumeMapFocus, props.defaultCenter])
+
+    const mapStyle = useMemo(() => resolveCaseMapBasemapStyle(props.basemap), [props.basemap])
+
+    useEffect(() => {
+      const map = mapRef.current?.getMap()
+      if (!map) return
+      const run = () => collapseMaplibreAttributionToCompactChip(map)
+      run()
+      const t = window.setTimeout(run, 80)
+      const t2 = window.setTimeout(run, 240)
+      return () => {
+        window.clearTimeout(t)
+        window.clearTimeout(t2)
+      }
+    }, [mapStyle])
 
     const canvassFc = useMemo(
       () => buildCanvassCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
@@ -826,7 +892,47 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       }, VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS)
     }, [flushPreload])
 
+    const syncMapContainerPointerBlock = useCallback(() => {
+      const map = mapRef.current?.getMap()
+      if (!map) return
+      const block = propsRef.current.blockMapCanvasPointerEvents
+      const pe = block ? 'none' : ''
+      map.getContainer().style.pointerEvents = pe
+      map.getCanvasContainer().style.pointerEvents = pe
+      map.getCanvas().style.pointerEvents = pe
+    }, [])
+
+    useEffect(() => {
+      syncMapContainerPointerBlock()
+      return () => {
+        const map = mapRef.current?.getMap()
+        if (!map) return
+        map.getContainer().style.pointerEvents = ''
+        map.getCanvasContainer().style.pointerEvents = ''
+        map.getCanvas().style.pointerEvents = ''
+      }
+    }, [props.blockMapCanvasPointerEvents, syncMapContainerPointerBlock])
+
+    const onStyledataPointerBlockHandler = useCallback(() => {
+      if (propsRef.current.blockMapCanvasPointerEvents) syncMapContainerPointerBlock()
+    }, [syncMapContainerPointerBlock])
+
+    useEffect(() => {
+      return () => {
+        mapRef.current?.getMap()?.off('styledata', onStyledataPointerBlockHandler)
+      }
+    }, [onStyledataPointerBlockHandler])
+
     const onLoad = useCallback(() => {
+      const map0 = mapRef.current?.getMap()
+      if (map0) {
+        map0.off('styledata', onStyledataPointerBlockHandler)
+        map0.on('styledata', onStyledataPointerBlockHandler)
+        queueMicrotask(() => {
+          requestAnimationFrame(() => collapseMaplibreAttributionToCompactChip(map0))
+        })
+      }
+      queueMicrotask(() => syncMapContainerPointerBlock())
       if (didFitRef.current) return
       didFitRef.current = true
       const map = mapRef.current?.getMap()
@@ -879,7 +985,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       }
       setMapZoom(map.getZoom())
       setTimeout(schedulePreload, 650)
-    }, [schedulePreload])
+    }, [schedulePreload, syncMapContainerPointerBlock, onStyledataPointerBlockHandler])
 
     const syncZoomAndPreload = useCallback(() => {
       const map = mapRef.current?.getMap()
@@ -952,6 +1058,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           if (addrs && p.placementClickAddsTrackPoint) return
           if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
           if (p.addrSearchBlocksMapClicks) return
+          if (p.blockMapCanvasPointerEvents) return
+          if (p.mapLeftToolDockOpenRef?.current) return
           if (ev.pointerType === 'mouse' && ev.button !== 0) return
           clearHold()
           client0 = { x: ev.clientX, y: ev.clientY }
@@ -1110,6 +1218,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const runMapClickInteraction = useCallback(
       (e: MapLayerMouseEvent) => {
         const p = propsRef.current
+        if (p.blockMapCanvasPointerEvents) return
+        if (p.mapLeftToolDockOpenRef?.current) return
         if (performance.now() < mapClickSuppressUntilRef.current) return
         if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
         if (p.addrSearchBlocksMapClicks) return
@@ -1196,7 +1306,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           const addressText = (await reverseGeocodeAddressText(lat, lon).catch(() => null)) ?? provisional
           const text = addressText ?? provisional
           const cur = propsRef.current
-          const match = cur.findHit(lat, lon) ?? cur.findByAddressText(text)
+          const match = findExistingLocationForCanvassAdd(cur.locations, lat, lon, text, cur.footprintLoadingIds)
           if (match) {
             cur.onCanvassAddAddressResolved?.({
               lat,
@@ -1219,6 +1329,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const onClick = useCallback(
       (e: MapLayerMouseEvent) => {
         const p = propsRef.current
+        if (p.blockMapCanvasPointerEvents) return
+        if (p.mapLeftToolDockOpenRef?.current) return
         if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
         if (p.addrSearchBlocksMapClicks) return
         if (performance.now() < mapClickSuppressUntilRef.current) {
@@ -1343,15 +1455,24 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       [runMapClickInteraction],
     )
 
+    const mapHandlersOn = !props.blockMapCanvasPointerEvents
+
     return (
       <MapGL
         ref={mapRef}
         initialViewState={initialViewState}
-        mapStyle={CARTO_VOYAGER_STYLE}
+        mapStyle={mapStyle}
         style={{ width: '100%', height: '100%' }}
         doubleClickZoom={false}
-        attributionControl={false}
-        onClick={onClick}
+        dragPan={mapHandlersOn}
+        scrollZoom={mapHandlersOn}
+        boxZoom={mapHandlersOn}
+        dragRotate={mapHandlersOn}
+        keyboard={mapHandlersOn}
+        touchZoomRotate={mapHandlersOn}
+        touchPitch={mapHandlersOn}
+        attributionControl={{ compact: true }}
+        onClick={mapHandlersOn ? onClick : undefined}
         onLoad={onLoad}
         onMoveEnd={syncZoomAndPreload}
         onZoomEnd={syncZoomAndPreload}
@@ -1425,10 +1546,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
             longitude={l.lon}
             latitude={l.lat}
             anchor="center"
-            style={{ zIndex: 2 }}
+            style={{ zIndex: 2, pointerEvents: props.blockMapCanvasPointerEvents ? 'none' : 'auto' }}
             onClick={(e) => {
               const ev = (e as { originalEvent?: MouseEvent }).originalEvent
               ev?.stopPropagation?.()
+              if (propsRef.current.blockMapCanvasPointerEvents) return
+              if (propsRef.current.mapLeftToolDockOpenRef?.current) return
               props.onSelectLocation(l.id)
             }}
           >
@@ -1568,6 +1691,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           onDragEndPoint={props.onTrackPointDragEnd}
           onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
           showMarkers={showDetailOverlays}
+          mapLeftToolDockOpenRef={props.mapLeftToolDockOpenRef}
+          blockMapCanvasPointerEvents={props.blockMapCanvasPointerEvents}
         />
 
         <TrackTimeLabelsMapLibre
@@ -1581,6 +1706,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
           onDragEndLabel={props.onTrackTimeLabelDragEnd}
           showLabels={showDetailOverlays}
+          mapLeftToolDockOpenRef={props.mapLeftToolDockOpenRef}
+          blockMapCanvasPointerEvents={props.blockMapCanvasPointerEvents}
         />
       </MapGL>
     )

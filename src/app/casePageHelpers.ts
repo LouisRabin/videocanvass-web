@@ -195,6 +195,43 @@ export function findLocationByAddressText(locations: Location[], clickedAddressT
   return null
 }
 
+/** ~50 m — same doorway / building when geocoder labels or coords differ slightly. */
+const CANVASS_DUP_MAX_METERS = 50
+
+function distanceMetersApprox(aLat: number, aLon: number, bLat: number, bLon: number): number {
+  const dLat = (bLat - aLat) * 111_320
+  const dLon = (bLon - aLon) * 111_320 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180))
+  return Math.hypot(dLat, dLon)
+}
+
+/**
+ * Single saved pin per physical address: match normalized street line, footprint/bounds hit, or nearby coords.
+ */
+export function findExistingLocationForCanvassAdd(
+  locations: Location[],
+  lat: number,
+  lon: number,
+  addressText: string,
+  outlineLoadingIds?: Set<string>,
+): Location | null {
+  const byText = findLocationByAddressText(locations, addressText)
+  if (byText) return byText
+
+  const byHit = findLocationHitByMapClick(locations, lat, lon, outlineLoadingIds)
+  if (byHit) return byHit
+
+  let best: Location | null = null
+  let bestD = CANVASS_DUP_MAX_METERS + 1
+  for (const loc of locations) {
+    const d = distanceMetersApprox(lat, lon, loc.lat, loc.lon)
+    if (d < bestD && d <= CANVASS_DUP_MAX_METERS) {
+      bestD = d
+      best = loc
+    }
+  }
+  return best
+}
+
 /** ~13 m — tight hit target + map preview while a building outline is loading (not full Photon bbox). */
 const OUTLINE_LOADING_PIN_HALF_DEG = 0.00012
 

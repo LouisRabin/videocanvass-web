@@ -34,6 +34,13 @@
   --vc-pad-main-x: clamp(8px, 1.7vw, 14px);
   --vc-pad-main-dense-y: clamp(4px, 1vw, 6px);
   --vc-pad-main-dense-x: clamp(6px, 1.25vw, 10px);
+
+  /* Liquid glass (see src/lib/vcLiquidGlass.ts — keep blur in sync). */
+  --vc-liquid-glass-blur: blur(22px) saturate(1.45);
+  --vc-glass-fg-on-panel: #f8fafc;
+  --vc-glass-fg-muted: rgba(226, 232, 240, 0.9);
+  --vc-page-backdrop-mid: #334155;
+  --vc-page-backdrop-accent: #3b4f6a;
 }
 
 html,
@@ -46,8 +53,15 @@ body {
 body {
   margin: 0;
   font-size: var(--vc-fs-base);
-  background: #f3f4f6; /* slate-100 */
-  color: #111827; /* gray-900 */
+  background: linear-gradient(
+    165deg,
+    #1e293b 0%,
+    var(--vc-page-backdrop-mid) 34%,
+    var(--vc-page-backdrop-accent) 52%,
+    var(--vc-page-backdrop-mid) 74%,
+    #1e293b 100%
+  );
+  color: #f1f5f9;
   padding-left: env(safe-area-inset-left, 0);
   padding-right: env(safe-area-inset-right, 0);
   padding-top: env(safe-area-inset-top, 0);
@@ -119,4 +133,10 @@ button {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Case manager search on page backdrop — placeholder matches liquid-glass slate family */
+.vc-glass-search-field::placeholder {
+  color: rgba(51, 65, 85, 0.78);
+  font-weight: 600;
 }

@@ -17,6 +17,15 @@ import { getPreferredTotpFactorId, sessionNeedsTotpStep } from './lib/mfaAuth'
 import type { AppUser } from './lib/types'
 import { TourProvider } from './app/tour/TourContext'
 import { TOUR_UI_ENABLED } from './app/tour/tourFlags'
+import {
+  vcAuthMainCenterWrap,
+  vcGlassBtnPrimary,
+  vcGlassFgDarkReadable,
+  vcGlassFgMutedOnPanel,
+  vcGlassFieldOnContentSurface,
+  vcGlassHeaderBtn,
+  vcLiquidGlassInnerSurface,
+} from './lib/vcLiquidGlass'
 
 function App() {
   const targetMode = useTargetMode()
@@ -125,7 +134,7 @@ function SessionGate() {
   if (!ready) {
     return (
       <Layout title="VideoCanvass">
-        <div style={{ color: '#6b7280' }}>Loading…</div>
+        <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
       </Layout>
     )
   }
@@ -137,7 +146,7 @@ function SessionGate() {
     if (mfaGate === 'checking') {
       return (
         <Layout title="VideoCanvass" subtitle="Checking security…">
-          <div style={{ color: '#6b7280' }}>Loading…</div>
+          <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
         </Layout>
       )
     }
@@ -157,13 +166,13 @@ function SessionGate() {
     if (mfaGate === 'unsupported') {
       return (
         <Layout title="VideoCanvass" subtitle="Sign-in issue">
-          <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
-            <p style={{ margin: 0, color: '#4b5563', lineHeight: 1.5 }}>
+          <div style={{ ...vcLiquidGlassInnerSurface, display: 'grid', gap: 12, maxWidth: 480, padding: 16, borderRadius: 14 }}>
+            <p style={{ margin: 0, color: vcGlassFgDarkReadable, lineHeight: 1.5 }}>
               Your account requires MFA, but this app only supports authenticator-app (TOTP) codes right now. Phone/SMS or WebAuthn factors cannot be used here yet.
             </p>
             <button
               type="button"
-              style={{ border: '1px solid #111827', borderRadius: 10, padding: '10px 12px', background: '#111827', color: 'white', fontWeight: 800 }}
+              style={vcGlassBtnPrimary}
               onClick={async () => {
                 if (supabase) await supabase.auth.signOut()
                 applySession(null)
@@ -179,7 +188,7 @@ function SessionGate() {
     if (!relationalUser) {
       return (
         <Layout title="VideoCanvass">
-          <div style={{ color: '#6b7280' }}>Loading profile…</div>
+          <div style={{ color: vcGlassFgMutedOnPanel }}>Loading profile…</div>
         </Layout>
       )
     }
@@ -216,91 +225,94 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
     width: '100%',
     maxWidth: 460,
     boxSizing: 'border-box',
-    border: '1px solid #e5e7eb',
+    ...vcLiquidGlassInnerSurface,
     borderRadius: 14,
-    background: 'white',
     padding: 16,
     display: 'grid',
     gap: 12,
+    color: vcGlassFgDarkReadable,
   }
 
   return (
     <Layout title="VideoCanvass POC" subtitle="Mock sign-in (demo only)">
-      <div style={pickerCardStyle}>
-        <div style={{ fontWeight: 800 }}>Choose demo user</div>
-        {narrow ? (
-          <div
-            role="listbox"
-            aria-label="Demo users"
-            style={{ display: 'grid', gap: 8, maxHeight: 'min(50vh, 360px)', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}
-          >
-            {props.users.map((u) => {
-              const on = u.id === selectedUserId
-              return (
-                <button
-                  type="button"
-                  key={u.id}
-                  role="option"
-                  aria-selected={on}
-                  onClick={() => setSelectedUserId(u.id)}
-                  style={{
-                    border: on ? '2px solid #111827' : '1px solid #e5e7eb',
-                    borderRadius: 10,
-                    padding: '12px 14px',
-                    textAlign: 'left',
-                    background: on ? '#f9fafb' : 'white',
-                    cursor: 'pointer',
-                    display: 'grid',
-                    gap: 4,
-                    minWidth: 0,
-                  }}
-                >
-                  <span style={{ fontWeight: 800, fontSize: 15, wordBreak: 'break-word' }}>{u.displayName}</span>
-                  <span style={{ fontSize: 13, color: '#4b5563', wordBreak: 'break-all' }}>{u.email}</span>
-                  <span style={{ fontSize: 12, color: '#6b7280' }}>{u.taxNumber}</span>
-                </button>
-              )
-            })}
-          </div>
-        ) : (
-          <>
-            <select
-              value={selectedUserId}
-              onChange={(e) => setSelectedUserId(e.target.value)}
-              style={{
-                border: '1px solid #e5e7eb',
-                borderRadius: 10,
-                padding: '10px 12px',
-                width: '100%',
-                maxWidth: '100%',
-                boxSizing: 'border-box',
-                fontSize: 16,
-              }}
+      <div style={vcAuthMainCenterWrap}>
+        <div style={pickerCardStyle}>
+          <div style={{ fontWeight: 800 }}>Choose demo user</div>
+          {narrow ? (
+            <div
+              role="listbox"
+              aria-label="Demo users"
+              style={{ display: 'grid', gap: 8, maxHeight: 'min(50vh, 360px)', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}
             >
-              {props.users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.displayName} — {u.email} — {u.taxNumber}
-                </option>
-              ))}
-            </select>
-            {selectedUser ? (
-              <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.45, wordBreak: 'break-word' }}>
-                <span style={{ fontWeight: 800 }}>{selectedUser.displayName}</span>
-                {' · '}
-                {selectedUser.email}
-                {' · '}
-                {selectedUser.taxNumber}
-              </div>
-            ) : null}
-          </>
-        )}
-        <button
-          onClick={() => props.onSelectUser(selectedUserId)}
-          style={{ border: '1px solid #111827', borderRadius: 10, padding: '10px 12px', background: '#111827', color: 'white', fontWeight: 800 }}
-          disabled={!selectedUserId}
-        >
-          Enter app
-        </button>
+              {props.users.map((u) => {
+                const on = u.id === selectedUserId
+                return (
+                  <button
+                    type="button"
+                    key={u.id}
+                    role="option"
+                    aria-selected={on}
+                    onClick={() => setSelectedUserId(u.id)}
+                    style={{
+                      border: on ? '2px solid rgba(15, 23, 42, 0.35)' : '1px solid rgba(148, 163, 184, 0.5)',
+                      borderRadius: 10,
+                      padding: '12px 14px',
+                      textAlign: 'left',
+                      background: on ? 'rgba(203, 213, 225, 0.55)' : 'rgba(226, 232, 240, 0.35)',
+                      cursor: 'pointer',
+                      display: 'grid',
+                      gap: 4,
+                      minWidth: 0,
+                    }}
+                  >
+                    <span style={{ fontWeight: 800, fontSize: 15, wordBreak: 'break-word' }}>{u.displayName}</span>
+                    <span style={{ fontSize: 13, color: '#4b5563', wordBreak: 'break-all' }}>{u.email}</span>
+                    <span style={{ fontSize: 12, color: '#6b7280' }}>{u.taxNumber}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <>
+              <select
+                value={selectedUserId}
+                onChange={(e) => setSelectedUserId(e.target.value)}
+                style={{
+                  ...vcGlassFieldOnContentSurface,
+                  borderRadius: 10,
+                  padding: '10px 12px',
+                  width: '100%',
+                  maxWidth: '100%',
+                  boxSizing: 'border-box',
+                  fontSize: 16,
+                }}
+              >
+                {props.users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.displayName} — {u.email} — {u.taxNumber}
+                  </option>
+                ))}
+              </select>
+              {selectedUser ? (
+                <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.45, wordBreak: 'break-word' }}>
+                  <span style={{ fontWeight: 800 }}>{selectedUser.displayName}</span>
+                  {' · '}
+                  {selectedUser.email}
+                  {' · '}
+                  {selectedUser.taxNumber}
+                </div>
+              ) : null}
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => props.onSelectUser(selectedUserId)}
+            style={{ ...vcGlassBtnPrimary, width: '100%', boxSizing: 'border-box' }}
+            disabled={!selectedUserId}
+          >
+            Enter app
+          </button>
+        </div>
       </div>
     </Layout>
   )
@@ -337,15 +349,12 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
       <Layout
         title="Case not found"
         right={
-          <button
-            onClick={() => setRoute({ name: 'cases' })}
-            style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '8px 10px', background: 'white' }}
-          >
+          <button type="button" onClick={() => setRoute({ name: 'cases' })} style={vcGlassHeaderBtn}>
             Back
           </button>
         }
       >
-        <div style={{ color: '#6b7280' }}>This case may have been deleted.</div>
+        <div style={{ color: vcGlassFgMutedOnPanel }}>This case may have been deleted.</div>
       </Layout>
     )
   }

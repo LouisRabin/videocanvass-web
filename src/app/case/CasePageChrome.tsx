@@ -4,13 +4,21 @@ import { statusColor } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
 import { DvrSingleDateTimePicker } from '../ProbativeDvrFlow'
 import { formatAddressLineForMapList } from '../casePageHelpers'
+import {
+  vcGlassBtnPrimary,
+  vcGlassBtnSecondary,
+  vcGlassFgDarkReadable,
+  vcGlassFgOnPanel,
+  vcGlassFieldOnContentSurface,
+  vcLiquidGlassInnerSurface,
+  vcLiquidGlassPanel,
+  vcLiquidGlassPanelDense,
+} from '../../lib/vcLiquidGlass'
 
 const btn: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  ...vcGlassBtnSecondary,
   borderRadius: 'var(--vc-radius-sm)',
   padding: 'var(--vc-space-sm) var(--vc-space-md)',
-  background: 'white',
-  cursor: 'pointer',
   fontWeight: 800,
   fontSize: 'var(--vc-fs-sm)',
   whiteSpace: 'nowrap',
@@ -19,9 +27,9 @@ const btn: CSSProperties = {
 export function viewModeBtn(active: boolean): CSSProperties {
   return {
     ...btn,
-    borderColor: active ? '#111827' : '#e5e7eb',
-    background: active ? '#111827' : 'white',
-    color: active ? 'white' : '#111827',
+    borderColor: active ? '#111827' : 'rgba(148, 163, 184, 0.45)',
+    background: active ? '#111827' : 'rgba(226, 232, 240, 0.45)',
+    color: active ? '#f8fafc' : '#111827',
   }
 }
 
@@ -33,18 +41,19 @@ const btnDanger: CSSProperties = {
 }
 
 const btnPrimary: CSSProperties = {
-  ...btn,
-  borderColor: '#111827',
-  background: '#111827',
-  color: 'white',
+  ...vcGlassBtnPrimary,
+  borderRadius: 'var(--vc-radius-sm)',
+  padding: 'var(--vc-space-sm) var(--vc-space-md)',
   fontWeight: 800,
+  fontSize: 'var(--vc-fs-sm)',
+  whiteSpace: 'nowrap',
 }
 
 export const card: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  ...vcLiquidGlassInnerSurface,
   borderRadius: 'var(--vc-radius-xl)',
   padding: 'var(--vc-space-md)',
-  background: 'white',
+  color: vcGlassFgDarkReadable,
 }
 
 export const mapTopBar: CSSProperties = {
@@ -52,8 +61,12 @@ export const mapTopBar: CSSProperties = {
   justifyContent: 'space-between',
   gap: 'var(--vc-space-sm)',
   padding: 'var(--vc-space-sm) var(--vc-space-sm) var(--vc-space-md)',
-  borderBottom: '1px solid #e5e7eb',
-  background: '#ffffff',
+  ...vcLiquidGlassPanel,
+  borderRadius: 0,
+  border: 'none',
+  borderBottom: '1px solid rgba(255,255,255,0.14)',
+  boxShadow: '0 6px 20px rgba(0, 0, 0, 0.15)',
+  color: vcGlassFgOnPanel,
   alignItems: 'center',
   flexWrap: 'wrap',
 }
@@ -68,14 +81,13 @@ export const label: CSSProperties = {
 }
 
 export const field: CSSProperties = {
+  ...vcGlassFieldOnContentSurface,
   width: '100%',
   minWidth: 0,
   maxWidth: '100%',
   boxSizing: 'border-box',
-  border: '1px solid #e5e7eb',
   borderRadius: 12,
   padding: '10px 12px',
-  background: 'white',
   fontSize: 16,
 }
 
@@ -83,9 +95,9 @@ export const field: CSSProperties = {
 export const caseMetaInlineNameEdit: CSSProperties = {
   margin: 0,
   marginLeft: -4,
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(255,255,255,0.35)',
   borderRadius: 'var(--vc-radius-sm)',
-  background: '#fff',
+  background: 'rgba(226, 232, 240, 0.88)',
   font: 'inherit',
   fontWeight: 800,
   fontSize: 'var(--vc-fs-control)',
@@ -97,17 +109,18 @@ export const caseMetaInlineNameEdit: CSSProperties = {
   width: '100%',
   minHeight: 44,
   outline: 'none',
+  color: vcGlassFgDarkReadable,
 }
 
 export const caseMetaInlineDescEdit: CSSProperties = {
   margin: 0,
   marginLeft: -4,
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(255,255,255,0.35)',
   borderRadius: 8,
-  background: '#fff',
+  background: 'rgba(226, 232, 240, 0.88)',
   font: 'inherit',
   fontSize: 16,
-  color: '#111827',
+  color: vcGlassFgDarkReadable,
   padding: '8px 10px',
   boxSizing: 'border-box',
   flex: '1 1 0',
@@ -124,22 +137,22 @@ export const caseMetaInlineDescEdit: CSSProperties = {
 }
 
 export const select: CSSProperties = {
+  ...vcGlassFieldOnContentSurface,
   minWidth: 0,
   maxWidth: '100%',
   boxSizing: 'border-box',
-  border: '1px solid #e5e7eb',
   borderRadius: 'var(--vc-radius-md)',
   padding: 'var(--vc-space-sm) var(--vc-space-md)',
-  background: 'white',
   fontWeight: 800,
   fontSize: 'var(--vc-fs-control)',
 }
 
 export const suggestionBtn: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(15, 23, 42, 0.1)',
   borderRadius: 'var(--vc-radius-md)',
   padding: 'var(--vc-space-sm) var(--vc-space-md)',
-  background: '#f9fafb',
+  background: 'rgba(226, 232, 240, 0.55)',
+  color: vcGlassFgDarkReadable,
   cursor: 'pointer',
   textAlign: 'left',
   fontWeight: 700,
@@ -149,10 +162,10 @@ export const suggestionBtn: CSSProperties = {
 }
 
 const chip: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(15, 23, 42, 0.1)',
   borderRadius: 999,
   padding: '6px 10px',
-  background: 'white',
+  background: 'rgba(226, 232, 240, 0.55)',
   cursor: 'pointer',
   display: 'inline-flex',
   alignItems: 'center',
@@ -160,17 +173,17 @@ const chip: CSSProperties = {
 }
 
 const pill: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(15, 23, 42, 0.1)',
   borderRadius: 999,
   padding: '8px 10px',
-  background: 'white',
+  background: 'rgba(226, 232, 240, 0.55)',
   cursor: 'pointer',
   display: 'inline-flex',
   alignItems: 'center',
   gap: 8,
 }
 
-const mapDrawerRemoveBtnStyle: CSSProperties = {
+export const mapDrawerRemoveBtnStyle: CSSProperties = {
   ...btnDanger,
   fontSize: 11,
   padding: '5px 10px',
@@ -179,8 +192,8 @@ const mapDrawerRemoveBtnStyle: CSSProperties = {
 
 /** Shared chrome for full-web map-edge collapse/expand control. */
 const mapPaneEdgeToggleBase: CSSProperties = {
-  border: '1px solid #d1d5db',
-  background: 'rgba(255,255,255,0.92)',
+  border: '1px solid rgba(148, 163, 184, 0.55)',
+  background: 'rgba(226, 232, 240, 0.78)',
   color: '#6b7280',
   width: 18,
   height: 38,
@@ -311,12 +324,8 @@ export function MapPaneEdgeToggle(props: {
     if (props.placement === 'verticalRail' || props.placement === 'toolbarOverMap') {
       return {
         ...s,
-        border: '1px solid rgba(255,255,255,0.28)',
-        background: 'linear-gradient(165deg, rgba(44, 72, 124, 0.78) 0%, rgba(22, 38, 68, 0.82) 100%)',
-        backdropFilter: 'blur(14px) saturate(1.35)',
-        WebkitBackdropFilter: 'blur(14px) saturate(1.35)',
-        color: '#f1f5f9',
-        boxShadow: '0 8px 28px rgba(6, 16, 40, 0.4), inset 0 1px 0 rgba(255,255,255,0.18)',
+        ...vcLiquidGlassPanelDense,
+        color: vcGlassFgOnPanel,
       }
     }
     return s
@@ -370,7 +379,7 @@ export const listRow: CSSProperties = {
   gap: 12,
   alignItems: 'center',
   padding: '12px 14px',
-  borderBottom: '1px solid #f3f4f6',
+  borderBottom: '1px solid rgba(15, 23, 42, 0.06)',
 }
 
 export const listRowMainBtn: CSSProperties = {
@@ -383,10 +392,10 @@ export const listRowMainBtn: CSSProperties = {
 }
 
 const rowStatusBtn: CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: '1px solid rgba(15, 23, 42, 0.1)',
   borderRadius: 999,
   padding: 'var(--vc-space-xs) var(--vc-space-sm)',
-  background: 'white',
+  background: 'rgba(226, 232, 240, 0.6)',
   cursor: 'pointer',
   fontWeight: 800,
   fontSize: 'var(--vc-fs-xs)',
@@ -413,7 +422,7 @@ export const caseHeaderReadonlyTitle: CSSProperties = {
   fontSize: 'var(--vc-fs-md)',
   textAlign: 'left',
   cursor: 'pointer',
-  color: 'inherit',
+  color: vcGlassFgOnPanel,
   borderRadius: 'var(--vc-radius-sm)',
   flex: 'none',
   width: '100%',
@@ -438,7 +447,7 @@ export const caseHeaderReadonlyDesc: CSSProperties = {
   font: 'inherit',
   fontWeight: 500,
   fontSize: 'var(--vc-fs-sm)',
-  color: '#6b7280',
+  color: 'rgba(226, 232, 240, 0.82)',
   textAlign: 'left',
   cursor: 'pointer',
   borderRadius: 'var(--vc-radius-sm)',
@@ -536,10 +545,13 @@ export function TrackPointDrawer(props: {
   /** Optional controlled open state for wide map drawer details. */
   detailsOpen?: boolean
   onDetailsOpenChange?: (open: boolean) => void
+  /** Map detail modal body only (no card chrome / wide drawer). */
+  embedInModal?: boolean
 }) {
   const canEdit = props.canEdit !== false
   const canDelete = props.canDelete !== false
-  const wide = props.layout === 'wide'
+  const embedInModal = props.embedInModal === true
+  const wide = props.layout === 'wide' && !embedInModal
   /** Wide header label: local draft + debounced persist so each keystroke does not await Supabase. */
   const [inlineLabelDraft, setInlineLabelDraft] = useState(props.point.addressText)
   const inlineLabelFocusRef = useRef(false)
@@ -635,7 +647,7 @@ export function TrackPointDrawer(props: {
           style={{
             border: '1px solid #cbd5e1',
             borderRadius: 6,
-            background: canEdit ? 'white' : 'transparent',
+            background: canEdit ? 'rgba(226, 232, 240, 0.65)' : 'transparent',
             padding: '0 6px',
             margin: 0,
             minWidth: 0,
@@ -701,10 +713,10 @@ export function TrackPointDrawer(props: {
     position: 'sticky',
     top: 0,
     zIndex: 2,
-    background: 'white',
+    background: 'rgba(241, 245, 249, 0.92)',
     paddingBottom: 10,
     marginBottom: 4,
-    boxShadow: '0 1px 0 #e5e7eb',
+    boxShadow: '0 1px 0 rgba(148, 163, 184, 0.35)',
   }
 
   const header = (
@@ -790,6 +802,29 @@ export function TrackPointDrawer(props: {
     </>
   )
 
+  if (embedInModal) {
+    return (
+      <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+        <div>
+          <div style={label}>Notes</div>
+          <textarea
+            value={props.point.notes ?? ''}
+            readOnly={!canEdit}
+            onChange={(e) => props.onUpdate({ notes: e.target.value })}
+            placeholder="What happened here?"
+            style={{
+              ...fieldBox,
+              minHeight: 120,
+              resize: 'vertical',
+            }}
+          />
+        </div>
+        {timeBlock}
+        {toggles}
+      </div>
+    )
+  }
+
   if (wide) {
     if (!(props.detailsOpen ?? false)) {
       return null
@@ -808,7 +843,7 @@ export function TrackPointDrawer(props: {
     }
     return (
       <div style={wideDrawerFrame}>
-        <div style={{ flexShrink: 0, background: 'white' }}>{wideHeaderOnly}</div>
+        <div style={{ flexShrink: 0, background: 'rgba(241, 245, 249, 0.88)' }}>{wideHeaderOnly}</div>
         <div
           style={{
             flex: 1,
@@ -816,7 +851,7 @@ export function TrackPointDrawer(props: {
             overflowY: 'auto',
             overflowX: 'hidden',
             WebkitOverflowScrolling: 'touch',
-            background: 'white',
+            background: 'rgba(241, 245, 249, 0.88)',
             borderBottomLeftRadius: 'var(--vc-radius-xl)',
             borderBottomRightRadius: 'var(--vc-radius-xl)',
             padding: '10px 12px 12px',
@@ -880,10 +915,13 @@ export function LocationDrawer(props: {
   /** Optional controlled open state for wide map drawer details. */
   detailsOpen?: boolean
   onDetailsOpenChange?: (open: boolean) => void
+  /** Map detail modal body only (no card chrome / wide drawer). */
+  embedInModal?: boolean
 }) {
   const canEdit = props.canEdit !== false
   const canDelete = props.canDelete !== false
-  const wide = props.layout === 'wide'
+  const embedInModal = props.embedInModal === true
+  const wide = props.layout === 'wide' && !embedInModal
   const ta: CSSProperties = {
     ...field,
     minHeight: wide ? 44 : 'clamp(104px, 26vh, 140px)',
@@ -1053,6 +1091,29 @@ export function LocationDrawer(props: {
     </button>
   )
 
+  if (embedInModal) {
+    return (
+      <div style={{ display: 'grid', gap: 'var(--vc-space-md)', minWidth: 0 }}>
+        {canvassResultsPills(false)}
+        {buildingBlock}
+        <div>
+          <div style={label}>Notes</div>
+          <textarea
+            value={props.location.notes}
+            readOnly={!canEdit}
+            onChange={(e) => props.onUpdate({ notes: e.target.value })}
+            placeholder="What did you observe?"
+            style={ta}
+          />
+          <div style={{ marginTop: 'var(--vc-space-md)', color: '#374151', fontSize: 'var(--vc-fs-sm)' }}>
+            Updated {formatAppDateTime(props.location.updatedAt)}
+          </div>
+        </div>
+        {deleteAddressBtn}
+      </div>
+    )
+  }
+
   if (wide) {
     if (!(props.detailsOpen ?? false)) {
       return null
@@ -1079,7 +1140,7 @@ export function LocationDrawer(props: {
             alignItems: 'flex-start',
             padding: '10px 12px 0',
             boxSizing: 'border-box',
-            background: 'white',
+            background: 'rgba(241, 245, 249, 0.88)',
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>{addressOnly}</div>
@@ -1097,7 +1158,7 @@ export function LocationDrawer(props: {
             WebkitOverflowScrolling: 'touch',
             padding: '10px 12px 12px',
             boxSizing: 'border-box',
-            background: 'white',
+            background: 'rgba(241, 245, 249, 0.88)',
             borderBottomLeftRadius: 'var(--vc-radius-xl)',
             borderBottomRightRadius: 'var(--vc-radius-xl)',
           }}
@@ -1128,10 +1189,10 @@ export function LocationDrawer(props: {
     position: 'sticky',
     top: 0,
     zIndex: 2,
-    background: 'white',
+    background: 'rgba(241, 245, 249, 0.92)',
     paddingBottom: 10,
     marginBottom: 4,
-    boxShadow: '0 1px 0 #e5e7eb',
+    boxShadow: '0 1px 0 rgba(148, 163, 184, 0.35)',
   }
 
   return (
@@ -1167,8 +1228,8 @@ function StatusPill(props: {
         justifyContent: fw ? 'flex-start' : undefined,
         opacity: props.disabled ? 0.5 : 1,
         cursor: props.disabled ? 'not-allowed' : 'pointer',
-        borderColor: props.active ? props.color : '#e5e7eb',
-        background: props.active ? `${props.color}33` : 'white',
+        borderColor: props.active ? props.color : 'rgba(148, 163, 184, 0.45)',
+        background: props.active ? `${props.color}33` : 'rgba(226, 232, 240, 0.55)',
       }}
     >
       <span style={{ width: 10, height: 10, borderRadius: 999, background: props.color, display: 'inline-block' }} />
@@ -1198,8 +1259,8 @@ export function RowStatusButton(props: {
         boxSizing: 'border-box',
         opacity: props.disabled ? 0.5 : 1,
         cursor: props.disabled ? 'not-allowed' : 'pointer',
-        borderColor: props.active ? props.color : '#e5e7eb',
-        background: props.active ? `${props.color}33` : 'white',
+        borderColor: props.active ? props.color : 'rgba(148, 163, 184, 0.45)',
+        background: props.active ? `${props.color}33` : 'rgba(226, 232, 240, 0.55)',
       }}
     >
       {props.label}

@@ -47,8 +47,8 @@ const CASES_STEPS: TourStepDef[] = [
   },
   {
     id: 'cases-tabs',
-    title: 'Filter and search',
-    body: 'Use My cases, Team member, or All accessible to narrow the list. Search filters by case name or description.',
+    title: 'Lists and status',
+    body: 'Switch between My cases and Team member. Status toggles open cases versus closed — closed cases only appear when Status is set to Closed.',
     target: VC_TOUR.casesTabsSearch,
     placement: 'bottom',
     variants: ['both'],

@@ -1,4 +1,4 @@
-import type { GeoJSONSource, Map as GlMap } from 'maplibre-gl'
+import type { GeoJSONSource, Map as GlMap, StyleSpecification } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Position } from 'geojson'
 import L from 'leaflet'
 
@@ -6,6 +6,49 @@ import type { Location, Track, TrackPoint } from '../lib/types'
 import { statusColor } from '../lib/types'
 
 export const CARTO_VOYAGER_STYLE = 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json'
+
+/** Carto GL — free CDN, same vector stack family as Voyager (building query layers usually match). */
+export const CARTO_DARK_MATTER_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+
+/**
+ * Esri World Imagery — public tile endpoint, no API key (follow Esri attribution terms).
+ * Raster only: no vector `building` layers; footprint-from-basemap uses other fallbacks.
+ */
+export const ESRI_WORLD_IMAGERY_STYLE: StyleSpecification = {
+  version: 8,
+  name: 'VideoCanvass Esri imagery',
+  sources: {
+    'esri-world-imagery': {
+      type: 'raster',
+      tiles: ['https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+      tileSize: 256,
+      attribution: '© Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+      maxzoom: 22,
+    },
+  },
+  layers: [
+    {
+      id: 'esri-world-imagery-layer',
+      type: 'raster',
+      source: 'esri-world-imagery',
+      minzoom: 0,
+      maxzoom: 22,
+    },
+  ],
+}
+
+export type VcCaseMapBasemapId = 'streets' | 'dark' | 'satellite'
+
+export function resolveCaseMapBasemapStyle(id: VcCaseMapBasemapId): string | StyleSpecification {
+  switch (id) {
+    case 'dark':
+      return CARTO_DARK_MATTER_STYLE
+    case 'satellite':
+      return ESRI_WORLD_IMAGERY_STYLE
+    default:
+      return CARTO_VOYAGER_STYLE
+  }
+}
 
 /** Must match `CasePage.tsx`; see `HANDOFF.md` (Address & footprint retrieval). */
 export const VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS = 480
