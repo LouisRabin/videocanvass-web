@@ -23,6 +23,11 @@ ios/.appetize-derived
 *DESKTOP-NC1PT5R*
 README-DESKTOP-NC1PT5R.md
 
+# Local secrets / tokens (never commit)
+xCodeToken.txt
+.env
+.env.*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

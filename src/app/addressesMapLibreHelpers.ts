@@ -8,13 +8,13 @@ import { statusColor } from '../lib/types'
 export const CARTO_VOYAGER_STYLE = 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json'
 
 /** Carto GL — free CDN, same vector stack family as Voyager (building query layers usually match). */
-export const CARTO_DARK_MATTER_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+const CARTO_DARK_MATTER_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 
 /**
  * Esri World Imagery — public tile endpoint, no API key (follow Esri attribution terms).
  * Raster only: no vector `building` layers; footprint-from-basemap uses other fallbacks.
  */
-export const ESRI_WORLD_IMAGERY_STYLE: StyleSpecification = {
+const ESRI_WORLD_IMAGERY_STYLE: StyleSpecification = {
   version: 8,
   name: 'VideoCanvass Esri imagery',
   sources: {

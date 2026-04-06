@@ -11,6 +11,7 @@ import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
 import { setSyncStatus } from './syncStatus'
 
+/** Merge rules, polling, and Realtime overview: `docs/SYNC_CONTRACT.md`. */
 const STORE_KEY = 'videocanvass:data:v1'
 
 /** Fallback pull when Realtime is slow or missed (mobile WebViews / background tabs often throttle WS). */
@@ -102,7 +103,7 @@ function normalizeAddressKey(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
-export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6_371_000
   const toRad = (d: number) => (d * Math.PI) / 180
   const dLat = toRad(lat2 - lat1)
@@ -116,7 +117,7 @@ export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: 
 
 type PlaceLike = { addressText: string; lat: number; lon: number }
 
-export function locationsAreSamePlace(a: Location | PlaceLike, b: Location | PlaceLike, caseIdA: string, caseIdB: string): boolean {
+function locationsAreSamePlace(a: Location | PlaceLike, b: Location | PlaceLike, caseIdA: string, caseIdB: string): boolean {
   if (caseIdA !== caseIdB) return false
   const d = haversineMeters(a.lat, a.lon, b.lat, b.lon)
   if (d <= SAME_PLACE_MAX_METERS) return true
@@ -160,7 +161,7 @@ function pushTombstoneDedupe(ids: string[], id: string): string[] {
  * Collapses concurrent duplicate locations (same case, same place, different row IDs) so merge-by-id
  * cannot leave overlapping pins. Repoints track step locationId references.
  */
-export function dedupeNearbyCaseLocations(data: AppData): AppData {
+function dedupeNearbyCaseLocations(data: AppData): AppData {
   let locations = data.locations.slice()
   let trackPoints = data.trackPoints.slice()
   let deletedLocationIds = data.deletedLocationIds.slice()

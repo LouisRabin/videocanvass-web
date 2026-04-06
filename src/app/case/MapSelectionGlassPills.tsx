@@ -5,12 +5,14 @@ import { formatAddressLineForMapList } from '../casePageHelpers'
 import { mapDrawerRemoveBtnStyle, btn } from './CasePageChrome'
 import {
   vcGlassFgOnPanel,
+  vcGlassFgMutedOnPanel,
   vcLiquidGlassPanel,
+  vcLiquidGlassPanelNestedLight,
   vcLiquidGlassPanelOnMapBackdrop,
 } from '../../lib/vcLiquidGlass'
 
-export type MapSelectionPillChrome = 'hud' | 'webDock'
-export type MapSelectionPillLayout = 'fill' | 'hug'
+type MapSelectionPillChrome = 'hud' | 'webDock'
+type MapSelectionPillLayout = 'fill' | 'hug'
 
 /** Narrow / basemap family: dark HUD on raw map. */
 /** Web: same liquid glass as wide web left map tools column (`vcLiquidGlassPanel`). */
@@ -53,7 +55,7 @@ const pillDismissBtn: CSSProperties = {
   borderRadius: 8,
 }
 
-/** Matches the map’s top-right track quick chip: dark fill, route-color rim, dot + white name. */
+/** Track step chip: route-color rim; lighter nested frost so it doesn’t stack dark on the pill shell. */
 function mapTrackQuickChipShell(trackColor: string): CSSProperties {
   const tc = trackColor.trim() || '#3b82f6'
   return {
@@ -64,9 +66,9 @@ function mapTrackQuickChipShell(trackColor: string): CSSProperties {
     maxWidth: '100%',
     padding: '5px 12px 5px 8px',
     borderRadius: 999,
-    border: `2px solid ${tc}`,
-    background: 'rgba(15, 23, 42, 0.82)',
     boxSizing: 'border-box',
+    ...vcLiquidGlassPanelNestedLight,
+    border: `2px solid ${tc}`,
   }
 }
 
@@ -100,7 +102,7 @@ export function MapTrackQuickPickChip(props: {
           fontWeight: 900,
           fontSize: nameFs,
           lineHeight: 1.25,
-          color: '#ffffff',
+          color: vcGlassFgOnPanel,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -115,7 +117,7 @@ export function MapTrackQuickPickChip(props: {
           fontWeight: 800,
           fontSize: stepFs,
           lineHeight: 1.2,
-          color: 'rgba(248, 250, 252, 0.9)',
+          color: vcGlassFgMutedOnPanel,
           flexShrink: 0,
           whiteSpace: 'nowrap',
         }}

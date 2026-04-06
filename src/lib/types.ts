@@ -79,8 +79,7 @@ export const TrackPointSchema = z.object({
 })
 export type TrackPoint = z.infer<typeof TrackPointSchema>
 
-export const CaseLifecycleSchema = z.enum(['open', 'closed'])
-export type CaseLifecycle = z.infer<typeof CaseLifecycleSchema>
+const CaseLifecycleSchema = z.enum(['open', 'closed'])
 
 export const CaseSchema = z.object({
   id: z.string(),

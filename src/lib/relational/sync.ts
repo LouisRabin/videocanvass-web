@@ -12,6 +12,8 @@ import type {
 import { DEFAULT_DATA, AppDataSchema } from '../types'
 import { deleteCaseAttachmentFromStorage } from './storageAttachment'
 
+/** High-level sync narrative: `docs/SYNC_CONTRACT.md`. */
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))

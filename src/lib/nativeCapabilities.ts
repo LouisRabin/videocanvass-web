@@ -2,9 +2,9 @@ import { Capacitor } from '@capacitor/core'
 
 import type { TargetMode } from './targetMode'
 
-export type NativePlatform = 'ios' | 'android' | 'none'
+type NativePlatform = 'ios' | 'android' | 'none'
 
-export type NativeCapabilities = {
+type NativeCapabilities = {
   platform: NativePlatform
   supportsHaptics: boolean
   supportsBackgroundLocation: boolean

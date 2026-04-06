@@ -14,12 +14,12 @@ type SearchOpts = {
   bias?: { lat: number; lon: number }
 }
 
-export type GeocodeScope = 'ny' | 'us'
+type GeocodeScope = 'ny' | 'us'
 /** Search scope + UI copy hooks; USA restriction + Photon details: `docs/GEOCODE_USA.md`. */
 export const GEOCODE_SCOPE: GeocodeScope = 'us'
 
 /** Continental US — Photon `bbox=minLon,minLat,maxLon,maxLat`. AK/HI rely on country filter / coord fallback. */
-export const US_PHOTON_BBOX = '-125,24,-66,49.5'
+const US_PHOTON_BBOX = '-125,24,-66,49.5'
 
 const PhotonPropertiesSchema = z.object({
   street: z.string().optional(),

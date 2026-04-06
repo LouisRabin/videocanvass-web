@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Layout } from './Layout'
 import { useStore } from '../lib/store'
-import { caseLastActivityMs, caseQuickCounts } from '../lib/caseDashboard'
+import { caseQuickCounts } from '../lib/caseDashboard'
 import { canEditCaseMeta } from '../lib/casePermissions'
 import { Modal } from './Modal'
 import type { AppData, AppUser, CaseFile } from '../lib/types'
@@ -31,6 +31,13 @@ import {
   vcGlassHeaderBtnPrimary,
   vcLiquidGlassInnerSurface,
 } from '../lib/vcLiquidGlass'
+
+/** App role as rank until a dedicated profile rank field exists. */
+function casesPageIdentitySubtitle(u: AppUser): string {
+  const rank = u.appRole === 'admin' ? 'Admin' : 'Staff'
+  const id = u.taxNumber.trim()
+  return id ? `${rank} · ${u.displayName} · ${id}` : `${rank} · ${u.displayName}`
+}
 
 function TeamMembersModalBody(props: {
   caseId: string
@@ -211,11 +218,98 @@ export function CasesPage(props: {
     [data, props.currentUser.id],
   )
 
+  const renderCaseQuickCountsBlock = useCallback(
+    (c: CaseFile) => {
+      const q = caseQuickCounts(data, c.id)
+      const canLifecycle = canEditCaseMeta(data, c.id, props.currentUser.id)
+      const mineClosedFooter =
+        listTab === 'mine' && c.lifecycle === 'closed' ? (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              flexShrink: 0,
+              flexWrap: 'wrap',
+              justifyContent: 'flex-end',
+            }}
+          >
+            <button
+              type="button"
+              aria-label="Delete case"
+              title="Delete case"
+              onClick={() => {
+                setEditingCaseId((id) => (id === c.id ? null : id))
+                void deleteCase(props.currentUser.id, c.id)
+              }}
+              style={caseCardDeleteIconBtn}
+            >
+              ×
+            </button>
+            <button
+              type="button"
+              style={{ ...btn, fontSize: 11, padding: '4px 8px', flexShrink: 0 }}
+              onClick={() => handleCaseRowEnter(c)}
+            >
+              {caseRowEnterLabel(c)}
+            </button>
+          </div>
+        ) : null
+      const lifecycleBtn =
+        !(listTab === 'mine' && c.lifecycle === 'closed') && canLifecycle ? (
+          <button
+            type="button"
+            style={{ ...btn, fontSize: 11, padding: '4px 8px', flexShrink: 0 }}
+            onClick={() =>
+              void updateCase(props.currentUser.id, c.id, {
+                lifecycle: c.lifecycle === 'closed' ? 'open' : 'closed',
+              })
+            }
+          >
+            {c.lifecycle === 'closed' ? 'Reopen' : 'Close case'}
+          </button>
+        ) : null
+      return (
+        <div
+          style={{
+            ...caseListMetaCounts,
+            marginTop: 0,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 8,
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+            minWidth: 0,
+            boxSizing: 'border-box',
+          }}
+        >
+          <span style={{ minWidth: 0 }}>
+            {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks
+          </span>
+          {mineClosedFooter ?? lifecycleBtn}
+        </div>
+      )
+    },
+    [data, props.currentUser.id, updateCase, listTab, handleCaseRowEnter, caseRowEnterLabel, deleteCase],
+  )
+
   return (
     <>
     <Layout
       title="Cases"
-      subtitle={`Signed in as ${props.currentUser.displayName} (${props.currentUser.taxNumber})`}
+      subtitle={
+        <span
+          style={{
+            display: 'block',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {casesPageIdentitySubtitle(props.currentUser)}
+        </span>
+      }
       right={
         <div
           data-vc-tour={VC_TOUR.casesActions}
@@ -226,9 +320,6 @@ export function CasesPage(props: {
               Tour
             </button>
           ) : null}
-          <button onClick={() => setShowNewCaseForm(true)} style={vcGlassHeaderBtnPrimary}>
-            + New case
-          </button>
           {props.onOpenAdminGlobal ? (
             <button type="button" onClick={props.onOpenAdminGlobal} style={vcGlassHeaderBtn}>
               Global results
@@ -298,58 +389,84 @@ export function CasesPage(props: {
               flexWrap: 'wrap',
               alignItems: 'center',
               justifyContent: 'space-between',
-              rowGap: 10,
+              rowGap: 8,
+              minWidth: 0,
             }}
           >
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setListTab('mine')
-                  setEditingCaseId(null)
-                }}
-                style={{
-                  ...vcGlassHeaderBtn,
-                  fontWeight: listTab === 'mine' ? 800 : 600,
-                  background: listTab === 'mine' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.12)',
-                }}
-              >
-                My cases
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setListTab('team')
-                  setEditingCaseId(null)
-                }}
-                style={{
-                  ...vcGlassHeaderBtn,
-                  fontWeight: listTab === 'team' ? 800 : 600,
-                  background: listTab === 'team' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.12)',
-                }}
-              >
-                Team member
-              </button>
-            </div>
-            <label
+            <div
               style={{
                 display: 'flex',
-                gap: 6,
+                gap: 8,
+                flexWrap: 'wrap',
                 alignItems: 'center',
-                fontSize: 13,
-                marginLeft: 'auto',
+                minWidth: 0,
+                flex: '1 1 160px',
               }}
             >
-              <span style={{ fontWeight: 700, color: vcGlassFgMutedOnPanel }}>Status</span>
-              <select
-                value={lifecycleFilter}
-                onChange={(e) => setLifecycleFilter(e.target.value as 'open' | 'closed')}
-                style={filterSelect}
+              <button
+                type="button"
+                onClick={() => {
+                  setListTab(listTab === 'mine' ? 'team' : 'mine')
+                  setEditingCaseId(null)
+                }}
+                style={{
+                  ...vcGlassHeaderBtn,
+                  fontWeight: 700,
+                  background: 'rgba(255,255,255,0.16)',
+                  whiteSpace: 'nowrap',
+                }}
               >
-                <option value="open">Open</option>
-                <option value="closed">Closed</option>
-              </select>
-            </label>
+                {listTab === 'mine' ? 'Team Cases' : 'My Cases'}
+              </button>
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                alignItems: 'center',
+                justifyContent: 'flex-end',
+                marginLeft: 'auto',
+                flex: '0 1 auto',
+                minWidth: 0,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setShowNewCaseForm(true)}
+                style={{
+                  ...vcGlassHeaderBtnPrimary,
+                  flexShrink: 0,
+                  ...(isNarrow
+                    ? { padding: '6px 10px', fontSize: 12, fontWeight: 800 }
+                    : { whiteSpace: 'nowrap' }),
+                }}
+              >
+                {isNarrow ? '+ New' : '+ New case'}
+              </button>
+              <label
+                style={{
+                  display: 'flex',
+                  gap: 6,
+                  alignItems: 'center',
+                  fontSize: 13,
+                  flexShrink: 0,
+                }}
+              >
+                <span style={{ fontWeight: 700, color: vcGlassFgMutedOnPanel }}>Status</span>
+                <select
+                  value={lifecycleFilter}
+                  onChange={(e) => setLifecycleFilter(e.target.value as 'open' | 'closed')}
+                  style={{
+                    ...filterSelect,
+                    ...(isNarrow ? { padding: '5px 6px', fontSize: 13, maxWidth: 120 } : {}),
+                  }}
+                >
+                  <option value="open">Open</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           <Modal
@@ -443,7 +560,7 @@ export function CasesPage(props: {
               {filtered.map((c) => (
                 <div key={c.id} style={card}>
                   {listTab === 'team' ? (
-                    <div style={{ display: 'grid', gap: 6, minWidth: 0, width: '100%' }}>
+                    <div style={{ display: 'grid', gap: 4, minWidth: 0, width: '100%' }}>
                       {isNarrow ? (
                         <>
                           <div
@@ -510,16 +627,7 @@ export function CasesPage(props: {
                         {data.users.find((u) => u.id === c.ownerUserId)?.displayName ?? c.ownerUserId} ·{' '}
                         {c.lifecycle === 'closed' ? 'Closed' : 'Open'} · Updated {formatAppDateTime(c.updatedAt)}
                       </div>
-                      {(() => {
-                        const q = caseQuickCounts(data, c.id)
-                        const last = caseLastActivityMs(data, c.id)
-                        return (
-                          <div style={caseListMetaCounts}>
-                            {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks · Last activity{' '}
-                            {formatAppDateTime(last)}
-                          </div>
-                        )
-                      })()}
+                      {renderCaseQuickCountsBlock(c)}
                     </div>
                   ) : editingCaseId === c.id ? (
                     <div style={{ display: 'grid', gap: 8, minWidth: 0, width: '100%' }}>
@@ -562,19 +670,25 @@ export function CasesPage(props: {
                             <button type="button" onClick={discardEditCase} style={btn}>
                               Discard
                             </button>
-                            <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
-                              {caseRowEnterLabel(c)}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingCaseId((id) => (id === c.id ? null : id))
-                                void deleteCase(props.currentUser.id, c.id)
-                              }}
-                              style={btnDanger}
-                            >
-                              Delete
-                            </button>
+                            {c.lifecycle !== 'closed' ? (
+                              <>
+                                <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
+                                  {caseRowEnterLabel(c)}
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="Delete case"
+                                  title="Delete case"
+                                  onClick={() => {
+                                    setEditingCaseId((id) => (id === c.id ? null : id))
+                                    void deleteCase(props.currentUser.id, c.id)
+                                  }}
+                                  style={caseCardDeleteIconBtn}
+                                >
+                                  ×
+                                </button>
+                              </>
+                            ) : null}
                           </div>
                         </>
                       ) : (
@@ -633,25 +747,32 @@ export function CasesPage(props: {
                             <button type="button" onClick={discardEditCase} style={btn}>
                               Discard
                             </button>
-                            <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
-                              {caseRowEnterLabel(c)}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingCaseId((id) => (id === c.id ? null : id))
-                                void deleteCase(props.currentUser.id, c.id)
-                              }}
-                              style={btnDanger}
-                            >
-                              Delete
-                            </button>
+                            {c.lifecycle !== 'closed' ? (
+                              <>
+                                <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
+                                  {caseRowEnterLabel(c)}
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="Delete case"
+                                  title="Delete case"
+                                  onClick={() => {
+                                    setEditingCaseId((id) => (id === c.id ? null : id))
+                                    void deleteCase(props.currentUser.id, c.id)
+                                  }}
+                                  style={caseCardDeleteIconBtn}
+                                >
+                                  ×
+                                </button>
+                              </>
+                            ) : null}
                           </div>
                         </div>
                       )}
+                      {c.lifecycle === 'closed' ? renderCaseQuickCountsBlock(c) : null}
                     </div>
                   ) : (
-                    <div style={{ display: 'grid', gap: 6, minWidth: 0, width: '100%' }}>
+                    <div style={{ display: 'grid', gap: 4, minWidth: 0, width: '100%' }}>
                       {isNarrow ? (
                         <>
                           <div
@@ -682,39 +803,43 @@ export function CasesPage(props: {
                             >
                               {c.caseNumber}
                             </button>
-                            <div
-                              style={{
-                                display: 'flex',
-                                gap: 6,
-                                flexWrap: 'wrap',
-                                flexShrink: 0,
-                                alignItems: 'center',
-                                paddingTop: 0,
-                                justifyContent: 'flex-end',
-                              }}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => handleCaseRowEnter(c)}
-                                style={{ ...btn, padding: '6px 8px', minHeight: 40 }}
+                            {!(c.lifecycle === 'closed') ? (
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  gap: 6,
+                                  flexWrap: 'wrap',
+                                  flexShrink: 0,
+                                  alignItems: 'center',
+                                  paddingTop: 0,
+                                  justifyContent: 'flex-end',
+                                }}
                               >
-                                {caseRowEnterLabel(c)}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setTeamModalCaseId(c.id)}
-                                style={{ ...btn, padding: '6px 8px', minHeight: 40 }}
-                              >
-                                Team
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void deleteCase(props.currentUser.id, c.id)}
-                                style={{ ...btnDanger, padding: '6px 8px', minHeight: 40 }}
-                              >
-                                Delete
-                              </button>
-                            </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCaseRowEnter(c)}
+                                  style={{ ...btn, padding: '6px 8px', minHeight: 40 }}
+                                >
+                                  {caseRowEnterLabel(c)}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setTeamModalCaseId(c.id)}
+                                  style={{ ...btn, padding: '6px 8px', minHeight: 40 }}
+                                >
+                                  Team
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="Delete case"
+                                  title="Delete case"
+                                  onClick={() => void deleteCase(props.currentUser.id, c.id)}
+                                  style={caseCardDeleteIconBtn}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ) : null}
                           </div>
                           <button
                             type="button"
@@ -754,69 +879,41 @@ export function CasesPage(props: {
                               {(c.description ?? '').trim() ? c.description : 'Add description'}
                             </button>
                           </div>
-                          <div
-                            style={{
-                              display: 'flex',
-                              gap: 8,
-                              flexShrink: 0,
-                              flexWrap: 'wrap',
-                              alignItems: 'flex-start',
-                              paddingTop: 2,
-                              flexDirection: 'row',
-                            }}
-                          >
-                            <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
-                              {caseRowEnterLabel(c)}
-                            </button>
-                            <button type="button" onClick={() => setTeamModalCaseId(c.id)} style={btn}>
-                              Team
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void deleteCase(props.currentUser.id, c.id)}
-                              style={btnDanger}
+                          {!(c.lifecycle === 'closed') ? (
+                            <div
+                              style={{
+                                display: 'flex',
+                                gap: 8,
+                                flexShrink: 0,
+                                flexWrap: 'wrap',
+                                alignItems: 'flex-start',
+                                paddingTop: 2,
+                                flexDirection: 'row',
+                              }}
                             >
-                              Delete
-                            </button>
-                          </div>
+                              <button type="button" onClick={() => handleCaseRowEnter(c)} style={btn}>
+                                {caseRowEnterLabel(c)}
+                              </button>
+                              <button type="button" onClick={() => setTeamModalCaseId(c.id)} style={btn}>
+                                Team
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Delete case"
+                                title="Delete case"
+                                onClick={() => void deleteCase(props.currentUser.id, c.id)}
+                                style={caseCardDeleteIconBtn}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       )}
-                      <div
-                        style={{
-                          ...caseListMetaLine,
-                          display: 'flex',
-                          flexWrap: 'wrap',
-                          gap: 8,
-                          alignItems: 'center',
-                        }}
-                      >
-                        <span>
-                          {c.lifecycle === 'closed' ? 'Closed' : 'Open'} · Updated {formatAppDateTime(c.updatedAt)}
-                        </span>
-                        {canEditCaseMeta(data, c.id, props.currentUser.id) ? (
-                          <button
-                            type="button"
-                            style={{ ...btn, fontSize: 11, padding: '4px 8px' }}
-                            onClick={() =>
-                              void updateCase(props.currentUser.id, c.id, {
-                                lifecycle: c.lifecycle === 'closed' ? 'open' : 'closed',
-                              })
-                            }
-                          >
-                            {c.lifecycle === 'closed' ? 'Reopen' : 'Close case'}
-                          </button>
-                        ) : null}
+                      <div style={caseListMetaLine}>
+                        {c.lifecycle === 'closed' ? 'Closed' : 'Open'} · Updated {formatAppDateTime(c.updatedAt)}
                       </div>
-                      {(() => {
-                        const q = caseQuickCounts(data, c.id)
-                        const last = caseLastActivityMs(data, c.id)
-                        return (
-                          <div style={caseListMetaCounts}>
-                            {q.locations} locations · {q.attachments} attachments · {q.tracks} tracks · Last activity{' '}
-                            {formatAppDateTime(last)}
-                          </div>
-                        )
-                      })()}
+                      {renderCaseQuickCountsBlock(c)}
                     </div>
                   )}
                 </div>
@@ -909,6 +1006,23 @@ const btnDanger: React.CSSProperties = {
   background: '#fff1f2',
   color: '#9f1239',
   fontWeight: 700,
+}
+
+const caseCardDeleteIconBtn: React.CSSProperties = {
+  ...btnDanger,
+  width: 40,
+  minWidth: 40,
+  height: 40,
+  padding: 0,
+  borderRadius: 10,
+  fontSize: 22,
+  lineHeight: 1,
+  fontWeight: 400,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  boxSizing: 'border-box',
 }
 
 const caseTitleReadonly: React.CSSProperties = {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { Location, TrackPoint } from '../../lib/types'
 import { statusColor } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
@@ -11,8 +11,6 @@ import {
   vcGlassFgOnPanel,
   vcGlassFieldOnContentSurface,
   vcLiquidGlassInnerSurface,
-  vcLiquidGlassPanel,
-  vcLiquidGlassPanelDense,
 } from '../../lib/vcLiquidGlass'
 
 const btn: CSSProperties = {
@@ -56,21 +54,6 @@ export const card: CSSProperties = {
   color: vcGlassFgDarkReadable,
 }
 
-export const mapTopBar: CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  gap: 'var(--vc-space-sm)',
-  padding: 'var(--vc-space-sm) var(--vc-space-sm) var(--vc-space-md)',
-  ...vcLiquidGlassPanel,
-  borderRadius: 0,
-  border: 'none',
-  borderBottom: '1px solid rgba(255,255,255,0.14)',
-  boxShadow: '0 6px 20px rgba(0, 0, 0, 0.15)',
-  color: vcGlassFgOnPanel,
-  alignItems: 'center',
-  flexWrap: 'wrap',
-}
-
 export { btn, btnDanger, btnPrimary }
 
 export const label: CSSProperties = {
@@ -94,7 +77,7 @@ export const field: CSSProperties = {
 /** Same row footprint as readonly case header; no stacked labels. */
 export const caseMetaInlineNameEdit: CSSProperties = {
   margin: 0,
-  marginLeft: -4,
+  marginLeft: 0,
   border: '1px solid rgba(255,255,255,0.35)',
   borderRadius: 'var(--vc-radius-sm)',
   background: 'rgba(226, 232, 240, 0.88)',
@@ -110,11 +93,12 @@ export const caseMetaInlineNameEdit: CSSProperties = {
   minHeight: 44,
   outline: 'none',
   color: vcGlassFgDarkReadable,
+  textAlign: 'center',
 }
 
 export const caseMetaInlineDescEdit: CSSProperties = {
   margin: 0,
-  marginLeft: -4,
+  marginLeft: 0,
   border: '1px solid rgba(255,255,255,0.35)',
   borderRadius: 8,
   background: 'rgba(226, 232, 240, 0.88)',
@@ -134,6 +118,7 @@ export const caseMetaInlineDescEdit: CSSProperties = {
   maxHeight: 220,
   overflowY: 'auto',
   outline: 'none',
+  textAlign: 'center',
 }
 
 export const select: CSSProperties = {
@@ -190,182 +175,6 @@ export const mapDrawerRemoveBtnStyle: CSSProperties = {
   fontWeight: 800,
 }
 
-/** Shared chrome for full-web map-edge collapse/expand control. */
-const mapPaneEdgeToggleBase: CSSProperties = {
-  border: '1px solid rgba(148, 163, 184, 0.55)',
-  background: 'rgba(226, 232, 240, 0.78)',
-  color: '#6b7280',
-  width: 18,
-  height: 38,
-  padding: 0,
-  cursor: 'pointer',
-  fontSize: 14,
-  fontWeight: 700,
-  lineHeight: 1,
-  borderRadius: '0 9px 9px 0',
-  boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-}
-
-/** Bottom map / notes seam: flat edge on bottom (flush with seam), rounded top into map — same 9px radius language as vertical tab, dimensions swapped vs `mapPaneEdgeToggleBase`. */
-const mapPaneEdgeToggleDrawerBottomSeam: CSSProperties = {
-  ...mapPaneEdgeToggleBase,
-  width: 38,
-  height: 18,
-  borderRadius: '9px 9px 0 0',
-}
-
-/** Wide map notes expanded: flat top flush with map above sheet, rounded bottom into the white panel. */
-const mapPaneEdgeToggleDrawerSheetTopSeam: CSSProperties = {
-  ...mapPaneEdgeToggleBase,
-  width: 38,
-  height: 18,
-  borderRadius: '0 0 9px 9px',
-}
-
-/** Collapse tools: straight edge toward map (`right`), curve into tools column (`left`) — only when tools are expanded. */
-const mapPaneEdgeToggleVerticalRailCollapse: CSSProperties = {
-  ...mapPaneEdgeToggleBase,
-  borderRadius: '9px 0 0 9px',
-}
-
-export type MapPaneEdgeTogglePlacement =
-  | 'verticalRail'
-  | 'drawerTopSeam'
-  | 'drawerSheetTopSeam'
-  | 'toolbarOverMap'
-const mapPaneEdgeAnchorVerticalRail: CSSProperties = {
-  position: 'absolute',
-  zIndex: 60,
-  pointerEvents: 'auto',
-  // Pull past the pane edge by the case workspace grid gap so the straight side meets the map column.
-  right: 'calc(-1 * clamp(4px, 0.9vw, 10px))',
-  top: '50%',
-  transform: 'translateY(-50%)',
-}
-/**
- * Bottom drawer seam: horizontally centered; `translate(-50%, -100%)` so the tab’s flat bottom edge
- * is flush with the map/drawer boundary and the rounded top sits on the map.
- */
-const mapPaneEdgeAnchorDrawerTop: CSSProperties = {
-  position: 'absolute',
-  zIndex: 55,
-  pointerEvents: 'auto',
-  left: '50%',
-  top: 0,
-  transform: 'translate(-50%, -100%)',
-}
-/** Top of expanded notes/track sheet (inside overlay): tab hangs below map seam into the sheet. */
-const mapPaneEdgeAnchorDrawerSheetTop: CSSProperties = {
-  position: 'absolute',
-  zIndex: 55,
-  pointerEvents: 'auto',
-  left: '50%',
-  top: 0,
-  transform: 'translateX(-50%)',
-}
-/** Collapsed map tools: left map edge, vertically centered (mirror of verticalRail but `left` instead of `right`). */
-const mapPaneEdgeAnchorToolbarOverMap: CSSProperties = {
-  position: 'absolute',
-  zIndex: 55,
-  pointerEvents: 'auto',
-  left: 0,
-  top: '50%',
-  transform: 'translateY(-50%)',
-}
-
-/** Shared edge anchor contract so toggles remain visible regardless of parent overflow behavior. */
-export function MapPaneEdgeAnchor(props: {
-  placement: MapPaneEdgeTogglePlacement
-  children: ReactNode
-}) {
-  const placementStyle =
-    props.placement === 'verticalRail'
-      ? mapPaneEdgeAnchorVerticalRail
-      : props.placement === 'toolbarOverMap'
-        ? mapPaneEdgeAnchorToolbarOverMap
-        : props.placement === 'drawerSheetTopSeam'
-          ? mapPaneEdgeAnchorDrawerSheetTop
-          : mapPaneEdgeAnchorDrawerTop
-  return (
-    <div style={placementStyle}>
-      <div style={{ pointerEvents: 'auto' }}>{props.children}</div>
-    </div>
-  )
-}
-
-/**
- * Universal full-web edge toggle: same chrome for rail + drawer seam; only arrow orientation differs.
- * - verticalRail: › / ‹ (sideways). When expanded (collapse tools), flat edge faces the map (`borderRadius` 9px 0 0 9px); compact expand uses default pill.
- * - drawerTopSeam: compact / bottom seam only — flat bottom, rounded top (38×18).
- * - drawerSheetTopSeam: expanded sheet — flat top toward map, rounded bottom into sheet (38×18); same chevrons as drawerTopSeam.
- * - toolbarOverMap: vertical D-tab (flat edge on the left); › / ‹; left map edge, vertically centered.
- */
-export function MapPaneEdgeToggle(props: {
-  /** True when the panel/sheet content is open (shows “collapse” arrow). */
-  expanded: boolean
-  onClick: () => void
-  ariaLabel: string
-  placement: MapPaneEdgeTogglePlacement
-}) {
-  const toggleStyle = (() => {
-    let s: CSSProperties
-    if (props.placement === 'verticalRail') {
-      s = props.expanded ? mapPaneEdgeToggleVerticalRailCollapse : mapPaneEdgeToggleBase
-    } else if (props.placement === 'drawerSheetTopSeam') {
-      s = mapPaneEdgeToggleDrawerSheetTopSeam
-    } else if (props.placement === 'drawerTopSeam') {
-      s = mapPaneEdgeToggleDrawerBottomSeam
-    } else {
-      s = mapPaneEdgeToggleBase
-    }
-    if (props.placement === 'verticalRail' || props.placement === 'toolbarOverMap') {
-      return {
-        ...s,
-        ...vcLiquidGlassPanelDense,
-        color: vcGlassFgOnPanel,
-      }
-    }
-    return s
-  })()
-
-  const drawerChevron = (
-    <span
-      style={{
-        display: 'inline-block',
-        lineHeight: 1,
-        fontSize: 12,
-        transform: props.expanded ? 'rotate(90deg)' : 'rotate(-90deg)',
-      }}
-      aria-hidden
-    >
-      ›
-    </span>
-  )
-
-  return (
-    <button
-      type="button"
-      aria-label={props.ariaLabel}
-      aria-expanded={props.expanded}
-      onClick={props.onClick}
-      style={toggleStyle}
-    >
-      {props.placement === 'verticalRail' || props.placement === 'toolbarOverMap' ? (
-        props.expanded ? (
-          '‹'
-        ) : (
-          '›'
-        )
-      ) : (
-        drawerChevron
-      )}
-    </button>
-  )
-}
-
 export const listHeaderRow: CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
@@ -414,13 +223,13 @@ export const statusBadge: CSSProperties = {
 export const caseHeaderReadonlyTitle: CSSProperties = {
   margin: 0,
   padding: '2px 4px',
-  marginLeft: -4,
+  marginLeft: 0,
   border: 'none',
   background: 'none',
   font: 'inherit',
   fontWeight: 800,
   fontSize: 'var(--vc-fs-md)',
-  textAlign: 'left',
+  textAlign: 'center',
   cursor: 'pointer',
   color: vcGlassFgOnPanel,
   borderRadius: 'var(--vc-radius-sm)',
@@ -441,14 +250,14 @@ export const caseHeaderReadonlyTitle: CSSProperties = {
 export const caseHeaderReadonlyDesc: CSSProperties = {
   margin: 0,
   padding: '2px 4px',
-  marginLeft: -4,
+  marginLeft: 0,
   border: 'none',
   background: 'none',
   font: 'inherit',
   fontWeight: 500,
   fontSize: 'var(--vc-fs-sm)',
   color: 'rgba(226, 232, 240, 0.82)',
-  textAlign: 'left',
+  textAlign: 'center',
   cursor: 'pointer',
   borderRadius: 'var(--vc-radius-sm)',
   flex: 'none',

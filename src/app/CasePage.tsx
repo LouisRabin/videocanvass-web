@@ -94,6 +94,12 @@ import {
   viewModeBtn,
 } from './case/CasePageChrome'
 import {
+  MAP_LAYERS_GLYPH_PX,
+  TrackMapVisibilityButton,
+  VcCaseMapBasemapSatelliteGlyph,
+  VcCaseMapLayersGlyph,
+} from './case/casePageMapUi'
+import {
   MapAddressSelectionPill,
   MapTrackQuickPickChip,
   MapTrackSelectionPill,
@@ -118,6 +124,30 @@ import {
   vcLiquidGlassPanel,
   vcLiquidGlassPanelDense,
 } from '../lib/vcLiquidGlass'
+
+function CaseBackToListButton(props: { onBack: () => void }) {
+  return (
+    <button
+      type="button"
+      data-vc-tour={VC_TOUR.caseBack}
+      onClick={props.onBack}
+      aria-label="Back to cases"
+      title="Back to cases"
+      style={{
+        ...vcGlassHeaderBtn,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        flexShrink: 0,
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 16, lineHeight: 1 }}>
+        ←
+      </span>
+      Cases
+    </button>
+  )
+}
 
 /** Longer than AddressesMapLibre SINGLE_TAP_DEFER_MS (270) so open + deferred map tap don't dismiss the dock. */
 const MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS = 350
@@ -159,124 +189,6 @@ function caseBasemapAriaLabel(id: VcCaseMapBasemapId): string {
     default:
       return 'Streets'
   }
-}
-
-/** Icon size inside the 44×44 map glass chips (menu + basemap). */
-const MAP_LAYERS_GLYPH_PX = 22
-
-/** Stacked layers glyph: narrow map tools menu only (`vcGlassFgOnPanel`, fillOpacity 0.92). */
-function VcCaseMapLayersGlyph(props: { size?: number }) {
-  const size = props.size ?? MAP_LAYERS_GLYPH_PX
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden
-      style={{ color: vcGlassFgOnPanel }}
-    >
-      <rect x="3" y="5" width="18" height="4.5" rx="2" fill="currentColor" fillOpacity={0.92} />
-      <rect x="3" y="10.75" width="18" height="4.5" rx="2" fill="currentColor" fillOpacity={0.92} />
-      <rect x="3" y="16.5" width="18" height="4.5" rx="2" fill="currentColor" fillOpacity={0.92} />
-    </svg>
-  )
-}
-
-/** Satellite silhouette: basemap cycle control only — same color/opacity recipe as `VcCaseMapLayersGlyph`. */
-function VcCaseMapBasemapSatelliteGlyph(props: { size?: number }) {
-  const size = props.size ?? MAP_LAYERS_GLYPH_PX
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden
-      style={{ color: vcGlassFgOnPanel }}
-    >
-      <rect x="2" y="9.5" width="6.5" height="5" rx="1.25" fill="currentColor" fillOpacity={0.92} />
-      <rect x="9.25" y="7.5" width="5.5" height="9" rx="1.75" fill="currentColor" fillOpacity={0.92} />
-      <rect x="15.5" y="9.5" width="6.5" height="5" rx="1.25" fill="currentColor" fillOpacity={0.92} />
-      <rect x="10.5" y="3.5" width="3" height="3.5" rx="0.75" fill="currentColor" fillOpacity={0.92} />
-    </svg>
-  )
-}
-function EyeOpenIcon() {
-  return (
-    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth={2} />
-    </svg>
-  )
-}
-
-function EyeClosedIcon() {
-  return (
-    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path d="M2 2l20 20" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function TrackMapVisibilityButton(props: {
-  visible: boolean
-  trackLabel: string
-  variant: 'mapDockGlass' | 'mapDockLight' | 'modal'
-  onToggle: () => void
-}) {
-  const { visible, trackLabel, variant, onToggle } = props
-  const glass = variant === 'mapDockGlass'
-  const btn: CSSProperties = {
-    flexShrink: 0,
-    width: 32,
-    height: 32,
-    padding: 0,
-    borderRadius: 8,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    cursor: 'pointer',
-    boxSizing: 'border-box',
-    ...(glass
-      ? {
-          border: '1px solid rgba(255,255,255,0.22)',
-          background: visible ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.06)',
-          color: visible ? '#f8fafc' : 'rgba(203,213,225,0.72)',
-          opacity: visible ? 1 : 0.78,
-        }
-      : {
-          border: '1px solid rgba(148, 163, 184, 0.45)',
-          background: visible ? 'rgba(241, 245, 249, 0.92)' : 'rgba(226, 232, 240, 0.5)',
-          color: visible ? '#111827' : '#9ca3af',
-          opacity: visible ? 1 : 0.9,
-        }),
-  }
-  return (
-    <button
-      type="button"
-      aria-label={visible ? `Hide “${trackLabel}” on map` : `Show “${trackLabel}” on map`}
-      aria-pressed={visible}
-      title={visible ? 'Hide path on map' : 'Show path on map'}
-      onClick={onToggle}
-      style={btn}
-    >
-      {visible ? <EyeOpenIcon /> : <EyeClosedIcon />}
-    </button>
-  )
 }
 
 export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: () => void }) {
@@ -602,22 +514,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   })
   const caseTab = workspaceMode.caseTab
   const viewMode = workspaceMode.viewMode
-  /** Addresses list as bottom sheet over map (narrow always; wide when list chosen and tools panel closed). */
+  /** Locations list over map (narrow always; wide when list chosen and tools panel closed). Shown in Video canvassing or Subject tracking. */
   const showAddressesListBottomSheet =
-    caseTab === 'addresses' &&
+    (caseTab === 'addresses' || caseTab === 'tracking') &&
     viewMode === 'list' &&
     (isNarrow || (!isNarrow && mapLeftToolSection === null && wideSidebarListReveal))
   useEffect(() => {
     if (!showAddressesListBottomSheet) setAddressesListFiltersOpen(false)
   }, [showAddressesListBottomSheet])
   useEffect(() => {
-    if (caseTab !== 'addresses') setWideSidebarListReveal(false)
-  }, [caseTab])
-  useEffect(() => {
-    if (caseTab !== 'addresses' || viewMode !== 'list') {
+    if (viewMode !== 'list') {
       setListRowExpandedId(null)
     }
-  }, [caseTab, viewMode])
+  }, [viewMode])
 
   useEffect(() => {
     setListRowExpandedId((exp) => {
@@ -629,22 +538,21 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const setWorkspaceViewMode = useCallback(
     (nextViewMode: 'map' | 'list') => {
-      const resolvedView = caseTab === 'tracking' ? 'map' : nextViewMode
       setWorkspaceMode((prev) => {
-        const next = prev.caseTab === 'tracking' ? { caseTab: prev.caseTab, viewMode: 'map' as const } : { ...prev, viewMode: nextViewMode }
+        const next = { ...prev, viewMode: nextViewMode }
         return prev.caseTab === next.caseTab && prev.viewMode === next.viewMode ? prev : next
       })
-      if (!isNarrow && resolvedView === 'map') {
+      if (!isNarrow && nextViewMode === 'map') {
         setWideSidebarListReveal(false)
       }
-      if (resolvedView === 'list') {
+      if (nextViewMode === 'list') {
         setLocationDetailOpen(false)
       }
-      if (isNarrow && resolvedView === 'list') {
+      if (isNarrow && nextViewMode === 'list') {
         closeMapToolsDock()
       }
     },
-    [caseTab, closeMapToolsDock, isNarrow],
+    [closeMapToolsDock, isNarrow],
   )
 
   const closeAddressesListViewFromOverlay = useCallback(() => {
@@ -684,10 +592,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const setWorkspaceCaseTab = useCallback((nextCaseTab: 'addresses' | 'tracking') => {
     setWorkspaceMode((prev) => {
-      const nextViewMode = nextCaseTab === 'tracking' ? 'map' : prev.viewMode
-      return prev.caseTab === nextCaseTab && prev.viewMode === nextViewMode
-        ? prev
-        : { caseTab: nextCaseTab, viewMode: nextViewMode }
+      return prev.caseTab === nextCaseTab ? prev : { caseTab: nextCaseTab, viewMode: prev.viewMode }
     })
     if (nextCaseTab !== 'addresses') {
       setLocationDetailOpen(false)
@@ -785,9 +690,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       }
     }
   }, [])
-  const [showAddTrack, setShowAddTrack] = useState(false)
-  const [addTrackKind, setAddTrackKind] = useState<Track['kind']>('person')
-  const [addTrackLabel, setAddTrackLabel] = useState('')
   const [selectedTrackPointId, setSelectedTrackPointId] = useState<string | null>(null)
   const [addressMapModalOpen, setAddressMapModalOpen] = useState(false)
   const [trackMapModalOpen, setTrackMapModalOpen] = useState(false)
@@ -1028,7 +930,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         return
       }
       if (caseMetaEditing) return
-      if (pendingAddQueue.length > 0 || showAddTrack || showManageTracks) return
+      if (pendingAddQueue.length > 0 || showManageTracks) return
       if (probativeFlow != null) return
       if (postProbativeMarkerPhase != null) return
 
@@ -1066,7 +968,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     probativeFlow,
     selectedId,
     selectedTrackPointId,
-    showAddTrack,
     showManageTracks,
     postProbativeMarkerPhase,
     probativePlacementSession,
@@ -1960,7 +1861,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   if (!c) {
     return (
-      <Layout title="Case not found" right={<button onClick={props.onBack} style={vcGlassHeaderBtn}>Case List</button>}>
+      <Layout left={<CaseBackToListButton onBack={props.onBack} />} titleAlign="center" title="Case not found">
         <div style={{ color: vcGlassFgMutedOnPanel }}>This case may have been deleted.</div>
       </Layout>
     )
@@ -2022,7 +1923,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       maxWidth: '100%',
       boxSizing: 'border-box',
       minWidth: 0,
-      fontSize: isNarrow ? 16 : undefined,
       ...glassInput,
       ...(floating && glass
         ? narrowCondensed
@@ -2234,7 +2134,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     )
   }
 
-  const mapLeftDockProminent = mapLeftToolDockOpen || mapLeftToolSection !== null
   const selectTrackQuickPick = useCallback(
     (trackId: string) => {
       setAutoContinuationTrackId(trackId)
@@ -2345,39 +2244,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     <>
       <button
         type="button"
-        style={{
-          ...viewModeBtn(viewMode === 'map'),
-          width: '100%',
-          opacity: caseTab === 'tracking' ? 0.55 : 1,
-        }}
-        disabled={caseTab === 'tracking'}
-        title={
-          caseTab === 'tracking'
-            ? 'Subject tracking mode keeps the map open for route steps. Switch to Video canvassing for list-only layout.'
-            : undefined
-        }
-        onClick={() => {
-          setWorkspaceViewMode('map')
-          if (isNarrow) closeMapToolsDock()
-          else setMapLeftToolSection(null)
-        }}
-      >
-        Map view
-      </button>
-      <button
-        type="button"
         data-vc-tour={VC_TOUR.caseListViewBtn}
         style={{
           ...viewModeBtn(viewMode === 'list'),
           width: '100%',
-          opacity: caseTab === 'tracking' ? 0.55 : 1,
         }}
-        disabled={caseTab === 'tracking'}
-        title={
-          caseTab === 'tracking'
-            ? 'Subject tracking mode keeps the map open for route steps. Switch to Video canvassing for list-only layout.'
-            : undefined
-        }
         onClick={() => {
           setWorkspaceViewMode('list')
           if (isNarrow) closeMapToolsDock()
@@ -2573,32 +2444,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       </div>
     ) : null
 
-  const mapDockPanelStyle: CSSProperties = {
-    alignSelf: 'stretch',
-    marginTop: 6,
-    padding: 10,
-    background: 'rgba(255,255,255,0.98)',
-    borderRadius: 10,
-    border: '1px solid #e5e7eb',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-    maxHeight: 'min(48vh, 360px)',
-    overflowY: 'auto',
-    overflowX: 'hidden',
-    WebkitOverflowScrolling: 'touch',
-    width: '100%',
-    maxWidth: '100%',
-    minWidth: 0,
-    boxSizing: 'border-box',
-  }
-
-  /** Filter chips: narrow = one column; wide dock = 2×2. Outer tool menu scrolls if needed. */
-  const mapDockFilterPanelStyle: CSSProperties = {
-    ...mapDockPanelStyle,
-    maxHeight: 'none',
-    overflowY: 'visible',
-    padding: 8,
-  }
-
   /**
    * Left top slab: Video canvassing | Subject tracking | address search on one row (chips sit in a sibling slab).
    * `pointer-events: none` on the slab so `flex: 1 1 0` empty glass does not cover the map — restores map cursor/hover.
@@ -2718,25 +2563,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
     flexShrink: 0,
   }
-  const mapDockMenuToggleBtnStyle: CSSProperties = {
-    ...btn,
-    width: 44,
-    height: 44,
-    minWidth: 44,
-    padding: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 20,
-    lineHeight: 1,
-    borderRadius: 10,
-    boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
-    flexShrink: 0,
-  }
-  const mapDockMenuToggleFaceStyle: CSSProperties = {
-    ...mapDockMenuToggleBtnStyle,
-    pointerEvents: 'none',
-  }
   /** Shared 44×44 glass chip: basemap cycle button + narrow map tools face (pixel-matched). */
   const mapLayersGlassChipFaceStyle: CSSProperties = {
     ...vcLiquidGlassPanelDense,
@@ -2753,9 +2579,27 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     boxSizing: 'border-box',
     WebkitTapHighlightColor: 'transparent',
   }
+  /**
+   * Hamburger inside narrow unified map toolbar: parent row is already `vcLiquidGlassPanel`.
+   * Use a light frost well (header-ghost style) instead of a second liquid-glass slab so it doesn’t read as a dark nested tile.
+   */
   const mapDockMenuToggleFaceNarrowStyle: CSSProperties = {
-    ...mapLayersGlassChipFaceStyle,
+    width: 44,
+    minWidth: 44,
+    maxWidth: 44,
+    minHeight: 44,
+    height: 44,
+    padding: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    boxSizing: 'border-box',
+    WebkitTapHighlightColor: 'transparent',
     pointerEvents: 'none',
+    border: '1px solid rgba(255,255,255,0.28)',
+    background: 'rgba(255,255,255,0.14)',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.22)',
   }
   const mapDockNavBtnNarrowGlass = (active: boolean): CSSProperties => ({
     alignSelf: 'stretch',
@@ -3103,10 +2947,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               disabled={!canAddCaseContentHere}
               title={!canAddCaseContentHere ? 'No access to add tracks' : undefined}
               onClick={() => {
+                if (!canAddCaseContentHere) return
                 setWorkspaceCaseTab('tracking')
-                setAddTrackKind('person')
-                setAddTrackLabel(`Track ${caseTracks.length + 1}`)
-                setShowAddTrack(true)
+                const label = `Track ${caseTracks.length + 1}`
+                void createTrack({ caseId: props.caseId, createdByUserId: actorId, label, kind: 'person' }).then((id) => {
+                  setSelectedTrackPointId(null)
+                  setAutoContinuationTrackId(id)
+                  setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
+                  trackLabelFocusRef.current[id] = true
+                  setTrackListNameEditingId(id)
+                })
               }}
             >
               New Track
@@ -3546,6 +3396,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         setListRowExpandedId(l.id)
                         setSelectedId(l.id)
                       }
+                    }}
+                    onDoubleClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setLocationDetailOpen(false)
+                      setListRowExpandedId(l.id)
+                      setSelectedId(l.id)
+                      setListAddressNotesForId(l.id)
                     }}
                   >
                     <div
@@ -4197,6 +4055,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     <>
       <Layout
       dense
+      left={<CaseBackToListButton onBack={props.onBack} />}
+      titleAlign="center"
       title={
         caseMetaEditing ? (
           <div
@@ -4205,55 +4065,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               display: 'flex',
               flexDirection: 'column',
               gap: 6,
-              alignItems: 'stretch',
+              alignItems: 'center',
+              textAlign: 'center',
               minWidth: 0,
               width: '100%',
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-                minWidth: 0,
-                width: '100%',
-              }}
-            >
-              <input
-                autoFocus
-                value={caseNameDraft}
-                onChange={(e) => setCaseNameDraft(e.target.value)}
-                aria-label="Case name"
-                autoComplete="off"
-                name="vc-case-number-edit"
-                inputMode="text"
-                {...(isNarrow ? nativeMobileTextInputProps(mobileOS) : {})}
-                style={caseMetaInlineNameEdit}
-              />
-              <textarea
-                value={caseDescDraft}
-                maxLength={CASE_DESCRIPTION_MAX_CHARS}
-                onChange={(e) => setCaseDescDraft(e.target.value)}
-                placeholder="Add description"
-                aria-label="Description"
-                rows={2}
-                autoComplete="off"
-                name="vc-case-desc-edit"
-                inputMode="text"
-                {...(isNarrow ? nativeMobileTextareaProps(mobileOS) : {})}
-                style={{
-                  ...caseMetaInlineDescEdit,
-                  width: '100%',
-                  flex: 'none',
-                  minWidth: 0,
-                  minHeight: 72,
-                  maxHeight: 200,
-                  fontWeight: 500,
-                  color: '#4b5563',
-                }}
-              />
-            </div>
+            <input
+              autoFocus
+              value={caseNameDraft}
+              onChange={(e) => setCaseNameDraft(e.target.value)}
+              aria-label="Case name"
+              autoComplete="off"
+              name="vc-case-number-edit"
+              inputMode="text"
+              {...(isNarrow ? nativeMobileTextInputProps(mobileOS) : {})}
+              style={caseMetaInlineNameEdit}
+            />
             {isNarrow ? (
               <div style={{ display: 'flex', gap: 8, width: '100%', boxSizing: 'border-box' }}>
                 <button type="button" onClick={saveCaseMetaEdit} style={{ ...vcGlassHeaderBtnPrimary, flex: 1, minWidth: 0 }}>
@@ -4265,49 +4094,65 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               </div>
             ) : null}
           </div>
+        ) : canEditCaseMetaHere ? (
+          <button
+            type="button"
+            data-vc-tour={VC_TOUR.caseHeaderMeta}
+            onClick={beginCaseMetaEdit}
+            title="Edit case name and description"
+            style={{ ...caseHeaderReadonlyTitle, width: '100%' }}
+          >
+            {c.caseNumber}
+          </button>
         ) : (
           <div
             data-vc-tour={VC_TOUR.caseHeaderMeta}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'stretch',
-              gap: 2,
-              minWidth: 0,
-              width: '100%',
-            }}
+            style={{ ...caseHeaderReadonlyTitle, cursor: 'default', width: '100%' }}
           >
-            {canEditCaseMetaHere ? (
-              <>
-                <button
-                  type="button"
-                  onClick={beginCaseMetaEdit}
-                  title="Edit case name and description"
-                  style={caseHeaderReadonlyTitle}
-                >
-                  {c.caseNumber}
-                </button>
-                <button
-                  type="button"
-                  onClick={beginCaseMetaEdit}
-                  title="Edit case name and description"
-                  style={caseHeaderReadonlyDesc}
-                >
-                  {(c.description ?? '').trim() ? c.description : 'Add description'}
-                </button>
-              </>
-            ) : (
-              <>
-                <div style={{ ...caseHeaderReadonlyTitle, cursor: 'default' }}>{c.caseNumber}</div>
-                <div style={{ ...caseHeaderReadonlyDesc, cursor: 'default' }}>
-                  {(c.description ?? '').trim() ? c.description : '—'}
-                </div>
-              </>
-            )}
+            {c.caseNumber}
           </div>
         )
       }
-      subtitle={null}
+      subtitle={
+        caseMetaEditing ? (
+          <textarea
+            value={caseDescDraft}
+            maxLength={CASE_DESCRIPTION_MAX_CHARS}
+            onChange={(e) => setCaseDescDraft(e.target.value)}
+            placeholder="Add description"
+            aria-label="Description"
+            rows={2}
+            autoComplete="off"
+            name="vc-case-desc-edit"
+            inputMode="text"
+            {...(isNarrow ? nativeMobileTextareaProps(mobileOS) : {})}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              ...caseMetaInlineDescEdit,
+              width: '100%',
+              flex: 'none',
+              minWidth: 0,
+              minHeight: 72,
+              maxHeight: 200,
+              fontWeight: 500,
+              color: '#4b5563',
+            }}
+          />
+        ) : canEditCaseMetaHere ? (
+          <button
+            type="button"
+            onClick={beginCaseMetaEdit}
+            title="Edit case name and description"
+            style={{ ...caseHeaderReadonlyDesc, width: '100%' }}
+          >
+            {(c.description ?? '').trim() ? c.description : 'Add description'}
+          </button>
+        ) : (
+          <div style={{ ...caseHeaderReadonlyDesc, cursor: 'default', width: '100%' }}>
+            {(c.description ?? '').trim() ? c.description : '—'}
+          </div>
+        )
+      }
       right={
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {caseMetaEditing && !isNarrow ? (
@@ -4325,9 +4170,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               Tour
             </button>
           ) : null}
-          <button type="button" data-vc-tour={VC_TOUR.caseBack} onClick={props.onBack} style={vcGlassHeaderBtn}>
-            Case List
-          </button>
         </div>
       }
     >
@@ -5170,75 +5012,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           </label>
         </div>
       ) : null}
-    </Modal>
-
-    <Modal
-      title="Add track"
-      open={showAddTrack}
-      onClose={() => setShowAddTrack(false)}
-    >
-      <div style={{ display: 'grid', gap: 12, minWidth: 0, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
-        <label style={{ display: 'grid', gap: 6, minWidth: 0 }}>
-          <span style={{ fontWeight: 800, fontSize: 13 }}>Track type</span>
-          <select
-            value={addTrackKind}
-            onChange={(e) => setAddTrackKind(e.target.value as Track['kind'])}
-            style={{ ...select, width: '100%' }}
-          >
-            <option value="person">Person</option>
-            <option value="vehicle">Vehicle</option>
-            <option value="other">Other</option>
-          </select>
-        </label>
-        <label style={{ display: 'grid', gap: 6, minWidth: 0 }}>
-          <span style={{ fontWeight: 800, fontSize: 13 }}>Name</span>
-          <input
-            value={addTrackLabel}
-            onChange={(e) => setAddTrackLabel(e.target.value)}
-            style={field}
-            placeholder="e.g. Subject A"
-            autoFocus={!isNarrow}
-            onFocus={(e) => {
-              if (!isNarrow) return
-              const el = e.currentTarget
-              window.setTimeout(() => {
-                el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-              }, 280)
-            }}
-          />
-        </label>
-        <div
-          style={{
-            display: 'flex',
-            gap: 10,
-            justifyContent: 'flex-end',
-            flexWrap: 'wrap',
-            minWidth: 0,
-            width: '100%',
-            boxSizing: 'border-box',
-          }}
-        >
-          <button type="button" style={btn} onClick={() => setShowAddTrack(false)}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            style={{ ...btn, fontWeight: 900 }}
-            disabled={!canAddCaseContentHere}
-            onClick={() => {
-              const label = addTrackLabel.trim() || `Track ${caseTracks.length + 1}`
-              void createTrack({ caseId: props.caseId, createdByUserId: actorId, label, kind: addTrackKind }).then((id) => {
-                setShowAddTrack(false)
-                setSelectedTrackPointId(null)
-                setAutoContinuationTrackId(id)
-                setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
-              })
-            }}
-          >
-            Add track
-          </button>
-        </div>
-      </div>
     </Modal>
 
     <Modal

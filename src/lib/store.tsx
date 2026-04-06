@@ -1,22 +1,20 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  appDataSyncFingerprint,
-  fetchRemotePayloadUpdatedAt,
   caseCollaboratorTombstoneKey,
+  fetchRemotePayloadUpdatedAt,
   findDuplicateLocationForCase,
   loadData,
   mergeAppData,
   normalizeAppData,
-  pullAndMergeWithLocal,
-  REMOTE_SYNC_POLL_MS,
   saveData,
   writeLocalDataCache,
 } from './db'
 import { relationalBackendEnabled } from './backendMode'
-import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
+import { hasSupabaseConfig, supabase } from './supabase'
 import { logVcAudit } from './relational/auditLog'
 import { deleteCaseAttachmentFromStorage, uploadCaseAttachmentFromDataUrl } from './relational/storageAttachment'
-import { adjustPendingRemoteSaves, setSyncStatus } from './syncStatus'
+import { adjustPendingRemoteSaves } from './syncStatus'
+import { useSupabaseAppDataSync } from './storeSupabaseSync'
 import { newId } from './id'
 import { pickRouteColorForNewTrack } from './trackColors'
 import {
@@ -226,17 +224,12 @@ export function StoreProvider(props: { children: React.ReactNode }) {
    * so older async saves cannot clobber newer in-flight user actions.
    */
   const commitOptimisticToRemote = useCallback(async (optimistic: AppData) => {
-    try {
-      const canonical = await saveData(optimistic)
-      const latest = dataRef.current
-      const final = mergeAppData(latest, canonical)
-      dataRef.current = final
-      setData(final)
-    } catch (e) {
-      // Keep optimistic local state on transient network/save failures.
-      // Poll/realtime merge will reconcile with remote when available again.
-      throw e
-    }
+    // On failure, optimistic local state is kept; poll/realtime merge reconciles when the network recovers.
+    const canonical = await saveData(optimistic)
+    const latest = dataRef.current
+    const final = mergeAppData(latest, canonical)
+    dataRef.current = final
+    setData(final)
     if (hasSupabaseConfig && supabase) {
       const t = await fetchRemotePayloadUpdatedAt()
       if (t) lastRemoteUpdatedAtRef.current = t
@@ -262,174 +255,13 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     [commitOptimisticToRemote],
   )
 
-  /** Supabase Realtime + periodic pull: relational tables or legacy shared JSON blob. */
-  useEffect(() => {
-    if (!ready || !hasSupabaseConfig || !supabase) return
-    const sb = supabase
-
-    let cancelled = false
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null
-    let resumeTimer: ReturnType<typeof setTimeout> | null = null
-
-    if (relationalBackendEnabled()) {
-      const applyRelationalMerge = async () => {
-        if (cancelled || syncPullInFlightRef.current) return
-        syncPullInFlightRef.current = true
-        try {
-          const {
-            data: { session },
-          } = await sb.auth.getSession()
-          if (!session?.user) return
-          const cur = dataRef.current
-          const merged = await pullAndMergeWithLocal(cur)
-          if (cancelled || !merged) return
-          if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) return
-          dataRef.current = merged
-          setData(merged)
-          await writeLocalDataCache(merged)
-          setSyncStatus({
-            mode: 'supabase_ok',
-            message: 'Updated from database',
-            remoteMergeNotice:
-              'Some entries were updated from the server. Re-check open cases if something looks unexpected.',
-          })
-        } catch (e) {
-          console.warn('Relational sync pull failed:', e)
-        } finally {
-          syncPullInFlightRef.current = false
-        }
-      }
-
-      const scheduleRelationalMerge = () => {
-        if (debounceTimer) clearTimeout(debounceTimer)
-        debounceTimer = window.setTimeout(() => {
-          debounceTimer = null
-          void applyRelationalMerge()
-        }, 120)
-      }
-
-      const scheduleResumeRelational = () => {
-        if (document.visibilityState !== 'visible') return
-        if (resumeTimer) clearTimeout(resumeTimer)
-        resumeTimer = window.setTimeout(() => {
-          resumeTimer = null
-          void applyRelationalMerge()
-        }, 80)
-      }
-
-      const tables = [
-        'vc_cases',
-        'vc_locations',
-        'vc_tracks',
-        'vc_track_points',
-        'vc_case_collaborators',
-        'vc_case_attachments',
-        'vc_profiles',
-      ] as const
-      const channel = sb.channel('vc_relational_changes')
-      for (const table of tables) {
-        channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => scheduleRelationalMerge())
-      }
-      void channel.subscribe()
-      const pollTimer = window.setInterval(() => void applyRelationalMerge(), REMOTE_SYNC_POLL_MS)
-      void applyRelationalMerge()
-
-      document.addEventListener('visibilitychange', scheduleResumeRelational)
-      window.addEventListener('pageshow', scheduleResumeRelational)
-      window.addEventListener('online', scheduleResumeRelational)
-
-      return () => {
-        cancelled = true
-        window.clearInterval(pollTimer)
-        if (debounceTimer) window.clearTimeout(debounceTimer)
-        if (resumeTimer) window.clearTimeout(resumeTimer)
-        document.removeEventListener('visibilitychange', scheduleResumeRelational)
-        window.removeEventListener('pageshow', scheduleResumeRelational)
-        window.removeEventListener('online', scheduleResumeRelational)
-        void sb.removeChannel(channel)
-      }
-    }
-
-    const applyRemoteMerge = async (fromRealtime: boolean, force = false) => {
-      if (cancelled || syncPullInFlightRef.current) return
-      syncPullInFlightRef.current = true
-      try {
-        const ts = await fetchRemotePayloadUpdatedAt()
-        if (!force) {
-          if (cancelled || ts == null) return
-          if (!fromRealtime && ts === lastRemoteUpdatedAtRef.current) return
-        } else if (cancelled) {
-          return
-        }
-        if (ts != null) lastRemoteUpdatedAtRef.current = ts
-        const cur = dataRef.current
-        const merged = await pullAndMergeWithLocal(cur)
-        if (cancelled || !merged) return
-        if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) return
-        dataRef.current = merged
-        setData(merged)
-        await writeLocalDataCache(merged)
-        setSyncStatus({ mode: 'supabase_ok', message: 'Updated from shared workspace' })
-      } catch (e) {
-        console.warn('Collaborative sync pull failed:', e)
-      } finally {
-        syncPullInFlightRef.current = false
-      }
-    }
-
-    const scheduleMerge = (fromRealtime = false) => {
-      if (debounceTimer) clearTimeout(debounceTimer)
-      debounceTimer = window.setTimeout(() => {
-        debounceTimer = null
-        void applyRemoteMerge(fromRealtime)
-      }, 120)
-    }
-
-    const scheduleResumeMerge = () => {
-      if (document.visibilityState !== 'visible') return
-      if (resumeTimer) clearTimeout(resumeTimer)
-      resumeTimer = window.setTimeout(() => {
-        resumeTimer = null
-        void applyRemoteMerge(false, true)
-      }, 80)
-    }
-
-    const pollTimer = window.setInterval(() => void applyRemoteMerge(false), REMOTE_SYNC_POLL_MS)
-
-    const channel = sb
-      .channel(`vc_app_state:${SHARED_WORKSPACE_ID}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'vc_app_state',
-          filter: `workspace_id=eq.${SHARED_WORKSPACE_ID}`,
-        },
-        () => scheduleMerge(true),
-      )
-      .subscribe()
-
-    void fetchRemotePayloadUpdatedAt().then((t) => {
-      if (!cancelled && t) lastRemoteUpdatedAtRef.current = t
-    })
-    void applyRemoteMerge(false)
-
-    document.addEventListener('visibilitychange', scheduleResumeMerge)
-    window.addEventListener('pageshow', scheduleResumeMerge)
-    window.addEventListener('online', scheduleResumeMerge)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(pollTimer)
-      if (debounceTimer) window.clearTimeout(debounceTimer)
-      if (resumeTimer) window.clearTimeout(resumeTimer)
-      document.removeEventListener('visibilitychange', scheduleResumeMerge)
-      window.removeEventListener('pageshow', scheduleResumeMerge)
-      window.removeEventListener('online', scheduleResumeMerge)
-      void sb.removeChannel(channel)
-    }
-  }, [ready])
+  useSupabaseAppDataSync({
+    ready,
+    dataRef,
+    setData,
+    lastRemoteUpdatedAtRef,
+    syncPullInFlightRef,
+  })
 
   const createCase = useCallback(
     async (input: { ownerUserId: string; caseName: string; description?: string }) => {

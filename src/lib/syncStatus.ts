@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from 'react'
 
-export type SyncMode = 'unknown' | 'supabase_ok' | 'local_fallback'
+type SyncMode = 'unknown' | 'supabase_ok' | 'local_fallback'
 
-export type SyncStatus = {
+type SyncStatus = {
   mode: SyncMode
   message: string
   updatedAt: number

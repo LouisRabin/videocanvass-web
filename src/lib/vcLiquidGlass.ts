@@ -4,12 +4,13 @@ import type { CSSProperties } from 'react'
  * VideoCanvass “liquid glass” design language (map toolbar is the reference).
  *
  * - Primary chrome slabs → `vcLiquidGlassPanel` (map / dock; saturated blue glass).
+ * - Nested chips on those slabs → `vcLiquidGlassPanelNestedLight` (brighter frost so interiors don’t stack muddy).
  * - App shell header → `vcLiquidGlassAppHeader` (neutral slate glass; pairs with page backdrop).
  * - Long lists / dense forms → nest `vcLiquidGlassInnerSurface` inside a panel for readability.
  * - Light labels on blue glass → `vcGlassFgMutedOnPanel`; icons/buttons on glass → `vcGlassFgOnPanel`.
  */
 
-export const VC_LIQUID_GLASS_BLUR = 'blur(22px) saturate(1.45)'
+const VC_LIQUID_GLASS_BLUR = 'blur(22px) saturate(1.45)'
 
 /** Core blue glass used for map toolbars, wide dock pills, and app shell header. */
 export const vcLiquidGlassPanel: CSSProperties = {
@@ -35,6 +36,18 @@ export const vcLiquidGlassPanelDense: CSSProperties = {
   boxShadow: '0 8px 28px rgba(6, 16, 42, 0.34), inset 0 1px 0 rgba(255,255,255,0.18)',
 }
 
+/**
+ * Brighter blue glass for small controls nested on `vcLiquidGlassPanel` (e.g. track step chip in the selection pill).
+ * Same blur language; higher-luminance stops so double-layer chrome stays airy, not a dark band.
+ */
+export const vcLiquidGlassPanelNestedLight: CSSProperties = {
+  background:
+    'linear-gradient(160deg, rgba(255, 255, 255, 0.26) 0%, rgba(150, 184, 232, 0.44) 28%, rgba(118, 156, 214, 0.42) 55%, rgba(98, 136, 196, 0.46) 100%)',
+  backdropFilter: VC_LIQUID_GLASS_BLUR,
+  WebkitBackdropFilter: VC_LIQUID_GLASS_BLUR,
+  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.48), 0 2px 12px rgba(6, 16, 42, 0.14)',
+}
+
 export const vcGlassFgOnPanel = '#f8fafc'
 export const vcGlassFgMutedOnPanel = 'rgba(226, 232, 240, 0.9)'
 export const vcGlassFgDarkReadable = '#0f172a'
@@ -44,11 +57,6 @@ export const vcGlassFgSecondaryOnContent = '#475569'
 
 /** Compact metadata on frosted cards (status line, counts); strong contrast at small sizes. */
 export const vcGlassFgMetaOnContent = '#334155'
-
-/** Text / hint blocks that sit directly on blue glass. */
-export const vcGlassTextMutedStyle: CSSProperties = {
-  color: vcGlassFgMutedOnPanel,
-}
 
 /** Inputs on blue glass (geocode search, auth). Merge with base field border/radius. */
 export const vcGlassFieldOnPanel: CSSProperties = {
@@ -61,11 +69,6 @@ export const vcGlassSuggestionRow: CSSProperties = {
   border: '1px solid rgba(255,255,255,0.22)',
   background: 'rgba(255,255,255,0.96)',
   color: vcGlassFgDarkReadable,
-}
-
-/** Full-viewport cool backdrop (lighter slate–blue; pairs with map toolbar brightness). */
-export const vcLiquidGlassPageBackdrop: CSSProperties = {
-  background: 'linear-gradient(165deg, #1e293b 0%, #334155 34%, #3b4f6a 52%, #334155 74%, #1e293b 100%)',
 }
 
 /**
@@ -91,18 +94,6 @@ export const vcGlassFieldFloatingMapSearch: CSSProperties = {
   background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.9) 100%)',
   border: '1px solid rgba(255, 255, 255, 0.52)',
   boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 10px rgba(15, 23, 42, 0.1)',
-  color: vcGlassFgDarkReadable,
-}
-
-/**
- * Search field on page backdrop (case manager): glass-like rim + frost; pair with `.vc-glass-search-field` for placeholder.
- */
-export const vcGlassSearchFieldOnPage: CSSProperties = {
-  background: 'linear-gradient(180deg, rgba(241, 245, 249, 0.82) 0%, rgba(226, 232, 240, 0.62) 100%)',
-  backdropFilter: 'blur(12px) saturate(1.2)',
-  WebkitBackdropFilter: 'blur(12px) saturate(1.2)',
-  border: '1px solid rgba(255, 255, 255, 0.32)',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.32), 0 4px 20px rgba(15, 23, 42, 0.14)',
   color: vcGlassFgDarkReadable,
 }
 

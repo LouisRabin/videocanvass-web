@@ -8,7 +8,7 @@
 
 import type { AppData, CaseAttachment, CaseFile, Location, Track, TrackPoint } from './types'
 
-export class PermissionDeniedError extends Error {
+class PermissionDeniedError extends Error {
   constructor(message = 'Permission denied') {
     super(message)
     this.name = 'PermissionDeniedError'
@@ -23,12 +23,12 @@ export function findCase(data: AppData, caseId: string): CaseFile | undefined {
   return data.cases.find((c) => c.id === caseId)
 }
 
-export function isCaseOwner(caseFile: CaseFile, userId: string): boolean {
+function isCaseOwner(caseFile: CaseFile, userId: string): boolean {
   return caseFile.ownerUserId === userId
 }
 
 /** User has a collaborator row on this case (any role). */
-export function isCaseCollaborator(data: AppData, caseId: string, userId: string): boolean {
+function isCaseCollaborator(data: AppData, caseId: string, userId: string): boolean {
   return data.caseCollaborators.some((cc) => cc.caseId === caseId && cc.userId === userId)
 }
 
@@ -39,22 +39,15 @@ export function hasCaseAccess(data: AppData, caseId: string, userId: string): bo
   return isCaseCollaborator(data, caseId, userId)
 }
 
-/** Collaborator with no owner privileges. */
-export function isTeamMemberOnly(data: AppData, caseId: string, userId: string): boolean {
-  const c = findCase(data, caseId)
-  if (!c || isCaseOwner(c, userId)) return false
-  return isCaseCollaborator(data, caseId, userId)
-}
-
-export function effectiveLocationCreatorId(loc: Location, caseOwnerId: string): string {
+function effectiveLocationCreatorId(loc: Location, caseOwnerId: string): string {
   return loc.createdByUserId.trim() || caseOwnerId
 }
 
-export function effectiveTrackCreatorId(t: Track, caseOwnerId: string): string {
+function effectiveTrackCreatorId(t: Track, caseOwnerId: string): string {
   return t.createdByUserId.trim() || caseOwnerId
 }
 
-export function effectiveTrackPointCreatorId(p: TrackPoint, caseOwnerId: string): string {
+function effectiveTrackPointCreatorId(p: TrackPoint, caseOwnerId: string): string {
   return p.createdByUserId.trim() || caseOwnerId
 }
 
@@ -123,7 +116,7 @@ export function canManageCollaborators(data: AppData, caseId: string, actorUserI
   return canEditCaseMeta(data, caseId, actorUserId)
 }
 
-export function effectiveCaseAttachmentCreatorId(a: CaseAttachment, caseOwnerId: string): string {
+function effectiveCaseAttachmentCreatorId(a: CaseAttachment, caseOwnerId: string): string {
   return a.createdByUserId.trim() || caseOwnerId
 }
 

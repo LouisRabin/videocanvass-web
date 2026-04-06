@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
   type MutableRefObject,
-  type ReactNode,
 } from 'react'
 import MapGL, { Layer, Marker, Source, useMap, type MapLayerMouseEvent, type MapRef } from 'react-map-gl/maplibre'
 import type { Map as GlMap } from 'maplibre-gl'
@@ -43,7 +42,7 @@ function collapseMaplibreAttributionToCompactChip(map: GlMap) {
 
 /*
  * Table of contents (main component below):
- * - Exported types: UnifiedCaseMapHandle, MapTrackingInteraction, AddressesMapLibreProps
+ * - Exported type: UnifiedCaseMapHandle
  * - Memoized subcomponents: TrackWaypointMarkersMapLibre, TrackTimeLabelsMapLibre
  * - AddressesMapLibreInner: ref/imperative handle, map setup, sources/layers, clustering, events
  */
@@ -68,6 +67,7 @@ import {
   resolveCaseMapBasemapStyle,
   type VcCaseMapBasemapId,
 } from './addressesMapLibreHelpers'
+import { TrackWaypointMarkersMapLibre } from './addressesMapLibre/TrackWaypointMarkers'
 
 export type UnifiedCaseMapHandle = {
   flyTo: (lat: number, lon: number, zoom: number, opts?: { duration?: number }) => void
@@ -81,7 +81,7 @@ export type UnifiedCaseMapHandle = {
   suppressMapClicksFor: (ms: number) => void
 }
 
-export type MapTrackingInteraction = {
+type MapTrackingInteraction = {
   trackPoints: TrackPoint[]
   visibleTrackIds: Record<string, boolean>
   canManipulateTrackPoint: (pointId: string) => boolean
@@ -90,121 +90,6 @@ export type MapTrackingInteraction = {
   addDisabled: boolean
   pickRadiusPx?: number
 }
-
-const TrackWaypointMarkersMapLibre = memo(function TrackWaypointMarkersMapLibre(props: {
-  tracks: Track[]
-  trackPoints: TrackPoint[]
-  visibleTrackIds: Record<string, boolean>
-  selectedPointId: string | null
-  getRouteColor: (trackId: string) => string
-  canManipulatePoint: (pointId: string) => boolean
-  onSelectPoint: (pointId: string) => void
-  draggable: boolean
-  onDragEndPoint?: (pointId: string, lat: number, lon: number) => void
-  onDoubleTapTrackPoint?: (pointId: string) => void
-  /** When false, low-zoom cluster layers replace these markers. */
-  showMarkers?: boolean
-  mapLeftToolDockOpenRef?: MutableRefObject<boolean>
-  blockMapCanvasPointerEvents?: boolean
-}) {
-  const waypointDblTapRef = useRef<{ id: string; t: number; x: number; y: number } | null>(null)
-  const WPT_DBL_MS = 340
-  const WPT_DBL_DIST = 40
-  if (props.showMarkers === false) return null
-  const byTrack = new Map<string, TrackPoint[]>()
-  for (const p of props.trackPoints) {
-    if (props.visibleTrackIds[p.trackId] === false) continue
-    const arr = byTrack.get(p.trackId) ?? []
-    arr.push(p)
-    byTrack.set(p.trackId, arr)
-  }
-  const nodes: ReactNode[] = []
-  for (const track of props.tracks) {
-    if (props.visibleTrackIds[track.id] === false) continue
-    const pts = (byTrack.get(track.id) ?? []).slice().sort(sortTrackPointsStable).filter((p) => p.showOnMap !== false)
-    const base = props.getRouteColor(track.id)
-    for (let i = 0; i < pts.length; i++) {
-      const p = pts[i]!
-      const n = i + 1
-      const ring = props.selectedPointId === p.id ? '0 0 0 3px #111827' : '0 0 0 2px #fff'
-      const canManip = props.canManipulatePoint(p.id)
-      const draggable = !!(canManip && props.draggable && props.onDragEndPoint && !props.blockMapCanvasPointerEvents)
-      const interactive =
-        (!!canManip && (!!props.onSelectPoint || draggable)) || !!props.onDoubleTapTrackPoint
-
-      nodes.push(
-        <Marker
-          key={`wpt-ml-${p.id}`}
-          longitude={p.lon}
-          latitude={p.lat}
-          anchor="center"
-          draggable={draggable}
-          style={{
-            zIndex: props.selectedPointId === p.id ? 40 : 20 + Math.min(i, 15),
-            pointerEvents: props.blockMapCanvasPointerEvents ? 'none' : 'auto',
-          }}
-          onClick={(ev) => {
-            ev.originalEvent?.stopPropagation?.()
-            if (props.blockMapCanvasPointerEvents) return
-            if (props.mapLeftToolDockOpenRef?.current) return
-            if (props.onDoubleTapTrackPoint) {
-              const oe = ev.originalEvent
-              if (oe && 'clientX' in oe) {
-                const now = Date.now()
-                const cx = (oe as MouseEvent).clientX
-                const cy = (oe as MouseEvent).clientY
-                const prev = waypointDblTapRef.current
-                if (
-                  prev &&
-                  prev.id === p.id &&
-                  now - prev.t < WPT_DBL_MS &&
-                  (cx - prev.x) ** 2 + (cy - prev.y) ** 2 < WPT_DBL_DIST ** 2
-                ) {
-                  waypointDblTapRef.current = null
-                  props.onDoubleTapTrackPoint(p.id)
-                  return
-                }
-                waypointDblTapRef.current = { id: p.id, t: now, x: cx, y: cy }
-              }
-            }
-            if (!canManip) return
-            props.onSelectPoint(p.id)
-          }}
-          onDragEnd={
-            draggable && props.onDragEndPoint
-              ? (ev) => {
-                  const ll = ev.lngLat
-                  if (ll) props.onDragEndPoint!(p.id, ll.lat, ll.lng)
-                }
-              : undefined
-          }
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 22,
-              height: 22,
-              borderRadius: 999,
-              background: base,
-              color: '#fff',
-              fontWeight: 900,
-              fontSize: 11,
-              border: '2px solid #fff',
-              boxShadow: `${ring}, 0 1px 4px rgba(0,0,0,0.25)`,
-              cursor: interactive ? 'pointer' : 'default',
-              touchAction: 'manipulation',
-            }}
-          >
-            {n}
-          </div>
-        </Marker>,
-      )
-    }
-  }
-  return <>{nodes}</>
-})
 
 const MAP_TIME_LABEL_OFFSET_MAX = 800
 /**
@@ -503,7 +388,7 @@ function locationFromCanvassRenderedLayers(
   return null
 }
 
-export type AddressesMapLibreProps = {
+type AddressesMapLibreProps = {
   caseTab: 'addresses' | 'tracking'
   defaultCenter: [number, number]
   /**
@@ -699,6 +584,7 @@ function resolveDoubleTapDeepLink(
 
 const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, AddressesMapLibreProps>(
   function AddressesMapLibreInner(props, ref) {
+    const { vectorRingLookupRef } = props
     const mapRef = useRef<MapRef>(null)
     const didFitRef = useRef(false)
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -708,7 +594,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     propsRef.current = props
 
     /** Pair with `mapClickPendingTimerRef`: second tap in quick succession zooms; first tap is deferred. */
-    const mapClickFirstTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
+    const mapClickFirstTapRef = useRef<{ t: number; x: number; y: number; locId?: string } | null>(null)
     const mapClickPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const mapClickPendingEventRef = useRef<MapLayerMouseEvent | null>(null)
     /** After hold-to-switch tab, ignore map clicks until this deadline (pointer-up still synthesizes a click). */
@@ -730,9 +616,9 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           return null
         }
       }
-      props.vectorRingLookupRef.current = lookup
+      vectorRingLookupRef.current = lookup
       return () => {
-        props.vectorRingLookupRef.current = null
+        vectorRingLookupRef.current = null
       }
     })
 
@@ -1397,13 +1283,31 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           const reTapSelected =
             (quick?.id === p.selectedId) || (geomHit?.id === p.selectedId)
           if (reTapSelected) {
+            const sel = p.selectedId
+            const first = mapClickFirstTapRef.current
+            if (
+              p.onDoubleTapLocation &&
+              first &&
+              first.locId === sel &&
+              now - first.t < DOUBLE_TAP_MAX_MS &&
+              (x - first.x) ** 2 + (y - first.y) ** 2 < DOUBLE_TAP_MAX_DIST_PX ** 2
+            ) {
+              if (mapClickPendingTimerRef.current) {
+                clearTimeout(mapClickPendingTimerRef.current)
+                mapClickPendingTimerRef.current = null
+              }
+              mapClickPendingEventRef.current = null
+              mapClickFirstTapRef.current = null
+              p.onDoubleTapLocation(sel)
+              return
+            }
             if (mapClickPendingTimerRef.current) {
               clearTimeout(mapClickPendingTimerRef.current)
               mapClickPendingTimerRef.current = null
             }
             mapClickPendingEventRef.current = null
-            mapClickFirstTapRef.current = null
             runMapClickInteraction(e)
+            mapClickFirstTapRef.current = { t: now, x, y, locId: sel }
             return
           }
         }

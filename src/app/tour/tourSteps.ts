@@ -40,7 +40,7 @@ const CASES_STEPS: TourStepDef[] = [
   {
     id: 'cases-actions',
     title: 'Toolbar actions',
-    body: 'Create a new case, open global results (if available), adjust security / 2FA, or sign out from the top-right.',
+    body: 'Open global results (if available), adjust security / 2FA, or sign out from the top-right. Create a new case from + New beside Status under the case list tabs.',
     target: VC_TOUR.casesActions,
     placement: 'bottom',
     variants: ['both'],
@@ -48,7 +48,7 @@ const CASES_STEPS: TourStepDef[] = [
   {
     id: 'cases-tabs',
     title: 'Lists and status',
-    body: 'Switch between My cases and Team member. Status toggles open cases versus closed — closed cases only appear when Status is set to Closed.',
+    body: 'Use Team Cases / My Cases to switch lists. Use + New case (or + New on small screens) next to Status to create a case. Status toggles open versus closed — closed cases only appear when Status is Closed.',
     target: VC_TOUR.casesTabsSearch,
     placement: 'bottom',
     variants: ['both'],
@@ -67,7 +67,7 @@ const CASE_STEPS_SHARED: TourStepDef[] = [
   {
     id: 'case-welcome',
     title: 'Inside a case',
-    body: 'You are viewing one case. Use Case List to return here. Edit the title or description if you have permission.',
+    body: 'You are viewing one case. Use the ← Cases control to return to the list. Edit the title or description if you have permission.',
     target: VC_TOUR.caseHeaderMeta,
     placement: 'bottom',
     variants: ['both'],
@@ -75,7 +75,7 @@ const CASE_STEPS_SHARED: TourStepDef[] = [
   {
     id: 'case-back',
     title: 'Back to all cases',
-    body: 'Case List returns to the case picker without losing data.',
+    body: '← Cases returns to the case picker without losing data.',
     target: VC_TOUR.caseBack,
     placement: 'bottom',
     variants: ['both'],
@@ -101,8 +101,8 @@ const CASE_STEPS_WEB: TourStepDef[] = [
   },
   {
     id: 'case-list-view',
-    title: 'Map and list',
-    body: 'In Video canvassing, open Views on the map toolbar, then use List view to show addresses in a scrollable list (at the bottom of the map on a wide screen).',
+    title: 'List of addresses',
+    body: 'Open Views on the map toolbar, then List view to show canvass addresses in a scrollable list (bottom sheet on phone, or beside the map on a wide screen). Works in Video canvassing and Subject tracking.',
     target: VC_TOUR.caseListViewBtn,
     placement: 'right',
     variants: ['web'],

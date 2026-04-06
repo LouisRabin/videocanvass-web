@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import MapGL, { Layer, NavigationControl, Source } from 'react-map-gl/maplibre'
 import type { FeatureCollection } from 'geojson'
 import { Layout } from './Layout'

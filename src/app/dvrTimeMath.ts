@@ -1,5 +1,5 @@
 /** DVR displayed time minus real time (ms). Negative ⇒ DVR shows an earlier clock (slow / behind). */
-export type DvrDriftMs = number
+type DvrDriftMs = number
 
 export function driftFromClocks(realMs: number, dvrMs: number): DvrDriftMs {
   return dvrMs - realMs
@@ -71,26 +71,9 @@ export function formatDriftBreakdown(p: { y: number; m: number; d: number; h: nu
   return segments.join(', ')
 }
 
-export function driftDirectionLabel(driftMs: DvrDriftMs): { kind: 'slow' | 'fast' | 'none'; summary: string } {
-  if (driftMs === 0) return { kind: 'none', summary: 'No difference between device time and DVR time.' }
-  const abs = Math.abs(driftMs)
-  const parts = decomposeAbsMs(abs)
-  const breakdown = formatDriftBreakdown(parts)
-  if (driftMs < 0) {
-    return {
-      kind: 'slow',
-      summary: `The DVR clock is ${breakdown} slower than real time (it shows an earlier time).`,
-    }
-  }
-  return {
-    kind: 'fast',
-    summary: `The DVR clock is ${breakdown} faster than real time (it shows a later time).`,
-  }
-}
-
 /** Real-world incident → timestamp to search on DVR (linear drift). */
 export function incidentRealToDvrDisplay(incidentRealMs: number, driftMs: DvrDriftMs): Date {
   return new Date(incidentRealMs + driftMs)
 }
 
-export { dateToDatetimeLocalValue as formatDateTimeLocal, parseDatetimeLocalToTimestamp as parseDateTimeLocal } from '../lib/timeFormat'
+export { parseDatetimeLocalToTimestamp as parseDateTimeLocal } from '../lib/timeFormat'

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- Leaflet / map interop */
 import type { CSSProperties } from 'react'
 import L from 'leaflet'
 import type { CanvassStatus, LatLon, Location, TrackPoint } from '../lib/types'
@@ -71,9 +72,9 @@ export function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
   return a.id.localeCompare(b.id)
 }
 
-export const CASE_MAP_FOCUS_LS = 'videocanvass.caseMapFocus.v1:'
+const CASE_MAP_FOCUS_LS = 'videocanvass.caseMapFocus.v1:'
 
-export type StoredCaseMapFocus = { v: 1; kind: 'location' | 'trackPoint'; id: string; t: number }
+type StoredCaseMapFocus = { v: 1; kind: 'location' | 'trackPoint'; id: string; t: number }
 
 export function readStoredCaseMapFocus(caseId: string): StoredCaseMapFocus | null {
   try {
@@ -97,7 +98,7 @@ export function writeStoredCaseMapFocus(caseId: string, kind: 'location' | 'trac
   }
 }
 
-export function locationBounds(loc: Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>): any {
+function locationBounds(loc: Pick<Location, 'lat' | 'lon' | 'bounds' | 'footprint'>): any {
   if (loc.footprint && loc.footprint.length >= 3) {
     return L.latLngBounds(loc.footprint)
   }
@@ -142,9 +143,6 @@ export function extendBoundsWithPathPoints(
   return out
 }
 
-/** Dense Layout header + main vertical padding (approx.) — subtract from cap for case workspace. */
-export const CASE_WORKSPACE_CHROME_PX = 72
-
 export function casePhotoCarouselArrowStyle(side: 'left' | 'right'): CSSProperties {
   return {
     position: 'absolute',
@@ -169,7 +167,7 @@ export function casePhotoCarouselArrowStyle(side: 'left' | 'right'): CSSProperti
   }
 }
 
-export function normalizeAddressKey(addressText: string): string | null {
+function normalizeAddressKey(addressText: string): string | null {
   const raw = (addressText ?? '').trim()
   if (!raw) return null
 

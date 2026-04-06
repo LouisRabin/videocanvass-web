@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-export type VcAuditAction =
+type VcAuditAction =
   | 'case.delete'
   | 'case_collaborator.add'
   | 'case_collaborator.remove'

@@ -16,7 +16,7 @@ type ReverseResult = {
   category?: string
 }
 
-export type FootprintFetchOptions = {
+type FootprintFetchOptions = {
   /** Used if reverse lookup / Overpass miss (common when the pin sits in the roadway). */
   addressText?: string | null
   /** Optional ring from vector basemap tiles (e.g. Carto `building` layer); used when it passes sanity gates. */

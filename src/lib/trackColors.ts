@@ -12,7 +12,7 @@ function hashString(s: string): number {
 }
 
 /** Normalize to lowercase `#rrggbb` or null. */
-export function normalizeHexColor(c: string): string | null {
+function normalizeHexColor(c: string): string | null {
   const t = c.trim()
   if (/^#[0-9A-Fa-f]{6}$/.test(t)) return t.toLowerCase()
   if (/^#[0-9A-Fa-f]{3}$/.test(t)) {
@@ -61,7 +61,7 @@ function hslToHex(h: number, s: number, l: number): string {
  * Deterministic color not in `used` (for 5th+ track with empty `routeColor`).
  * User-chosen colors can duplicate; this only affects auto-assignment.
  */
-export function stableRandomColorNotIn(used: Set<string>, seed: string): string {
+function stableRandomColorNotIn(used: Set<string>, seed: string): string {
   let h = hashString(seed)
   for (let attempt = 0; attempt < 120; attempt++) {
     const hue = (h + attempt * 47) % 360

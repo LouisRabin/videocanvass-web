@@ -5,9 +5,9 @@ const DEFAULT_ACTION_OPTS: PositionOptions = {
   maximumAge: 0,
 }
 
-export type GeolocationFailCode = 'unsupported' | 'denied' | 'timeout' | 'unavailable' | 'unknown'
+type GeolocationFailCode = 'unsupported' | 'denied' | 'timeout' | 'unavailable' | 'unknown'
 
-export type GeolocationRequestResult =
+type GeolocationRequestResult =
   | { ok: true; position: GeolocationPosition }
   | { ok: false; code: GeolocationFailCode }
 
@@ -33,7 +33,7 @@ export async function requestCurrentPosition(
   }
 }
 
-export type GeolocationPermissionState = 'granted' | 'denied' | 'prompt' | 'unsupported'
+type GeolocationPermissionState = 'granted' | 'denied' | 'prompt' | 'unsupported'
 
 /**
  * Best-effort read of geolocation permission (not supported in all browsers).

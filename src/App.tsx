@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
 import { relationalBackendEnabled } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
@@ -8,11 +8,9 @@ import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
 import { CasesPage } from './app/CasesPage'
-import { CasePage } from './app/CasePage'
 import { Layout } from './app/Layout'
 import { LoginPage } from './app/LoginPage'
 import { MfaTotpChallengePanel } from './app/MfaTotpChallengePanel'
-import { GlobalCanvassAdminPage } from './app/GlobalCanvassAdminPage'
 import { getPreferredTotpFactorId, sessionNeedsTotpStep } from './lib/mfaAuth'
 import type { AppUser } from './lib/types'
 import { TourProvider } from './app/tour/TourContext'
@@ -26,6 +24,32 @@ import {
   vcGlassHeaderBtn,
   vcLiquidGlassInnerSurface,
 } from './lib/vcLiquidGlass'
+
+const CasePage = lazy(async () => {
+  const m = await import('./app/CasePage')
+  return { default: m.CasePage }
+})
+
+const GlobalCanvassAdminPage = lazy(async () => {
+  const m = await import('./app/GlobalCanvassAdminPage')
+  return { default: m.GlobalCanvassAdminPage }
+})
+
+const routeSuspenseFallback = (
+  <div
+    style={{
+      flex: 1,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: vcGlassFgMutedOnPanel,
+      fontWeight: 700,
+      fontSize: 14,
+    }}
+  >
+    Loading…
+  </div>
+)
 
 function App() {
   const targetMode = useTargetMode()
@@ -122,7 +146,8 @@ function SessionGate() {
       displayName: sessionMeta.displayName,
       email: sessionMeta.email,
       taxNumber: sessionMeta.taxNumber,
-      createdAt: Date.now(),
+      /** Placeholder until `vc_profiles` row is merged from the store. */
+      createdAt: 0,
     }
   }, [data.users, sessionMeta, sessionUserId])
 
@@ -330,7 +355,11 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
   }, [data, route, props.currentUser.id])
 
   if (route.name === 'admin_global') {
-    return <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
+    return (
+      <Suspense fallback={routeSuspenseFallback}>
+        <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
+      </Suspense>
+    )
   }
 
   if (route.name === 'cases') {
@@ -360,7 +389,9 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
   }
 
   return (
-    <CasePage caseId={currentCase.id} currentUser={props.currentUser} onBack={() => setRoute({ name: 'cases' })} />
+    <Suspense fallback={routeSuspenseFallback}>
+      <CasePage caseId={currentCase.id} currentUser={props.currentUser} onBack={() => setRoute({ name: 'cases' })} />
+    </Suspense>
   )
 }
 

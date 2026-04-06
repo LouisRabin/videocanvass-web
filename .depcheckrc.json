@@ -1,0 +1,9 @@
+{
+  "ignores": [
+    "@capacitor/android",
+    "@capacitor/ios",
+    "knip",
+    "depcheck"
+  ],
+  "ignoreMatches": ["geojson"]
+}

@@ -25,10 +25,5 @@
     "noUncheckedSideEffectImports": true
   },
   "include": ["src"],
-  "exclude": [
-    "src/**/*-SamsungTV.ts",
-    "src/**/*-SamsungTV.tsx",
-    "src/**/*-DESKTOP-NC1PT5R.ts",
-    "src/**/*-DESKTOP-NC1PT5R.tsx"
-  ]
+  "exclude": ["src/**/*-SamsungTV.ts", "src/**/*-SamsungTV.tsx"]
 }

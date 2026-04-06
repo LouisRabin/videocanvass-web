@@ -1,6 +1,6 @@
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from 'react'
 
-export type MobileOS = 'ios' | 'android'
+type MobileOS = 'ios' | 'android'
 
 /**
  * Best-effort OS hint for tuning native controls. Desktop / unknown mobile UAs return null.
