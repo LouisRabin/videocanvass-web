@@ -90,6 +90,13 @@ type StoreState = {
       | { caseId: string; createdByUserId: string; trackId: string; locationId: string; visitedAt?: number | null }
       | { caseId: string; createdByUserId: string; trackId: string; lat: number; lon: number; label?: string; visitedAt?: number | null },
   ) => Promise<string>
+  /** Append many lat/lon steps in order with one persist (e.g. spreadsheet import). */
+  createTrackPointsBulk: (input: {
+    caseId: string
+    createdByUserId: string
+    trackId: string
+    points: Array<{ lat: number; lon: number; label?: string; visitedAt?: number | null }>
+  }) => Promise<string[]>
   deleteTrackPoint: (actorUserId: string, pointId: string) => Promise<void>
   updateTrackPoint: (
     actorUserId: string,
@@ -180,6 +187,8 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   const syncPullInFlightRef = useRef(false)
   /** Serialize remote commits so save completions apply in order. */
   const remoteCommitChainRef = useRef(Promise.resolve())
+  /** Serialize track creates so auto `routeColor` always accounts for paths just added (subject + import). */
+  const createTrackChainRef = useRef(Promise.resolve())
 
   useEffect(() => {
     let alive = true
@@ -599,34 +608,41 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   )
 
   const createTrack = useCallback(
-    async (input: { caseId: string; createdByUserId: string; label: string; kind: Track['kind'] }) => {
-      const now = Date.now()
-      const id = newId('track')
-      const current = dataRef.current
-      assertPermission(canAddCaseContent(current, input.caseId, input.createdByUserId.trim()))
-      const label = input.label.trim()
-      const existing = current.tracks.filter((t) => t.caseId === input.caseId)
-      const routeColor = pickRouteColorForNewTrack(existing, id)
+    (input: { caseId: string; createdByUserId: string; label: string; kind: Track['kind'] }) => {
+      const run = createTrackChainRef.current.then(() => {
+        const now = Date.now()
+        const id = newId('track')
+        const current = dataRef.current
+        assertPermission(canAddCaseContent(current, input.caseId, input.createdByUserId.trim()))
+        const label = input.label.trim()
+        const existing = current.tracks.filter((t) => t.caseId === input.caseId)
+        const routeColor = pickRouteColorForNewTrack(existing, id)
 
-      const t: Track = {
-        id,
-        caseId: input.caseId,
-        label: label || 'Track',
-        kind: input.kind,
-        routeColor,
-        createdByUserId: input.createdByUserId.trim(),
-        createdAt: now,
-        updatedAt: now,
-      }
+        const t: Track = {
+          id,
+          caseId: input.caseId,
+          label: label || 'Track',
+          kind: input.kind,
+          routeColor,
+          createdByUserId: input.createdByUserId.trim(),
+          createdAt: now,
+          updatedAt: now,
+        }
 
-      const next: AppData = {
-        ...current,
-        tracks: [t, ...current.tracks],
-        cases: current.cases.map((c) => (c.id === input.caseId ? { ...c, updatedAt: now } : c)),
-      }
+        const next: AppData = {
+          ...current,
+          tracks: [t, ...current.tracks],
+          cases: current.cases.map((c) => (c.id === input.caseId ? { ...c, updatedAt: now } : c)),
+        }
 
-      await persist(next)
-      return id
+        persist(next)
+        return id
+      })
+      createTrackChainRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      )
+      return run
     },
     [persist],
   )
@@ -763,6 +779,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           displayTimeOnMap: false,
           mapTimeLabelOffsetX: 0,
           mapTimeLabelOffsetY: 0,
+          placementSource: 'map',
           createdByUserId: actor,
           createdAt: stamp,
           updatedAt: stamp,
@@ -796,6 +813,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         displayTimeOnMap: false,
         mapTimeLabelOffsetX: 0,
         mapTimeLabelOffsetY: 0,
+        placementSource: 'map',
         createdByUserId: actor,
         createdAt: stamp,
         updatedAt: stamp,
@@ -808,6 +826,61 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       }
       persist(next)
       return id
+    },
+    [nextTrackSequence, persist],
+  )
+
+  const createTrackPointsBulk = useCallback(
+    async (input: {
+      caseId: string
+      createdByUserId: string
+      trackId: string
+      points: Array<{ lat: number; lon: number; label?: string; visitedAt?: number | null }>
+    }) => {
+      const { caseId, trackId, points } = input
+      const actor = input.createdByUserId.trim()
+      if (!points.length) return []
+      const stamp = Date.now()
+      const current = dataRef.current
+      assertPermission(canAddCaseContent(current, caseId, actor))
+      let sequence = nextTrackSequence(current, trackId)
+      const newPoints: TrackPoint[] = []
+      const ids: string[] = []
+      for (let i = 0; i < points.length; i++) {
+        const pt = points[i]!
+        const id = newId('trackpt')
+        ids.push(id)
+        const seq = sequence++
+        const label = pt.label?.trim() || `Step ${seq + 1}`
+        const visitedAt = pt.visitedAt !== undefined ? pt.visitedAt : null
+        newPoints.push({
+          id,
+          caseId,
+          trackId,
+          locationId: null,
+          addressText: label,
+          lat: pt.lat,
+          lon: pt.lon,
+          sequence: seq,
+          visitedAt: visitedAt != null && Number.isFinite(visitedAt) ? visitedAt : null,
+          notes: '',
+          showOnMap: true,
+          displayTimeOnMap: false,
+          mapTimeLabelOffsetX: 0,
+          mapTimeLabelOffsetY: 0,
+          placementSource: 'import',
+          createdByUserId: actor,
+          createdAt: stamp,
+          updatedAt: stamp,
+        })
+      }
+      const next: AppData = {
+        ...current,
+        trackPoints: [...newPoints.slice().reverse(), ...current.trackPoints],
+        cases: current.cases.map((c) => (c.id === caseId ? { ...c, updatedAt: stamp } : c)),
+      }
+      await persist(next)
+      return ids
     },
     [nextTrackSequence, persist],
   )
@@ -941,6 +1014,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       deleteTrack,
       deleteAllTracksForCase,
       createTrackPoint,
+      createTrackPointsBulk,
       deleteTrackPoint,
       updateTrackPoint,
       updateLocation,
@@ -963,6 +1037,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       deleteTrack,
       deleteAllTracksForCase,
       createTrackPoint,
+      createTrackPointsBulk,
       deleteTrackPoint,
       updateTrackPoint,
       updateLocation,

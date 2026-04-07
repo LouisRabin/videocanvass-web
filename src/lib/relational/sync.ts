@@ -196,12 +196,14 @@ type TpRow = {
   display_time_on_map: boolean
   map_time_label_offset_x: number
   map_time_label_offset_y: number
+  placement_source?: string | null
   created_by_user_id: string
   created_at_ms: number
   updated_at_ms: number
 }
 
 function rowToTrackPoint(r: TpRow): TrackPoint {
+  const ps = r.placement_source === 'import' ? 'import' : 'map'
   return {
     id: r.id,
     caseId: r.case_id,
@@ -217,6 +219,7 @@ function rowToTrackPoint(r: TpRow): TrackPoint {
     displayTimeOnMap: r.display_time_on_map,
     mapTimeLabelOffsetX: r.map_time_label_offset_x,
     mapTimeLabelOffsetY: r.map_time_label_offset_y,
+    placementSource: ps,
     createdByUserId: r.created_by_user_id,
     createdAt: r.created_at_ms,
     updatedAt: r.updated_at_ms,
@@ -239,6 +242,7 @@ function trackPointToRow(p: TrackPoint): Record<string, unknown> {
     display_time_on_map: p.displayTimeOnMap,
     map_time_label_offset_x: p.mapTimeLabelOffsetX,
     map_time_label_offset_y: p.mapTimeLabelOffsetY,
+    placement_source: p.placementSource === 'import' ? 'import' : 'map',
     created_by_user_id: p.createdByUserId,
     created_at_ms: p.createdAt,
     updated_at_ms: p.updatedAt ?? p.createdAt,

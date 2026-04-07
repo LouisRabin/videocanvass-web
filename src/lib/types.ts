@@ -72,6 +72,8 @@ export const TrackPointSchema = z.object({
   // Pixel offset for that time label relative to the default spot next to the pin.
   mapTimeLabelOffsetX: z.number().int().default(0),
   mapTimeLabelOffsetY: z.number().int().default(0),
+  /** `map` = subject tracking (tap on map); `import` = coordinate spreadsheet / paste import. */
+  placementSource: z.enum(['map', 'import']).default('map'),
   createdByUserId: z.string().default(''),
   createdAt: z.number(),
   /** Bump on every edit; used for merge (createdAt alone stays fixed after create). */

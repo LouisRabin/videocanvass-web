@@ -3,7 +3,7 @@ import type { Location, TrackPoint } from '../../lib/types'
 import { statusColor } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
 import { DvrSingleDateTimePicker } from '../ProbativeDvrFlow'
-import { formatAddressLineForMapList } from '../casePageHelpers'
+import { formatAddressLineForMapList, formatLatLonForStepUi } from '../casePageHelpers'
 import {
   vcGlassBtnPrimary,
   vcGlassBtnSecondary,
@@ -542,9 +542,21 @@ export function TrackPointDrawer(props: {
     </div>
   )
 
+  const coordLine = formatLatLonForStepUi(props.point.lat, props.point.lon)
   const notesBlock = (
     <div>
       <div style={label}>Notes</div>
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 700,
+          color: '#64748b',
+          marginBottom: 6,
+          fontFamily: 'ui-monospace, monospace',
+        }}
+      >
+        {coordLine}
+      </div>
       <textarea
         value={props.point.notes ?? ''}
         readOnly={!canEdit}
@@ -614,20 +626,7 @@ export function TrackPointDrawer(props: {
   if (embedInModal) {
     return (
       <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
-        <div>
-          <div style={label}>Notes</div>
-          <textarea
-            value={props.point.notes ?? ''}
-            readOnly={!canEdit}
-            onChange={(e) => props.onUpdate({ notes: e.target.value })}
-            placeholder="What happened here?"
-            style={{
-              ...fieldBox,
-              minHeight: 120,
-              resize: 'vertical',
-            }}
-          />
-        </div>
+        {notesBlock}
         {timeBlock}
         {toggles}
       </div>

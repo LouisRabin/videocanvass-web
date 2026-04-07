@@ -28,12 +28,14 @@ export function Modal(props: {
   useEffect(() => {
     if (!props.open || !narrow) return
     const vv = window.visualViewport
+    /** Must bail out when values are unchanged: new object each call would always re-render, and scroll/resize during commit can loop (e.g. tall modal after Excel import). */
     const sync = () => {
-      if (vv) {
-        setVvLay({ top: vv.offsetTop, height: vv.height })
-      } else {
-        setVvLay({ top: 0, height: window.innerHeight })
-      }
+      const top = vv ? vv.offsetTop : 0
+      const height = vv ? vv.height : window.innerHeight
+      setVvLay((prev) => {
+        if (Math.abs(prev.top - top) < 0.5 && Math.abs(prev.height - height) < 0.5) return prev
+        return { top, height }
+      })
     }
     sync()
     vv?.addEventListener('resize', sync)

@@ -34,6 +34,11 @@ export function samePendingPin(a: { lat: number; lon: number }, b: { lat: number
   return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5
 }
 
+/** Compact lat, lon for step headers, map chips, and notes context (five decimal places). */
+export function formatLatLonForStepUi(lat: number, lon: number): string {
+  return `${lat.toFixed(5)}, ${lon.toFixed(5)}`
+}
+
 /** Map-tap placeholder before reverse geocode; also used to decide when to keep resolving in the background. */
 export function isProvisionalCanvassLabel(text: string | undefined | null): boolean {
   const t = (text ?? '').trim()

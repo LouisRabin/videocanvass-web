@@ -62,6 +62,46 @@ export const MAP_RESUME_FOCUS_ZOOM = 17
 export const CLUSTER_MAX_ZOOM = 13
 export const CLUSTER_RADIUS_PX = 52
 
+export type TrackClusterMembersPayload = {
+  pointCount: number
+  center: { lat: number; lon: number }
+  members: Array<{ pointId: string; stepNum: number; trackId: string; label: string }>
+}
+
+const TRACK_CLUSTER_LEAVES_MAX = 200
+
+/** Resolve clustered waypoint features to leaf properties (MapLibre GeoJSON source). */
+export async function fetchTrackClusterLeaves(
+  map: GlMap,
+  sourceId: string,
+  clusterFeature: Feature,
+  limit = TRACK_CLUSTER_LEAVES_MAX,
+): Promise<TrackClusterMembersPayload['members']> {
+  const raw = clusterFeature.properties?.cluster_id
+  const clusterId = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(clusterId)) return []
+
+  const src = map.getSource(sourceId) as
+    | (GeoJSONSource & { getClusterLeaves?: (id: number, lim: number, off: number) => Promise<Feature[]> })
+    | undefined
+  const getLeaves = src?.getClusterLeaves
+  if (typeof getLeaves !== 'function') return []
+
+  try {
+    const leaves = await getLeaves.call(src, clusterId, limit, 0)
+    return leaves
+      .map((leaf) => ({
+        pointId: String(leaf.properties?.pid ?? ''),
+        stepNum: Number(leaf.properties?.stepNum ?? 0),
+        trackId: String(leaf.properties?.trackId ?? ''),
+        label: String(leaf.properties?.wptLabel ?? ''),
+      }))
+      .filter((m) => m.pointId)
+  } catch {
+    return []
+  }
+}
+
 export function easeClusterExpansion(
   map: GlMap,
   sourceId: string,
@@ -259,9 +299,11 @@ export function buildTrackWaypointClusterCollection(
     const base = getRouteColor(track.id)
     for (let i = 0; i < pts.length; i++) {
       const p = pts[i]!
+      const stepNum = i + 1
+      const wptLabel = (p.addressText?.trim() || `Step ${stepNum}`).slice(0, 80)
       features.push({
         type: 'Feature',
-        properties: { pid: p.id, color: base, stepNum: i + 1 },
+        properties: { pid: p.id, color: base, stepNum, trackId: track.id, wptLabel },
         geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
       })
     }
@@ -281,41 +323,7 @@ export function buildCanvassLocationClusterCollection(mapPins: Location[]): Feat
   }
 }
 
-export function buildTracksData(
-  tracks: Track[],
-  trackPoints: TrackPoint[],
-  visibleTrackIds: Record<string, boolean>,
-  getRouteColor: (trackId: string) => string,
-): { lines: FeatureCollection } {
-  const lineFeatures: FeatureCollection['features'] = []
-
-  const byTrack = new Map<string, TrackPoint[]>()
-  for (const p of trackPoints) {
-    const arr = byTrack.get(p.trackId) ?? []
-    arr.push(p)
-    byTrack.set(p.trackId, arr)
-  }
-
-  for (const t of tracks) {
-    if (visibleTrackIds[t.id] === false) continue
-    const pts = (byTrack.get(t.id) ?? [])
-      .slice()
-      .sort(sortTrackPointsStable)
-      .filter((p) => p.showOnMap !== false)
-    if (pts.length < 2) continue
-    const color = getRouteColor(t.id)
-    const coords = pts.map((p) => [p.lon, p.lat] as Position)
-    lineFeatures.push({
-      type: 'Feature',
-      properties: { color },
-      geometry: { type: 'LineString', coordinates: coords },
-    })
-  }
-
-  return {
-    lines: { type: 'FeatureCollection', features: lineFeatures },
-  }
-}
+export { buildTracksData } from '../lib/buildTrackLinesGeojson'
 
 /** Visit-density heatmap: weight per canvass location from track-step links and last-visit signal. */
 export function buildVisitDensityHeatmapCollection(

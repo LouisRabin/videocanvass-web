@@ -1,6 +1,6 @@
 import type { Track } from './types'
 
-/** First four tracks (by creation order) get these colors when `routeColor` is empty. */
+/** Preferred palette for auto-assigned path colors (first free slot not already in use). */
 export const TRACK_DEFAULT_COLORS_FIRST_FOUR = ['#2563eb', '#dc2626', '#22c55e', '#9333ea'] as const
 
 function hashString(s: string): number {
@@ -58,8 +58,8 @@ function hslToHex(h: number, s: number, l: number): string {
 }
 
 /**
- * Deterministic color not in `used` (for 5th+ track with empty `routeColor`).
- * User-chosen colors can duplicate; this only affects auto-assignment.
+ * Deterministic color not in `used` (after default quartet is exhausted or fully taken).
+ * User-chosen `routeColor` may duplicate; this only affects auto-assignment.
  */
 function stableRandomColorNotIn(used: Set<string>, seed: string): string {
   let h = hashString(seed)
@@ -79,30 +79,47 @@ function stableRandomColorNotIn(used: Set<string>, seed: string): string {
 }
 
 /**
- * Oldest-first: index 0..3 use default quartet; 4+ use stable random avoiding colors
- * already taken by earlier tracks (explicit `routeColor` or computed defaults).
+ * Oldest-first: empty `routeColor` picks the first default-quartet color not already used by any
+ * track (explicit or auto). Duplicates are allowed only when the user sets `routeColor` explicitly.
+ * After the quartet is exhausted, uses stable random distinct colors.
  */
 export function buildResolvedTrackColorMap(tracks: Track[]): Map<string, string> {
   const sorted = [...tracks].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
   const out = new Map<string, string>()
   const used = new Set<string>()
-  for (let i = 0; i < sorted.length; i++) {
-    const t = sorted[i]!
-    let c = normalizeHexColor(t.routeColor ?? '')
-    if (!c) {
-      c = i < 4 ? TRACK_DEFAULT_COLORS_FIRST_FOUR[i]! : stableRandomColorNotIn(used, t.id)
+  for (const t of sorted) {
+    const explicit = normalizeHexColor(t.routeColor ?? '')
+    if (explicit) {
+      out.set(t.id, explicit)
+      used.add(explicit)
+      continue
     }
+    let c: string | null = null
+    for (const d of TRACK_DEFAULT_COLORS_FIRST_FOUR) {
+      if (!used.has(d)) {
+        c = d
+        break
+      }
+    }
+    if (!c) c = stableRandomColorNotIn(used, t.id)
     out.set(t.id, c)
     used.add(c)
   }
   return out
 }
 
-/** Color for a new track before it exists (n = current count in case). */
+/** Colors already taken by other paths in the case (resolved from stored `routeColor` + auto palette rules). */
+export function collectUsedResolvedRouteColors(tracks: Track[]): Set<string> {
+  const m = buildResolvedTrackColorMap(tracks)
+  return new Set(m.values())
+}
+
+/** Color stored on a new track: first free default, else distinct random vs all existing resolved colors. */
 export function pickRouteColorForNewTrack(existingInCase: Track[], newTrackId: string): string {
   const sorted = [...existingInCase].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-  const n = sorted.length
-  if (n < 4) return TRACK_DEFAULT_COLORS_FIRST_FOUR[n]!
-  const used = new Set(buildResolvedTrackColorMap(sorted).values())
+  const used = collectUsedResolvedRouteColors(sorted)
+  for (const d of TRACK_DEFAULT_COLORS_FIRST_FOUR) {
+    if (!used.has(d)) return d
+  }
   return stableRandomColorNotIn(used, newTrackId)
 }

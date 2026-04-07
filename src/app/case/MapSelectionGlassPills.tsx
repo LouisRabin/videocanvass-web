@@ -85,8 +85,10 @@ export function MapTrackQuickPickChip(props: {
   const dot = modal ? 11 : 10
   const nameFs = modal ? 15 : 13
   const stepFs = modal ? 13 : 12
+  const stepLine = `Step ${props.stepIndex}`
+  const titleTip = `${rawName} · ${stepLine}`
   return (
-    <div style={mapTrackQuickChipShell(tc)} title={`${rawName} · Step ${props.stepIndex}`}>
+    <div style={mapTrackQuickChipShell(tc)} title={titleTip}>
       <span
         aria-hidden
         style={{
@@ -120,9 +122,12 @@ export function MapTrackQuickPickChip(props: {
           color: vcGlassFgMutedOnPanel,
           flexShrink: 0,
           whiteSpace: 'nowrap',
+          maxWidth: modal ? 280 : 220,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
         }}
       >
-        Step {props.stepIndex}
+        {stepLine}
       </span>
     </div>
   )

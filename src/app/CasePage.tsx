@@ -11,6 +11,7 @@ import {
 import { Layout } from './Layout'
 import { Modal } from './Modal'
 import { AddressesMapLibre, type UnifiedCaseMapHandle } from './AddressesMapLibre'
+import type { TrackClusterMembersPayload } from './addressesMapLibreHelpers'
 import { useStore } from '../lib/store'
 import {
   canAddCaseContent,
@@ -26,7 +27,7 @@ import {
   canEditTrackPoint,
 } from '../lib/casePermissions'
 import { processCaseImageFile } from '../lib/caseImageUpload'
-import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track } from '../lib/types'
+import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track, TrackPoint } from '../lib/types'
 import { caseAttachmentKindLabel, statusColor, statusLabel } from '../lib/types'
 import { GEOCODE_SCOPE, reverseGeocodeAddressText, type PlaceSuggestion } from '../lib/geocode'
 import { fetchBuildingFootprint } from '../lib/building'
@@ -104,6 +105,29 @@ import {
   MapTrackQuickPickChip,
   MapTrackSelectionPill,
 } from './case/MapSelectionGlassPills'
+import { MapDockTrackRows } from './case/MapDockTrackRows'
+import { TrackImportPanel } from './case/TrackImportPanel'
+import type { LatLonPoint } from '../lib/trackLatLonImport'
+import {
+  computeContiguousDwellSegments,
+  dwellEpsilonMeters,
+  filterTrackPointsForMapDisplay,
+  type TrackSimplifyPreset,
+} from '../lib/trackPathSimplify'
+import {
+  formatDwellSegmentLabel,
+  getBrowserIanaTimeZone,
+  isValidIanaTimeZone,
+  listIanaTimeZones,
+  loadStoredTrackDisplayTimeZone,
+  saveTrackDisplayTimeZone,
+} from '../lib/trackTimeDisplay'
+import { readStoredWaypointGroupTolerance, saveWaypointGroupTolerance } from '../lib/trackWaypointProximityGroups'
+import {
+  isImportedCoordinatePoint,
+  isMapPlacedTrackPoint,
+  trackBelongsInTracksMapTab,
+} from '../lib/trackPointPlacement'
 import { useCaseGeocodeSearch } from './case/hooks/useCaseGeocodeSearch'
 import { useMapPaneOutsideDismiss } from './case/hooks/useMapPaneOutsideDismiss'
 import { WebCaseWorkspace } from './case/web/WebCaseWorkspace'
@@ -180,6 +204,31 @@ function nextCaseBasemap(current: VcCaseMapBasemapId): VcCaseMapBasemapId {
   return CASE_BASEMAP_CYCLE[idx]
 }
 
+const TRACK_SIMPLIFY_STORAGE_KEY = 'vc.trackSimplifyPreset'
+
+function readStoredTrackSimplifyPreset(): TrackSimplifyPreset {
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(TRACK_SIMPLIFY_STORAGE_KEY) : null
+    if (v === 'moderate' || v === 'aggressive' || v === 'off') return v
+  } catch {
+    /* ignore */
+  }
+  return 'moderate'
+}
+
+const PLAYBACK_SPEED_STEPS = [0.25, 0.5, 1, 2, 4] as const
+
+function playbackDelayBetweenSteps(a: TrackPoint, b: TrackPoint, speedMult: number): number {
+  const MIN = 450
+  const MAX = 120_000
+  const ta = a.visitedAt ?? a.createdAt
+  const tb = b.visitedAt ?? b.createdAt
+  let d = tb - ta
+  if (!Number.isFinite(d) || d <= 0) d = MIN
+  d = d / speedMult
+  return Math.min(MAX, Math.max(MIN, d))
+}
+
 function caseBasemapAriaLabel(id: VcCaseMapBasemapId): string {
   switch (id) {
     case 'satellite':
@@ -206,6 +255,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     deleteTrack,
     deleteAllTracksForCase,
     createTrackPoint,
+    createTrackPointsBulk,
     deleteTrackPoint,
     updateTrackPoint,
   } =
@@ -260,8 +310,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setMapBasemap((b) => nextCaseBasemap(b))
   }, [])
   const [mapLeftToolDockOpen, setMapLeftToolDockOpen] = useState(false)
-  type MapToolsDockSection = 'filters' | 'views' | 'photos' | 'tracks' | 'dvr'
+  type MapToolsDockSection = 'filters' | 'views' | 'photos' | 'tracks' | 'importCoords' | 'dvr'
+  type MapToolsDockRailSection = MapToolsDockSection
   const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
+  const [trackImportModalOpen, setTrackImportModalOpen] = useState(false)
+  const [trackClusterModal, setTrackClusterModal] = useState<TrackClusterMembersPayload | null>(null)
   /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
   const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
   /** Addresses list panel: status filter chips collapsed until user taps Filters. */
@@ -654,6 +707,57 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [visibleTrackIds, setVisibleTrackIds] = useState<Record<string, boolean>>({})
   const caseTrackPoints = useMemo(() => data.trackPoints.filter((p) => p.caseId === props.caseId), [data.trackPoints, props.caseId])
 
+  /** Map tools Tracks tab: subject paths only (empty or map-placed steps). Import-only paths → Import coordinates. */
+  const caseTracksForMapDockTracksTab = useMemo(
+    () => caseTracks.filter((t) => trackBelongsInTracksMapTab(t, caseTrackPoints)),
+    [caseTracks, caseTrackPoints],
+  )
+
+  const caseTracksForImportCoordsPanel = useMemo(() => {
+    const withImports = new Set(
+      caseTrackPoints.filter((p) => isImportedCoordinatePoint(p)).map((p) => p.trackId),
+    )
+    return caseTracks
+      .filter((t) => withImports.has(t.id))
+      .slice()
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+  }, [caseTracks, caseTrackPoints])
+
+  const trackClusterModalVisibleMembers = useMemo(() => {
+    if (!trackClusterModal) return []
+    if (caseTab !== 'tracking') return trackClusterModal.members
+    return trackClusterModal.members.filter((m) => {
+      const pt = caseTrackPoints.find((p) => p.id === m.pointId)
+      return pt != null && isMapPlacedTrackPoint(pt)
+    })
+  }, [trackClusterModal, caseTab, caseTrackPoints])
+
+  const [trackSimplifyPreset, setTrackSimplifyPreset] = useState<TrackSimplifyPreset>(() => readStoredTrackSimplifyPreset())
+  useEffect(() => {
+    try {
+      localStorage.setItem(TRACK_SIMPLIFY_STORAGE_KEY, trackSimplifyPreset)
+    } catch {
+      /* ignore */
+    }
+  }, [trackSimplifyPreset])
+
+  const [trackDisplayTzInput, setTrackDisplayTzInput] = useState(() => loadStoredTrackDisplayTimeZone() ?? getBrowserIanaTimeZone())
+  const trackDisplayTimeZone = isValidIanaTimeZone(trackDisplayTzInput) ? trackDisplayTzInput.trim() : getBrowserIanaTimeZone()
+  const trackDockIanaZones = useMemo(() => listIanaTimeZones().slice().sort((a, b) => a.localeCompare(b)), [])
+  useEffect(() => {
+    if (isValidIanaTimeZone(trackDisplayTzInput)) saveTrackDisplayTimeZone(trackDisplayTzInput.trim())
+  }, [trackDisplayTzInput])
+
+  const [waypointGroupTolerance, setWaypointGroupTolerance] = useState(() => readStoredWaypointGroupTolerance())
+  useEffect(() => {
+    saveWaypointGroupTolerance(waypointGroupTolerance)
+  }, [waypointGroupTolerance])
+
+  const [importPanelDwellExpanded, setImportPanelDwellExpanded] = useState(false)
+  useEffect(() => {
+    if (mapLeftToolSection !== 'importCoords') setImportPanelDwellExpanded(false)
+  }, [mapLeftToolSection])
+
   const visitHeatmapGeojson = useMemo(
     () =>
       canUseVisitHeatmap
@@ -669,13 +773,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const trackNameSelectClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const trackForMapAdd = useMemo(() => {
-    if (autoContinuationTrackId && caseTracks.some((t) => t.id === autoContinuationTrackId)) return autoContinuationTrackId
-    return caseTracks[0]?.id ?? null
-  }, [autoContinuationTrackId, caseTracks])
+    const pool = caseTracksForMapDockTracksTab
+    if (autoContinuationTrackId && pool.some((t) => t.id === autoContinuationTrackId)) return autoContinuationTrackId
+    return pool[0]?.id ?? null
+  }, [autoContinuationTrackId, caseTracksForMapDockTracksTab])
   const [showManageTracks, setShowManageTracks] = useState(false)
 
   useEffect(() => {
-    if (mapLeftToolSection !== 'tracks') setTrackListNameEditingId(null)
+    if (mapLeftToolSection !== 'tracks' && mapLeftToolSection !== 'importCoords') {
+      setTrackListNameEditingId(null)
+    }
   }, [mapLeftToolSection])
 
   useEffect(() => {
@@ -691,6 +798,35 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [])
   const [selectedTrackPointId, setSelectedTrackPointId] = useState<string | null>(null)
+  /** Tracks dock = subject paths only on the map; imports stay in Import coordinates. */
+  const caseTrackPointsForMapSource = useMemo(() => {
+    if (mapLeftToolSection !== 'tracks') return caseTrackPoints
+    return caseTrackPoints.filter((p) => isMapPlacedTrackPoint(p))
+  }, [mapLeftToolSection, caseTrackPoints])
+
+  const caseTrackPointsForMap = useMemo(
+    () =>
+      filterTrackPointsForMapDisplay(
+        caseTrackPointsForMapSource,
+        caseTracks,
+        visibleTrackIds,
+        trackSimplifyPreset,
+        selectedTrackPointId,
+      ),
+    [caseTrackPointsForMapSource, caseTracks, visibleTrackIds, trackSimplifyPreset, selectedTrackPointId],
+  )
+
+  useEffect(() => {
+    if (mapLeftToolSection !== 'tracks') return
+    const p = selectedTrackPointId ? caseTrackPoints.find((x) => x.id === selectedTrackPointId) : null
+    if (p && isImportedCoordinatePoint(p)) setSelectedTrackPointId(null)
+  }, [mapLeftToolSection, selectedTrackPointId, caseTrackPoints])
+  const [playbackPlaying, setPlaybackPlaying] = useState(false)
+  const [playbackStepIndex, setPlaybackStepIndex] = useState(0)
+  const [playbackSpeedIdx, setPlaybackSpeedIdx] = useState(2)
+  const playbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const playbackIndexRef = useRef(0)
+  const playbackSpeedMultRef = useRef(1)
   const [addressMapModalOpen, setAddressMapModalOpen] = useState(false)
   const [trackMapModalOpen, setTrackMapModalOpen] = useState(false)
   const [trackMapTimeModalOpen, setTrackMapTimeModalOpen] = useState(false)
@@ -748,16 +884,62 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     [setWorkspaceCaseTab],
   )
 
+  const handleTrackImportCreateTrack = useCallback(
+    async (label: string) => {
+      if (!canAddCaseContentHere) return null
+      try {
+        const id = await createTrack({
+          caseId: props.caseId,
+          createdByUserId: actorId,
+          label: label.trim() || `Track ${caseTracks.length + 1}`,
+          kind: 'person',
+        })
+        setAutoContinuationTrackId(id)
+        setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
+        return id
+      } catch {
+        return null
+      }
+    },
+    [canAddCaseContentHere, createTrack, props.caseId, actorId, caseTracks.length],
+  )
+
+  const handleTrackImportPoints = useCallback(
+    async (trackId: string, points: LatLonPoint[]) => {
+      if (!canAddCaseContentHere || !points.length) return
+      await createTrackPointsBulk({
+        caseId: props.caseId,
+        createdByUserId: actorId,
+        trackId,
+        points: points.map((p) => {
+          const row: { lat: number; lon: number; visitedAt?: number | null } = { lat: p.lat, lon: p.lon }
+          if (p.visitedAt != null && Number.isFinite(p.visitedAt)) row.visitedAt = p.visitedAt
+          return row
+        }),
+      })
+      setWorkspaceCaseTab('tracking')
+      mapRef.current?.fitToCoordinates(points)
+    },
+    [canAddCaseContentHere, createTrackPointsBulk, props.caseId, actorId, setWorkspaceCaseTab],
+  )
+
   useEffect(() => {
     if (!autoContinuationTrackId) return
-    if (caseTracks.some((t) => t.id === autoContinuationTrackId)) return
-    setAutoContinuationTrackId(caseTracks[0]?.id ?? null)
-  }, [caseTracks, autoContinuationTrackId])
+    const exists = caseTracks.some((t) => t.id === autoContinuationTrackId)
+    if (!exists) {
+      setAutoContinuationTrackId(caseTracksForMapDockTracksTab[0]?.id ?? null)
+      return
+    }
+    if (!caseTracksForMapDockTracksTab.some((t) => t.id === autoContinuationTrackId)) {
+      setAutoContinuationTrackId(caseTracksForMapDockTracksTab[0]?.id ?? null)
+    }
+  }, [caseTracks, caseTracksForMapDockTracksTab, autoContinuationTrackId])
 
   useEffect(() => {
     if (!selectedTrackPointId) return
     const p = caseTrackPoints.find((x) => x.id === selectedTrackPointId)
-    if (p) setAutoContinuationTrackId(p.trackId)
+    if (!p || isImportedCoordinatePoint(p)) return
+    setAutoContinuationTrackId(p.trackId)
   }, [selectedTrackPointId, caseTrackPoints])
 
   useEffect(() => {
@@ -900,16 +1082,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     addrAutocompleteEngaged && !probativePlacementSession && (caseTab === 'tracking' || caseTab === 'addresses')
 
   const postProbativeEffectiveTrackId = useMemo(() => {
-    if (postProbativeMarkerPhase !== 'ask' || !caseTracks.length) return ''
-    if (postProbativePickTrackId && caseTracks.some((t) => t.id === postProbativePickTrackId)) {
+    if (postProbativeMarkerPhase !== 'ask' || !caseTracksForMapDockTracksTab.length) return ''
+    if (
+      postProbativePickTrackId &&
+      caseTracksForMapDockTracksTab.some((t) => t.id === postProbativePickTrackId)
+    ) {
       return postProbativePickTrackId
     }
     return (
-      autoContinuationTrackId && caseTracks.some((t) => t.id === autoContinuationTrackId)
+      autoContinuationTrackId && caseTracksForMapDockTracksTab.some((t) => t.id === autoContinuationTrackId)
         ? autoContinuationTrackId
-        : caseTracks[0]!.id
+        : caseTracksForMapDockTracksTab[0]!.id
     )
-  }, [postProbativeMarkerPhase, caseTracks, postProbativePickTrackId, autoContinuationTrackId])
+  }, [postProbativeMarkerPhase, caseTracksForMapDockTracksTab, postProbativePickTrackId, autoContinuationTrackId])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -936,7 +1121,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
       if (caseTab === 'tracking' && selectedTrackPointId) {
         const pt = caseTrackPoints.find((p) => p.id === selectedTrackPointId)
-        if (!pt || !canDeleteTrackPoint(data, actorId, pt)) return
+        if (!pt || !isMapPlacedTrackPoint(pt) || !canDeleteTrackPoint(data, actorId, pt)) return
         e.preventDefault()
         void deleteTrackPoint(actorId, selectedTrackPointId)
         setSelectedTrackPointId(null)
@@ -1380,18 +1565,154 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const selectedTrackPointStepIndex = useMemo(() => {
     if (!selectedTrackPoint) return 0
-    const pts = caseTrackPoints
-      .filter((p) => p.trackId === selectedTrackPoint.trackId)
+    const tid = selectedTrackPoint.trackId
+    if (isMapPlacedTrackPoint(selectedTrackPoint)) {
+      const pts = caseTrackPoints
+        .filter((p) => p.trackId === tid && isMapPlacedTrackPoint(p))
+        .slice()
+        .sort(sortTrackPointsStable)
+      const i = pts.findIndex((p) => p.id === selectedTrackPoint.id)
+      return i >= 0 ? i + 1 : 0
+    }
+    const coordPts = caseTrackPoints
+      .filter((p) => p.trackId === tid && isImportedCoordinatePoint(p))
       .slice()
       .sort(sortTrackPointsStable)
-    const i = pts.findIndex((p) => p.id === selectedTrackPoint.id)
-    return i >= 0 ? i + 1 : 0
+    const j = coordPts.findIndex((p) => p.id === selectedTrackPoint.id)
+    return j >= 0 ? j + 1 : 0
   }, [selectedTrackPoint, caseTrackPoints])
+
+  useEffect(() => {
+    if (caseTab !== 'tracking') return
+    const p = selectedTrackPointId ? caseTrackPoints.find((x) => x.id === selectedTrackPointId) : null
+    if (p && isImportedCoordinatePoint(p)) {
+      setSelectedTrackPointId(null)
+      setTrackMapModalOpen(false)
+      setTrackMapTimeModalOpen(false)
+      setTrackMapPillShowFull(false)
+    }
+  }, [caseTab, selectedTrackPointId, caseTrackPoints])
 
   const selectedTrackLabel = useMemo(() => {
     if (!selectedTrackPoint) return ''
     return caseTracks.find((t) => t.id === selectedTrackPoint.trackId)?.label ?? 'Track'
   }, [selectedTrackPoint, caseTracks])
+
+  const focusTrackIdForPlayback = selectedTrackPoint?.trackId ?? autoContinuationTrackId
+
+  /** Import coordinates panel: playback / dwell only for spreadsheet–paste points, not subject map steps. */
+  const playbackTrackPointsOrdered = useMemo(() => {
+    if (!focusTrackIdForPlayback) return [] as TrackPoint[]
+    return caseTrackPoints
+      .filter(
+        (p) =>
+          p.trackId === focusTrackIdForPlayback &&
+          visibleTrackIds[p.trackId] !== false &&
+          p.showOnMap !== false &&
+          isImportedCoordinatePoint(p),
+      )
+      .slice()
+      .sort(sortTrackPointsStable)
+  }, [caseTrackPoints, focusTrackIdForPlayback, visibleTrackIds])
+
+  const focusTrackDwellSegments = useMemo(() => {
+    if (!focusTrackIdForPlayback) return []
+    const sorted = caseTrackPoints
+      .filter(
+        (p) =>
+          p.trackId === focusTrackIdForPlayback &&
+          visibleTrackIds[p.trackId] !== false &&
+          p.showOnMap !== false &&
+          isImportedCoordinatePoint(p),
+      )
+      .slice()
+      .sort(sortTrackPointsStable)
+    return computeContiguousDwellSegments(sorted, dwellEpsilonMeters(trackSimplifyPreset))
+  }, [caseTrackPoints, focusTrackIdForPlayback, visibleTrackIds, trackSimplifyPreset])
+
+  const playbackPointsRef = useRef(playbackTrackPointsOrdered)
+  playbackPointsRef.current = playbackTrackPointsOrdered
+
+  useEffect(() => {
+    playbackSpeedMultRef.current = PLAYBACK_SPEED_STEPS[playbackSpeedIdx] ?? 1
+  }, [playbackSpeedIdx])
+
+  useEffect(() => {
+    setPlaybackPlaying(false)
+    playbackIndexRef.current = 0
+    setPlaybackStepIndex(0)
+    if (playbackTimerRef.current) {
+      clearTimeout(playbackTimerRef.current)
+      playbackTimerRef.current = null
+    }
+  }, [focusTrackIdForPlayback])
+
+  useEffect(() => {
+    if (!playbackPlaying) {
+      if (playbackTimerRef.current) {
+        clearTimeout(playbackTimerRef.current)
+        playbackTimerRef.current = null
+      }
+      return
+    }
+    const tick = () => {
+      const list = playbackPointsRef.current
+      const i = playbackIndexRef.current
+      const cur = list[i]
+      if (!cur) {
+        setPlaybackPlaying(false)
+        return
+      }
+      setSelectedTrackPointId(cur.id)
+      const m = mapRef.current
+      if (m) m.flyTo(cur.lat, cur.lon, Math.max(m.getZoom(), 15), { duration: 0.38 })
+      if (i + 1 >= list.length) {
+        setPlaybackPlaying(false)
+        playbackIndexRef.current = 0
+        setPlaybackStepIndex(0)
+        return
+      }
+      const next = list[i + 1]!
+      const ms = playbackDelayBetweenSteps(cur, next, playbackSpeedMultRef.current)
+      playbackTimerRef.current = window.setTimeout(() => {
+        playbackIndexRef.current = i + 1
+        setPlaybackStepIndex(i + 1)
+        tick()
+      }, ms)
+    }
+    tick()
+    return () => {
+      if (playbackTimerRef.current) {
+        clearTimeout(playbackTimerRef.current)
+        playbackTimerRef.current = null
+      }
+    }
+  }, [playbackPlaying])
+
+  const startFocusTrackPlayback = useCallback(() => {
+    const pts = playbackPointsRef.current
+    if (pts.length < 2) return
+    let start = playbackIndexRef.current
+    if (start >= pts.length) start = 0
+    if (selectedTrackPointId) {
+      const si = pts.findIndex((p) => p.id === selectedTrackPointId)
+      if (si >= 0) start = si
+    }
+    playbackIndexRef.current = start
+    setPlaybackStepIndex(start)
+    setPlaybackPlaying(true)
+  }, [selectedTrackPointId])
+
+  const pauseFocusTrackPlayback = useCallback(() => setPlaybackPlaying(false), [])
+  const resetFocusTrackPlayback = useCallback(() => {
+    setPlaybackPlaying(false)
+    playbackIndexRef.current = 0
+    setPlaybackStepIndex(0)
+  }, [])
+
+  const cyclePlaybackSpeed = useCallback(() => {
+    setPlaybackSpeedIdx((i) => (i + 1) % PLAYBACK_SPEED_STEPS.length)
+  }, [])
 
   useLayoutEffect(() => {
     const el = caseMapDetailOverlayRef.current
@@ -1659,17 +1980,27 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     },
     [caseTrackPoints, data, actorId],
   )
+  const canPickTrackPointOnSubjectMap = useCallback((pointId: string) => {
+    const p = caseTrackPoints.find((x) => x.id === pointId)
+    return !p || isMapPlacedTrackPoint(p)
+  }, [caseTrackPoints])
   const onSelectTrackPointMap = useCallback((id: string) => setSelectedTrackPointId(id), [])
   const onDoubleTapTrackPointFromMap = useCallback(
     (pointId: string) => {
-      if (!caseTrackPoints.some((x) => x.id === pointId)) return
+      const p = caseTrackPoints.find((x) => x.id === pointId)
+      if (!p) return
+      if (isImportedCoordinatePoint(p)) {
+        setMapLeftToolSection('importCoords')
+        closeMapToolsDock()
+        return
+      }
       setWorkspaceCaseTab('tracking')
       setSelectedTrackPointId(pointId)
       setTrackMapPillShowFull(true)
       setTrackMapModalOpen(true)
       closeMapToolsDock()
     },
-    [caseTrackPoints, setWorkspaceCaseTab, closeMapToolsDock],
+    [caseTrackPoints, setWorkspaceCaseTab, closeMapToolsDock, setMapLeftToolSection],
   )
   const onDoubleTapLocationFromMap = useCallback(
     (locationId: string) => {
@@ -1702,9 +2033,10 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   const trackingMapInteraction = useMemo(
     () => ({
-      trackPoints: caseTrackPoints,
+      trackPoints: caseTrackPointsForMap,
       visibleTrackIds,
       canManipulateTrackPoint: canManipulateTrackPointFn,
+      canPickTrackPoint: caseTab === 'tracking' ? canPickTrackPointOnSubjectMap : undefined,
       onPickPoint: onSelectTrackPointMap,
       onAddPoint: (lat: number, lon: number) => {
         const placeTid = probativePlacementSession?.trackId
@@ -1735,7 +2067,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       addDisabled: !(probativePlacementSession?.trackId ?? trackForMapAdd) || addrSearchMapShieldActive,
     }),
     [
-      caseTrackPoints,
+      caseTab,
+      caseTrackPointsForMap,
       visibleTrackIds,
       trackForMapAdd,
       probativePlacementSession,
@@ -1744,6 +2077,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       createTrackPoint,
       onSelectTrackPointMap,
       canManipulateTrackPointFn,
+      canPickTrackPointOnSubjectMap,
       actorId,
     ],
   )
@@ -2499,6 +2833,23 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     ? { ...mapDockNarrowToolPanelGlass, maxHeight: 'none', overflowY: 'visible', padding: 8, marginTop: 4 }
     : { ...webWideMapToolPanelGlass, padding: 8 }
 
+  const trackDockSegBtn = (active: boolean): CSSProperties => ({
+    ...btn,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 11,
+    padding: '6px 8px',
+    borderColor: active
+      ? isNarrow
+        ? '#111827'
+        : 'rgba(255,255,255,0.45)'
+      : isNarrow
+        ? 'rgba(148, 163, 184, 0.55)'
+        : 'rgba(148, 163, 184, 0.45)',
+    background: active ? (isNarrow ? 'rgba(15, 23, 42, 0.08)' : 'rgba(30, 41, 59, 0.55)') : 'transparent',
+    color: isNarrow ? '#111827' : active ? '#f8fafc' : '#cbd5e1',
+  })
+
   /** Match floating map top chrome — safe-area insets align with workspace padding. */
   const narrowMapTopChromeInsetTopStr = 'max(6px, env(safe-area-inset-top, 0px))'
   const narrowMapTopChromeInsetLeftStr = 'max(10px, env(safe-area-inset-left, 0px))'
@@ -2619,7 +2970,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     textAlign: 'left',
     flexShrink: 0,
   })
-  const renderDockSectionButton = (section: MapToolsDockSection, label: string) => (
+  const dockRailBtnActive = (section: MapToolsDockRailSection) => mapLeftToolSection === section
+
+  const renderDockSectionButton = (section: MapToolsDockRailSection, label: string) => (
     <button
       type="button"
       onClick={() => {
@@ -2633,12 +2986,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       }}
       style={
         isNarrow
-          ? mapDockNavBtnNarrowGlass(mapLeftToolSection === section)
+          ? mapDockNavBtnNarrowGlass(dockRailBtnActive(section))
           : {
               ...mapDockNavBtnBase,
               textAlign: 'left',
-              background:
-                mapLeftToolSection === section ? 'rgba(203, 213, 225, 0.55)' : 'rgba(226, 232, 240, 0.42)',
+              background: dockRailBtnActive(section) ? 'rgba(203, 213, 225, 0.55)' : 'rgba(226, 232, 240, 0.42)',
             }
       }
     >
@@ -2674,7 +3026,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     boxSizing: 'border-box',
     flexShrink: 0,
   })
-  const webDockToolIconSvg = (section: MapToolsDockSection) => {
+  const webDockToolIconSvg = (section: MapToolsDockRailSection) => {
     const sw = 1.75
     const p = {
       width: 22,
@@ -2711,6 +3063,15 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             <circle cx="18" cy="18" r="1.6" fill="currentColor" stroke="none" />
           </svg>
         )
+      case 'importCoords':
+        return (
+          <svg {...p} aria-hidden>
+            <path d="M12 3v10" />
+            <path d="m8.5 9.5 3.5-3.5 3.5 3.5" />
+            <rect x="4" y="16" width="16" height="5" rx="1.25" />
+            <path d="M8 16V14a4 4 0 0 1 8 0v2" />
+          </svg>
+        )
       case 'photos':
         return (
           <svg {...p} aria-hidden>
@@ -2730,8 +3091,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         return null
     }
   }
-  const renderWebDockSectionButton = (section: MapToolsDockSection, label: string) => {
-    const active = mapLeftToolSection === section
+  const renderWebDockSectionButton = (section: MapToolsDockRailSection, label: string) => {
+    const active = dockRailBtnActive(section)
     return (
       <button
         type="button"
@@ -2794,80 +3155,124 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       </div>
     ) : null
 
-  const renderTrackManagerNameField = (t: Track, canEditT: boolean, inputStyle: CSSProperties) => {
-    const isEditing = trackListNameEditingId === t.id
-    const isActive = trackForMapAdd === t.id
-    const lineColor = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
-    const inactiveBorder = isNarrow ? '1px solid rgba(148, 163, 184, 0.45)' : '1px solid rgba(255,255,255,0.28)'
+  const renderTrackDockNameField =
+    (mode: 'subjectMapAdd' | 'importManage') =>
+    (t: Track, canEditT: boolean, inputStyle: CSSProperties) => {
+      const isEditing = trackListNameEditingId === t.id
+      const isActive = mode === 'subjectMapAdd' && trackForMapAdd === t.id
+      const lineColor = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
+      const inactiveBorder = isNarrow ? '1px solid rgba(148, 163, 184, 0.45)' : '1px solid rgba(255,255,255,0.28)'
 
-    if (isEditing && canEditT) {
+      if (isEditing && canEditT) {
+        return (
+          <input
+            autoFocus
+            value={trackLabelDrafts[t.id] ?? t.label}
+            aria-label="Track name"
+            placeholder="Track name"
+            title="Rename track"
+            onFocus={() => {
+              trackLabelFocusRef.current[t.id] = true
+            }}
+            onBlur={(e) => {
+              trackLabelFocusRef.current[t.id] = false
+              const v = e.currentTarget.value
+              setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+              setTrackListNameEditingId(null)
+              flushTrackLabelPersist(t.id, v)
+            }}
+            onChange={(e) => {
+              const v = e.target.value
+              setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
+              scheduleTrackLabelPersist(t.id, v)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.currentTarget.blur()
+              }
+            }}
+            {...(isNarrow ? nativeMobileTextInputProps(mobileOS) : {})}
+            style={{
+              ...inputStyle,
+              border: isActive ? `2px solid ${lineColor}` : inactiveBorder,
+              fontWeight: isActive ? 800 : 600,
+            }}
+          />
+        )
+      }
+
       return (
-        <input
-          autoFocus
-          value={trackLabelDrafts[t.id] ?? t.label}
-          aria-label="Track name"
-          placeholder="Track name"
-          title="Rename track"
-          onFocus={() => {
+        <button
+          type="button"
+          onClick={
+            mode === 'subjectMapAdd' ? () => scheduleSelectTrackFromNameClick(t.id) : undefined
+          }
+          onDoubleClick={(e) => {
+            e.preventDefault()
+            cancelPendingTrackNameSelectClick()
+            if (!canEditT) return
             trackLabelFocusRef.current[t.id] = true
+            setTrackListNameEditingId(t.id)
           }}
-          onBlur={(e) => {
-            trackLabelFocusRef.current[t.id] = false
-            const v = e.currentTarget.value
-            setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-            setTrackListNameEditingId(null)
-            flushTrackLabelPersist(t.id, v)
-          }}
-          onChange={(e) => {
-            const v = e.target.value
-            setTrackLabelDrafts((prev) => ({ ...prev, [t.id]: v }))
-            scheduleTrackLabelPersist(t.id, v)
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.currentTarget.blur()
-            }
-          }}
-          {...(isNarrow ? nativeMobileTextInputProps(mobileOS) : {})}
           style={{
             ...inputStyle,
+            cursor: canEditT ? 'pointer' : 'default',
             border: isActive ? `2px solid ${lineColor}` : inactiveBorder,
             fontWeight: isActive ? 800 : 600,
+            textAlign: 'left',
+            boxSizing: 'border-box',
           }}
-        />
+          aria-pressed={isActive}
+          title={
+            mode === 'importManage'
+              ? canEditT
+                ? 'Double-click to rename this path.'
+                : 'Path name'
+              : canEditT
+                ? 'Click to use this track for new map points. Double-click to rename.'
+                : 'Click to use this track for new map points.'
+          }
+        >
+          {(trackLabelDrafts[t.id] ?? t.label).trim() || 'Track'}
+        </button>
       )
     }
 
-    return (
-      <button
-        type="button"
-        onClick={() => scheduleSelectTrackFromNameClick(t.id)}
-        onDoubleClick={(e) => {
-          e.preventDefault()
-          cancelPendingTrackNameSelectClick()
-          if (!canEditT) return
-          trackLabelFocusRef.current[t.id] = true
-          setTrackListNameEditingId(t.id)
-        }}
-        style={{
-          ...inputStyle,
-          cursor: canEditT ? 'pointer' : 'default',
-          border: isActive ? `2px solid ${lineColor}` : inactiveBorder,
-          fontWeight: isActive ? 800 : 600,
-          textAlign: 'left',
-          boxSizing: 'border-box',
-        }}
-        aria-pressed={isActive}
-        title={
-          canEditT
-            ? 'Click to use this track for new map points. Double-click to rename.'
-            : 'Click to use this track for new map points.'
-        }
-      >
-        {(trackLabelDrafts[t.id] ?? t.label).trim() || 'Track'}
-      </button>
-    )
-  }
+  const mapDockToggleTrackVisibility = useCallback((trackId: string) => {
+    setVisibleTrackIds((prev) => {
+      const wasVisible = prev[trackId] !== false
+      return { ...prev, [trackId]: !wasVisible }
+    })
+  }, [])
+
+  const mapDockRequestDeleteTrack = useCallback(
+    (t: Track) => {
+      if (!window.confirm(`Delete "${t.label}" and every step on it? This cannot be undone.`)) return
+      const pointsAfterDelete = caseTrackPoints.filter((p) => p.trackId !== t.id)
+      const remaining = caseTracks.filter((x) => x.id !== t.id)
+      const nextTrackId =
+        remaining.find((tr) => trackBelongsInTracksMapTab(tr, pointsAfterDelete))?.id ?? null
+      const clearStep =
+        !!selectedTrackPointId && caseTrackPoints.some((p) => p.id === selectedTrackPointId && p.trackId === t.id)
+      void deleteTrack(actorId, t.id).then(() => {
+        setVisibleTrackIds((prev) => {
+          const next = { ...prev }
+          delete next[t.id]
+          return next
+        })
+        if (autoContinuationTrackId === t.id) setAutoContinuationTrackId(nextTrackId)
+        if (clearStep) setSelectedTrackPointId(null)
+      })
+    },
+    [actorId, caseTracks, caseTrackPoints, selectedTrackPointId, autoContinuationTrackId, deleteTrack],
+  )
+
+  const mapDockRouteColorChange = useCallback(
+    (trackId: string, color: string) => {
+      void updateTrack(actorId, trackId, { routeColor: color })
+    },
+    [actorId, updateTrack],
+  )
 
   const mapToolsDockDvrPanel =
     mapLeftToolSection === 'dvr' ? (
@@ -2961,139 +3366,339 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             >
               New Track
             </button>
-            {caseTracks.length === 0 ? (
-              <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.4 }}>
-                No tracks yet — add one to plot steps on the map.
+            {caseTracksForMapDockTracksTab.length === 0 ? (
+              <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.45 }}>
+                {caseTracks.length > 0 ? (
+                  <>
+                    Every path in this case only has imported coordinates — they stay in{' '}
+                    <strong>Import coordinates</strong>. Use <strong>New Track</strong> here to start a subject path
+                    (map-placed steps).
+                  </>
+                ) : (
+                  <>
+                    No paths yet — add one for subject tracking (map-placed steps). Imported coordinates live only in{' '}
+                    <strong>Import coordinates</strong>.
+                  </>
+                )}
               </div>
             ) : (
-              caseTracks.map((t) => {
-                const on = visibleTrackIds[t.id] !== false
-                const canEditT = canEditTrack(data, actorId, t)
-                const canDelT = canDeleteTrack(data, actorId, t)
-                const lineColor = resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
-                const colorPickerId = `map-dock-track-color-${t.id}`
-                return (
-                  <div
-                    key={t.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      minWidth: 0,
-                      padding: '6px 8px',
-                      border: isNarrow ? '1px solid rgba(148, 163, 184, 0.45)' : '1px solid rgba(255,255,255,0.2)',
-                      borderRadius: 10,
-                      background: isNarrow ? 'rgba(226, 232, 240, 0.4)' : 'rgba(255,255,255,0.08)',
-                      boxSizing: 'border-box',
-                      boxShadow:
-                        trackForMapAdd === t.id ? `inset 0 0 0 1px ${lineColor}` : undefined,
-                    }}
+              <MapDockTrackRows
+                isNarrow={isNarrow}
+                caseTracks={caseTracksForMapDockTracksTab}
+                visibleTrackIds={visibleTrackIds}
+                trackForMapAdd={trackForMapAdd}
+                resolvedTrackColors={resolvedTrackColors}
+                defaultLineColor={TRACK_DEFAULT_COLORS_FIRST_FOUR[0]}
+                onToggleTrackVisibility={mapDockToggleTrackVisibility}
+                canEditTrack={(t) => canEditTrack(data, actorId, t)}
+                canDeleteTrack={(t) => canDeleteTrack(data, actorId, t)}
+                onRouteColorChange={mapDockRouteColorChange}
+                onRequestDeleteTrack={mapDockRequestDeleteTrack}
+                renderNameField={renderTrackDockNameField('subjectMapAdd')}
+              />
+            )}
+            {caseTracksForMapDockTracksTab.length > 0 && caseTrackPoints.some((p) => isImportedCoordinatePoint(p)) ? (
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  lineHeight: 1.4,
+                  color: isNarrow ? '#6b7280' : '#94a3b8',
+                }}
+              >
+                This tab lists subject paths only. While it is open, the map hides imported pins and solid segments — open{' '}
+                <strong>Import coordinates</strong> to work with imports.
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {mapLeftToolSection === 'importCoords' ? (
+        <div style={mapDockPanelShellForMapTools}>
+          <div style={{ display: 'grid', gap: 8, width: '100%', minWidth: 0 }}>
+            <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.45 }}>
+              Import pasted pairs or spreadsheet columns here. Pick any path in the wizard (including import-only paths).
+              Subject paths are listed in the map <strong>Tracks</strong> tab. Map styling: subject steps are dashed; imports
+              are solid on the path.
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  color: isNarrow ? '#6b7280' : '#94a3b8',
+                  marginBottom: 4,
+                }}
+              >
+                Paths with imported coordinates
+              </div>
+              {caseTracksForImportCoordsPanel.length === 0 ? (
+                <div style={{ fontSize: 11, color: isNarrow ? '#6b7280' : '#94a3b8', lineHeight: 1.4 }}>
+                  None yet — run <strong>Import coordinates…</strong> to add a path.
+                </div>
+              ) : (
+                <MapDockTrackRows
+                  isNarrow={isNarrow}
+                  caseTracks={caseTracksForImportCoordsPanel}
+                  visibleTrackIds={visibleTrackIds}
+                  trackForMapAdd={null}
+                  colorInputIdPrefix="import-dock-track-color"
+                  resolvedTrackColors={resolvedTrackColors}
+                  defaultLineColor={TRACK_DEFAULT_COLORS_FIRST_FOUR[0]}
+                  onToggleTrackVisibility={mapDockToggleTrackVisibility}
+                  canEditTrack={(t) => canEditTrack(data, actorId, t)}
+                  canDeleteTrack={(t) => canDeleteTrack(data, actorId, t)}
+                  onRouteColorChange={mapDockRouteColorChange}
+                  onRequestDeleteTrack={mapDockRequestDeleteTrack}
+                  renderNameField={renderTrackDockNameField('importManage')}
+                />
+              )}
+            </div>
+            <button
+              type="button"
+              style={{ ...btnPrimary, width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+              disabled={!canAddCaseContentHere}
+              title={!canAddCaseContentHere ? 'No access to import' : undefined}
+              onClick={() => setTrackImportModalOpen(true)}
+            >
+              Import coordinates…
+            </button>
+            <div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  color: isNarrow ? '#6b7280' : '#94a3b8',
+                  marginBottom: 4,
+                }}
+              >
+                Nearby steps lumped on map
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={waypointGroupTolerance}
+                onChange={(e) => setWaypointGroupTolerance(Number(e.target.value))}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={waypointGroupTolerance}
+                aria-label="Step lumping tolerance on map"
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 9,
+                  fontWeight: 600,
+                  color: isNarrow ? '#9ca3af' : '#94a3b8',
+                  marginTop: 2,
+                }}
+              >
+                <span>Stricter (more pins)</span>
+                <span>Looser (fewer pins)</span>
+              </div>
+              <div
+                style={{
+                  fontSize: 9,
+                  fontWeight: 600,
+                  color: isNarrow ? '#9ca3af' : '#94a3b8',
+                  lineHeight: 1.35,
+                  marginTop: 4,
+                }}
+              >
+                Groups steps that are close in distance and time; tap a lump to expand. Saved on this device.
+              </div>
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  color: isNarrow ? '#6b7280' : '#94a3b8',
+                  marginBottom: 4,
+                }}
+              >
+                Map path (dense tracks)
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {(['off', 'moderate', 'aggressive'] as const).map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    style={trackDockSegBtn(trackSimplifyPreset === preset)}
+                    onClick={() => setTrackSimplifyPreset(preset)}
                   >
-                    <TrackMapVisibilityButton
-                      visible={on}
-                      trackLabel={t.label}
-                      variant={isNarrow ? 'mapDockLight' : 'mapDockGlass'}
-                      onToggle={() =>
-                        setVisibleTrackIds((prev) => {
-                          const wasVisible = prev[t.id] !== false
-                          return { ...prev, [t.id]: !wasVisible }
-                        })
-                      }
-                    />
-                    <label
-                      htmlFor={colorPickerId}
-                      title={canEditT ? 'Change path color' : 'No permission to change color'}
+                    {preset === 'off' ? 'Off' : preset === 'moderate' ? 'Moderate' : 'Aggressive'}
+                  </button>
+                ))}
+              </div>
+              <div
+                style={{
+                  fontSize: 9,
+                  fontWeight: 600,
+                  color: isNarrow ? '#9ca3af' : '#94a3b8',
+                  lineHeight: 1.35,
+                  marginTop: 2,
+                }}
+              >
+                Affects map drawing only; every step stays in your case.
+              </div>
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  color: isNarrow ? '#6b7280' : '#94a3b8',
+                  marginBottom: 4,
+                }}
+              >
+                Step times (dwell labels)
+              </div>
+              <input
+                list="vc-track-display-tz-datalist"
+                value={trackDisplayTzInput}
+                onChange={(e) => setTrackDisplayTzInput(e.target.value)}
+                onBlur={() => {
+                  if (!isValidIanaTimeZone(trackDisplayTzInput)) setTrackDisplayTzInput(getBrowserIanaTimeZone())
+                }}
+                style={{
+                  ...field,
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  fontSize: 12,
+                  padding: '6px 8px',
+                  color: '#111827',
+                  background: isNarrow ? '#fff' : 'rgba(248,250,252,0.95)',
+                }}
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <datalist id="vc-track-display-tz-datalist">
+                {trackDockIanaZones.map((z) => (
+                  <option key={z} value={z} />
+                ))}
+              </datalist>
+              {!isValidIanaTimeZone(trackDisplayTzInput) ? (
+                <div style={{ fontSize: 10, color: '#b91c1c', marginTop: 2 }}>Invalid zone; using this device zone until fixed.</div>
+              ) : null}
+            </div>
+            {caseTracks.length > 0 ? (
+              <div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 800,
+                    color: isNarrow ? '#6b7280' : '#94a3b8',
+                    marginBottom: 4,
+                  }}
+                >
+                  Playback (imported coordinates only)
+                  {focusTrackIdForPlayback
+                    ? ` · ${caseTracks.find((x) => x.id === focusTrackIdForPlayback)?.label ?? 'track'}`
+                    : ''}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    style={{ ...btn, fontSize: 11, padding: '6px 10px' }}
+                    disabled={playbackTrackPointsOrdered.length < 2}
+                    onClick={() => (playbackPlaying ? pauseFocusTrackPlayback() : startFocusTrackPlayback())}
+                  >
+                    {playbackPlaying ? 'Pause' : 'Play'}
+                  </button>
+                  <button
+                    type="button"
+                    style={{ ...btn, fontSize: 11, padding: '6px 10px' }}
+                    disabled={playbackTrackPointsOrdered.length < 2}
+                    onClick={resetFocusTrackPlayback}
+                  >
+                    Reset
+                  </button>
+                  <button type="button" style={{ ...btn, fontSize: 11, padding: '6px 10px' }} onClick={cyclePlaybackSpeed}>
+                    {PLAYBACK_SPEED_STEPS[playbackSpeedIdx] ?? 1}× speed
+                  </button>
+                  <span style={{ fontSize: 10, color: isNarrow ? '#6b7280' : '#94a3b8' }}>
+                    Step {Math.min(playbackStepIndex + 1, Math.max(playbackTrackPointsOrdered.length, 1))} /{' '}
+                    {playbackTrackPointsOrdered.length || 0}
+                  </span>
+                </div>
+                {focusTrackDwellSegments.length > 0 ? (
+                  <div style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => setImportPanelDwellExpanded((o) => !o)}
                       style={{
-                        flexShrink: 0,
-                        width: 32,
-                        height: 32,
-                        borderRadius: 8,
-                        border: `2px solid ${lineColor}`,
-                        background: lineColor,
-                        cursor: canEditT ? 'pointer' : 'default',
-                        position: 'relative',
-                        overflow: 'hidden',
+                        ...btn,
+                        width: '100%',
                         boxSizing: 'border-box',
+                        fontSize: 10,
+                        fontWeight: 800,
+                        padding: '6px 8px',
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
                       }}
                     >
-                      <input
-                        id={colorPickerId}
-                        type="color"
-                        value={lineColor}
-                        disabled={!canEditT}
-                        onChange={(e) => void updateTrack(actorId, t.id, { routeColor: e.target.value })}
-                        style={{
-                          opacity: 0,
-                          position: 'absolute',
-                          width: '180%',
-                          height: '180%',
-                          left: '-40%',
-                          top: '-40%',
-                          cursor: canEditT ? 'pointer' : 'default',
-                          border: 'none',
-                          padding: 0,
-                        }}
-                      />
-                    </label>
-                    {renderTrackManagerNameField(t, canEditT, {
-                      ...field,
-                      flex: 1,
-                      minWidth: 0,
-                      padding: '8px 10px',
-                    })}
-                    {canDelT ? (
-                      <button
-                        type="button"
-                        aria-label={`Delete ${t.label}`}
-                        title="Delete track"
-                        style={{
-                          flexShrink: 0,
-                          width: 32,
-                          height: 32,
-                          padding: 0,
-                          border: '1px solid #fecaca',
-                          borderRadius: 8,
-                          background: '#fff1f2',
-                          color: '#9f1239',
-                          cursor: 'pointer',
-                          fontSize: 'clamp(14px, 1.4vw, 18px)',
-                          fontWeight: 900,
-                          lineHeight: 1,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                        onClick={() => {
-                          if (
-                            !window.confirm(
-                              `Delete "${t.label}" and every step on it? This cannot be undone.`,
-                            )
+                      <span>
+                        Dwell segments (copy){' '}
+                        <span style={{ fontWeight: 600, opacity: 0.85 }}>({focusTrackDwellSegments.length})</span>
+                      </span>
+                      <span aria-hidden>{importPanelDwellExpanded ? '▼' : '▶'}</span>
+                    </button>
+                    {importPanelDwellExpanded ? (
+                      <div style={{ display: 'grid', gap: 4, maxHeight: 160, overflowY: 'auto', marginTop: 6 }}>
+                        {focusTrackDwellSegments.map((seg, idx) => {
+                          const label = formatDwellSegmentLabel(
+                            seg.startStepNum,
+                            seg.endStepNum,
+                            seg.startMs,
+                            seg.endMs,
+                            trackDisplayTimeZone,
                           )
-                            return
-                          const remaining = caseTracks.filter((x) => x.id !== t.id)
-                          const nextTrackId = remaining[0]?.id ?? null
-                          const clearStep =
-                            !!selectedTrackPointId &&
-                            caseTrackPoints.some((p) => p.id === selectedTrackPointId && p.trackId === t.id)
-                          void deleteTrack(actorId, t.id).then(() => {
-                            setVisibleTrackIds((prev) => {
-                              const next = { ...prev }
-                              delete next[t.id]
-                              return next
-                            })
-                            if (autoContinuationTrackId === t.id) setAutoContinuationTrackId(nextTrackId)
-                            if (clearStep) setSelectedTrackPointId(null)
-                          })
-                        }}
-                      >
-                        ✕
-                      </button>
-                    ) : (
-                      <span style={{ width: 32, flexShrink: 0 }} aria-hidden />
-                    )}
+                          return (
+                            <div
+                              key={`${seg.startStepNum}-${seg.endStepNum}-${idx}`}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 6,
+                                fontSize: 10,
+                                lineHeight: 1.35,
+                                color: isNarrow ? '#374151' : '#e2e8f0',
+                              }}
+                            >
+                              <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
+                              <button
+                                type="button"
+                                style={{ ...btn, flexShrink: 0, fontSize: 10, padding: '4px 8px' }}
+                                onClick={() => void navigator.clipboard?.writeText(label)}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : null}
                   </div>
-                )
-              })
+                ) : null}
+              </div>
+            ) : null}
+            {caseTracks.length === 0 ? (
+              <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.4 }}>
+                No paths yet — start the import wizard to create one, or add a subject path from the map{' '}
+                <strong>Tracks</strong> tab.
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: isNarrow ? '#6b7280' : '#94a3b8', lineHeight: 1.4 }}>
+                Subject path names, colors, and visibility: <strong>Tracks</strong> tab. Import-only paths are not listed
+                there — they stay here and in this wizard.
+              </div>
             )}
           </div>
         </div>
@@ -4029,6 +4634,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               {renderWebDockSectionButton('views', 'Views')}
               {renderWebDockSectionButton('filters', 'Filters')}
               {renderWebDockSectionButton('tracks', 'Tracks')}
+              {renderWebDockSectionButton('importCoords', 'Import coordinates')}
               {renderWebDockSectionButton('photos', 'Photos')}
               {renderWebDockSectionButton('dvr', 'DVR calculator')}
             </div>
@@ -4376,6 +4982,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                               {renderDockSectionButton('views', 'Views')}
                               {renderDockSectionButton('filters', 'Filters')}
                               {renderDockSectionButton('tracks', 'Tracks')}
+                              {renderDockSectionButton('importCoords', 'Import coordinates')}
                               {renderDockSectionButton('photos', 'Photos')}
                               {renderDockSectionButton('dvr', 'DVR calculator')}
                               {mapToolsDockSectionPanels}
@@ -4442,6 +5049,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     vectorRingLookupRef={vectorRingLookupRef}
                     caseTracks={caseTracks}
                     caseTrackPoints={caseTrackPoints}
+                    caseTrackPointsForMap={caseTrackPointsForMap}
                     visibleTrackIds={visibleTrackIds}
                     trackingMapPoints={trackingMapPoints}
                     getRouteColor={getRouteColorMemo}
@@ -4502,7 +5110,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onDoubleTapLocation={onDoubleTapLocationFromMap}
                     visitHeatmapGeojson={visitHeatmapGeojson}
                     showVisitHeatmap={canUseVisitHeatmap && visitHeatmapOn && caseTab === 'addresses'}
+                    waypointGroupTolerance={waypointGroupTolerance}
                     basemap={mapBasemap}
+                    onTrackClusterMembersOpen={(payload) => {
+                      setTrackClusterModal(payload)
+                    }}
                   />
                     {mapLeftToolDockOpen && !probativePlacementSession ? (
                       <div
@@ -4602,7 +5214,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         />
                       </div>
                     </div>
-                  ) : !isNarrow && viewMode === 'map' && caseTab === 'tracking' && selectedTrackPoint ? (
+                  ) : !isNarrow &&
+                    viewMode === 'map' &&
+                    caseTab === 'tracking' &&
+                    selectedTrackPoint &&
+                    isMapPlacedTrackPoint(selectedTrackPoint) ? (
                     <div style={mapSelectionPillWrapStyleWebInMapLayer}>
                       <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyleWebInMapLayerInteractive}>
                         <MapTrackSelectionPill
@@ -4724,7 +5340,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   />
                 </div>
               ) : null}
-              {isNarrow && viewMode === 'map' && caseTab === 'tracking' && selectedTrackPoint ? (
+              {isNarrow &&
+              viewMode === 'map' &&
+              caseTab === 'tracking' &&
+              selectedTrackPoint &&
+              isMapPlacedTrackPoint(selectedTrackPoint) ? (
                 <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyle}>
                   <MapTrackSelectionPill
                     pillLayout="hug"
@@ -5035,7 +5655,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               value={resolvedTrackColors.get(t.id) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]}
               disabled={!canEditT}
               onChange={(e) => void updateTrack(actorId, t.id, { routeColor: e.target.value })}
-              title="First four tracks default to blue, red, green, purple by creation order; later tracks get a unique auto color. You can pick any color, including one already in use."
+              title="Auto colors pick the next free blue / red / green / purple, then a unique generated color — none match another path until you choose a duplicate here."
               style={{
                 width: 40,
                 height: 34,
@@ -5095,7 +5715,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       variant="modal"
                       onToggle={toggleTrackMapVisibility}
                     />
-                    {renderTrackManagerNameField(t, canEditT, { ...field, flex: 1, minWidth: 0 })}
+                    {renderTrackDockNameField('subjectMapAdd')(t, canEditT, { ...field, flex: 1, minWidth: 0 })}
                   </div>
                   <div
                     style={{
@@ -5127,7 +5747,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     variant="modal"
                     onToggle={toggleTrackMapVisibility}
                   />
-                  {renderTrackManagerNameField(t, canEditT, field)}
+                  {renderTrackDockNameField('subjectMapAdd')(t, canEditT, field)}
                   {kindSelect}
                   {colorInput}
                   {deleteCell}
@@ -5178,7 +5798,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           <p style={{ margin: 0, fontSize: 14, color: '#374151', lineHeight: 1.5 }}>
             Add a step on a subject track for where the subject was last seen on this probative footage?
           </p>
-          {caseTracks.length > 0 ? (
+          {caseTracksForMapDockTracksTab.length > 0 ? (
             <label style={{ display: 'grid', gap: 6 }}>
               <span style={{ fontWeight: 800, fontSize: 13 }}>Track</span>
               <select
@@ -5186,7 +5806,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 onChange={(e) => setPostProbativePickTrackId(e.target.value)}
                 style={select}
               >
-                {caseTracks.map((t) => (
+                {caseTracksForMapDockTracksTab.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.label}
                   </option>
@@ -5194,9 +5814,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               </select>
             </label>
           ) : null}
-          {caseTracks.length === 0 ? (
+          {caseTracksForMapDockTracksTab.length === 0 ? (
             <p style={{ margin: 0, fontSize: 13, color: '#4b5563', lineHeight: 1.45 }}>
-              With no subject track yet, Yes creates one named “Track {caseTracks.length + 1}” first.
+              {caseTracks.length > 0 ? (
+                <>
+                  You only have import-coordinate paths; they are not used for subject placement. Yes creates a new subject
+                  track first.
+                </>
+              ) : (
+                <>With no subject track yet, Yes creates one named “Track {caseTracks.length + 1}” first.</>
+              )}
             </p>
           ) : null}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
@@ -5207,7 +5834,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               type="button"
               style={{ ...btn, fontWeight: 900 }}
               onClick={() => {
-                if (caseTracks.length === 0) {
+                if (caseTracksForMapDockTracksTab.length === 0) {
                   const label = `Track ${caseTracks.length + 1}`
                   void createTrack({ caseId: props.caseId, createdByUserId: actorId, label, kind: 'person' }).then((id) => {
                     probativePlacementLockRef.current = false
@@ -5243,6 +5870,79 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       onCalcBack={handleProbativeCalcBack}
       onCalcApply={handleProbativeCalcApply}
     />
+
+    <Modal title="Import coordinates" open={trackImportModalOpen} onClose={() => setTrackImportModalOpen(false)}>
+      <TrackImportPanel
+        caseTracks={caseTracks}
+        trackForMapAdd={trackForMapAdd}
+        canImport={canAddCaseContentHere}
+        isNarrow={isNarrow}
+        modalChrome
+        onClose={() => setTrackImportModalOpen(false)}
+        onCreateTrack={handleTrackImportCreateTrack}
+        onImportPoints={handleTrackImportPoints}
+      />
+    </Modal>
+
+    <Modal
+      title={trackClusterModal ? `Track cluster (${trackClusterModal.pointCount} points)` : 'Track cluster'}
+      open={trackClusterModal != null}
+      onClose={() => setTrackClusterModal(null)}
+    >
+      {trackClusterModal ? (
+        <div style={{ display: 'grid', gap: 10, maxHeight: 'min(60vh, 420px)', overflowY: 'auto' }}>
+          <div style={{ fontSize: 12, color: '#64748b' }}>
+            {trackClusterModal.center.lat.toFixed(5)}, {trackClusterModal.center.lon.toFixed(5)}
+            {trackClusterModal.members.length > 0 && trackClusterModal.members.length < trackClusterModal.pointCount
+              ? ` — showing first ${trackClusterModal.members.length} of ${trackClusterModal.pointCount}`
+              : null}
+            {caseTab === 'tracking' &&
+            trackClusterModalVisibleMembers.length < trackClusterModal.members.length ? (
+              <span>
+                {' '}
+                · Subject tracking: {trackClusterModalVisibleMembers.length} map-placed step
+                {trackClusterModalVisibleMembers.length === 1 ? '' : 's'} (imported coordinates are hidden here)
+              </span>
+            ) : null}
+          </div>
+          {trackClusterModal.members.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#64748b' }}>
+              Could not load the point list. Zoom in on the cluster or try again.
+            </div>
+          ) : null}
+          {caseTab === 'tracking' && trackClusterModal.members.length > 0 && trackClusterModalVisibleMembers.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.45 }}>
+              This cluster only has imported coordinates. Open <strong>Import coordinates</strong> in the map tools to work
+              with those points; Subject tracking lists map-placed steps only.
+            </div>
+          ) : null}
+          {trackClusterModalVisibleMembers.map((m) => {
+            const tr = caseTracks.find((t) => t.id === m.trackId)
+            const trackName = tr?.label || 'Track'
+            return (
+              <button
+                key={m.pointId}
+                type="button"
+                style={{ ...listRowMainBtn, textAlign: 'left' }}
+                onClick={() => {
+                  onSelectTrackPointMap(m.pointId)
+                  setTrackClusterModal(null)
+                }}
+              >
+                <div style={{ fontWeight: 700 }}>{trackName}</div>
+                <div style={{ fontSize: 12, color: '#475569' }}>
+                  Step {m.stepNum}
+                  {m.label ? ` — ${m.label}` : ''}
+                </div>
+              </button>
+            )
+          })}
+          <button type="button" style={btnPrimary} onClick={() => setTrackClusterModal(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+    </Modal>
 
     <Modal
       title={

@@ -56,6 +56,7 @@ import {
   CLUSTER_MAX_ZOOM,
   CLUSTER_RADIUS_PX,
   easeClusterExpansion,
+  fetchTrackClusterLeaves,
   extendBoundsWithLocations,
   extendBoundsWithPathPoints,
   MAP_DETAIL_MIN_ZOOM,
@@ -65,6 +66,7 @@ import {
   VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS,
   VIEWPORT_OUTLINE_PRELOAD_MAX,
   resolveCaseMapBasemapStyle,
+  type TrackClusterMembersPayload,
   type VcCaseMapBasemapId,
 } from './addressesMapLibreHelpers'
 import { TrackWaypointMarkersMapLibre } from './addressesMapLibre/TrackWaypointMarkers'
@@ -72,6 +74,8 @@ import { TrackWaypointMarkersMapLibre } from './addressesMapLibre/TrackWaypointM
 export type UnifiedCaseMapHandle = {
   flyTo: (lat: number, lon: number, zoom: number, opts?: { duration?: number }) => void
   fitBounds: (bounds: InstanceType<typeof L.LatLngBounds>) => void
+  /** Fit map to the bounding box of the given WGS84 coordinates (padding + short animation). */
+  fitToCoordinates: (coords: { lat: number; lon: number }[]) => void
   getZoom: () => number
   /** Current map center for Photon address-search bias when user has not used Locate me. */
   getCenter: () => { lat: number; lon: number } | null
@@ -85,6 +89,8 @@ type MapTrackingInteraction = {
   trackPoints: TrackPoint[]
   visibleTrackIds: Record<string, boolean>
   canManipulateTrackPoint: (pointId: string) => boolean
+  /** When provided and returns false, the step is skipped for hit-testing (still drawn). Used to keep imported coordinates out of Subject tracking picking. */
+  canPickTrackPoint?: (pointId: string) => boolean
   onPickPoint: (pointId: string) => void
   onAddPoint: (lat: number, lon: number) => void
   addDisabled: boolean
@@ -404,6 +410,8 @@ type AddressesMapLibreProps = {
   vectorRingLookupRef: MutableRefObject<((lat: number, lon: number) => LatLon[] | null) | null>
   caseTracks: Track[]
   caseTrackPoints: TrackPoint[]
+  /** Subset for lines/clusters/markers when parent simplifies dense tracks; defaults to `caseTrackPoints`. */
+  caseTrackPointsForMap?: TrackPoint[]
   visibleTrackIds: Record<string, boolean>
   trackingMapPoints: Array<{ lat: number; lon: number }>
   getRouteColor: (trackId: string) => string
@@ -476,7 +484,11 @@ type AddressesMapLibreProps = {
   /** Visit-density heatmap (GeoJSON points with `weight`); drawn under canvass polygons. */
   visitHeatmapGeojson?: FeatureCollection | null
   showVisitHeatmap?: boolean
+  /** 0–100: waypoint lumping on map (distance + time); higher = more grouping. */
+  waypointGroupTolerance?: number
   basemap: VcCaseMapBasemapId
+  /** Low-zoom track cluster tap: zoom to expand and show member list (Subject tracking / probative placement). */
+  onTrackClusterMembersOpen?: (payload: TrackClusterMembersPayload) => void
 }
 
 function peekNearestTrackPointId(
@@ -488,6 +500,7 @@ function peekNearestTrackPointId(
   const r2 = r * r
   let best: { id: string; d2: number } | null = null
   for (const pt of ti.trackPoints) {
+    if (ti.canPickTrackPoint && !ti.canPickTrackPoint(pt.id)) continue
     if (pt.showOnMap === false) continue
     if (ti.visibleTrackIds[pt.trackId] === false) continue
     const lp = map.project([pt.lon, pt.lat])
@@ -518,11 +531,14 @@ function resolveFeatureHitAtPoint(
   if (lowZoom) {
     let trackPid: string | null = null
     const tPts = map.queryRenderedFeatures(pointPx, { layers: ['track-wpts-unclustered', 'track-wpts-stepnum'] })
+    const pickOk = ti.canPickTrackPoint
     for (const f of tPts) {
       const pid = f.properties?.pid
       if (typeof pid === 'string' && pid) {
-        trackPid = pid
-        break
+        if (!pickOk || pickOk(pid)) {
+          trackPid = pid
+          break
+        }
       }
     }
     let locId: string | null = null
@@ -531,7 +547,7 @@ function resolveFeatureHitAtPoint(
     if (typeof lid === 'string' && lid) locId = lid
 
     if (trackPid && locId) {
-      const tpt = p.caseTrackPoints.find((q) => q.id === trackPid)
+      const tpt = (p.caseTrackPointsForMap ?? p.caseTrackPoints).find((q) => q.id === trackPid)
       const loc = p.mapPins.find((l) => l.id === locId) ?? p.locations.find((l) => l.id === locId) ?? p.findHit(lat, lon)
       if (tpt && loc) {
         const pp = map.project([tpt.lon, tpt.lat])
@@ -548,6 +564,7 @@ function resolveFeatureHitAtPoint(
 
   let bestTrack: { id: string; d2: number } | null = null
   for (const pt of ti.trackPoints) {
+    if (ti.canPickTrackPoint && !ti.canPickTrackPoint(pt.id)) continue
     if (pt.showOnMap === false) continue
     if (ti.visibleTrackIds[pt.trackId] === false) continue
     const lp = map.project([pt.lon, pt.lat])
@@ -641,6 +658,31 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           { padding: 48, duration: 380 },
         )
       },
+      fitToCoordinates(coords) {
+        const map = mapRef.current?.getMap()
+        if (!map || coords.length === 0) return
+        let minLat = coords[0]!.lat
+        let maxLat = coords[0]!.lat
+        let minLon = coords[0]!.lon
+        let maxLon = coords[0]!.lon
+        for (const p of coords) {
+          minLat = Math.min(minLat, p.lat)
+          maxLat = Math.max(maxLat, p.lat)
+          minLon = Math.min(minLon, p.lon)
+          maxLon = Math.max(maxLon, p.lon)
+        }
+        if (minLat === maxLat && minLon === maxLon) {
+          map.flyTo({ center: [minLon, minLat], zoom: Math.max(map.getZoom(), 15), duration: 450 })
+          return
+        }
+        map.fitBounds(
+          [
+            [minLon, minLat],
+            [maxLon, maxLat],
+          ],
+          { padding: 56, duration: 450 },
+        )
+      },
       getZoom() {
         return mapRef.current?.getMap()?.getZoom() ?? 11
       },
@@ -710,9 +752,18 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       )
     }, [props.mapPins, props.footprintLoadingIds])
 
+    const trackPtsForMap = props.caseTrackPointsForMap ?? props.caseTrackPoints
+
+    const canManipulateTrackPointOnMap = useCallback(
+      (id: string) =>
+        props.canManipulateTrackPoint(id) &&
+        (!props.trackingInteraction.canPickTrackPoint || props.trackingInteraction.canPickTrackPoint(id)),
+      [props.canManipulateTrackPoint, props.trackingInteraction.canPickTrackPoint],
+    )
+
     const tracksData = useMemo(
-      () => buildTracksData(props.caseTracks, props.caseTrackPoints, props.visibleTrackIds, props.getRouteColor),
-      [props.caseTracks, props.caseTrackPoints, props.visibleTrackIds, props.getRouteColor],
+      () => buildTracksData(props.caseTracks, trackPtsForMap, props.visibleTrackIds, props.getRouteColor),
+      [props.caseTracks, trackPtsForMap, props.visibleTrackIds, props.getRouteColor],
     )
 
     const [mapZoom, setMapZoom] = useState(15)
@@ -722,11 +773,11 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       () =>
         buildTrackWaypointClusterCollection(
           props.caseTracks,
-          props.caseTrackPoints,
+          trackPtsForMap,
           props.visibleTrackIds,
           props.getRouteColor,
         ),
-      [props.caseTracks, props.caseTrackPoints, props.visibleTrackIds, props.getRouteColor],
+      [props.caseTracks, trackPtsForMap, props.visibleTrackIds, props.getRouteColor],
     )
 
     const canvassLocClusterFc = useMemo(() => buildCanvassLocationClusterCollection(props.mapPins), [props.mapPins])
@@ -1081,6 +1132,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         let bestManip: { id: string; d2: number } | null = null
         let anyPin = false
         for (const pt of ti.trackPoints) {
+          if (ti.canPickTrackPoint && !ti.canPickTrackPoint(pt.id)) continue
           if (pt.showOnMap === false) continue
           if (ti.visibleTrackIds[pt.trackId] === false) continue
           const lp = map.project([pt.lon, pt.lat])
@@ -1128,13 +1180,31 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         if (lowZoom && map) {
           if (p.caseTab === 'tracking' || p.placementClickAddsTrackPoint) {
             const tClusters = map.queryRenderedFeatures(e.point, { layers: ['track-wpts-cluster-circle'] })
-            if (tClusters[0] && easeClusterExpansion(map, 'track-wpts-cluster-src', tClusters[0] as Feature)) return
+            if (tClusters[0]) {
+              const tcf = tClusters[0] as Feature
+              easeClusterExpansion(map, 'track-wpts-cluster-src', tcf)
+              const g = tcf.geometry
+              if (g && g.type === 'Point' && p.onTrackClusterMembersOpen) {
+                const [lon, lat] = g.coordinates as [number, number]
+                const pointCount = Number(tcf.properties?.point_count ?? 0)
+                void fetchTrackClusterLeaves(map, 'track-wpts-cluster-src', tcf).then((members) => {
+                  p.onTrackClusterMembersOpen?.({
+                    pointCount: pointCount > 0 ? pointCount : members.length,
+                    center: { lat, lon },
+                    members,
+                  })
+                })
+              }
+              return
+            }
             const tPts = map.queryRenderedFeatures(e.point, { layers: ['track-wpts-unclustered', 'track-wpts-stepnum'] })
             for (const f of tPts) {
               const pid = f.properties?.pid
               if (typeof pid === 'string' && pid) {
-                ti.onPickPoint(pid)
-                return
+                if (!ti.canPickTrackPoint || ti.canPickTrackPoint(pid)) {
+                  ti.onPickPoint(pid)
+                  return
+                }
               }
             }
           }
@@ -1468,8 +1538,20 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
         <Source id="travel-lines" type="geojson" data={tracksData.lines}>
           <Layer
-            id="travel-line-layer"
+            id="travel-line-layer-subject"
             type="line"
+            filter={['==', ['get', 'lineKind'], 'subject']}
+            paint={{
+              'line-color': ['get', 'color'],
+              'line-width': 4,
+              'line-opacity': 0.95,
+              'line-dasharray': [2, 2],
+            }}
+          />
+          <Layer
+            id="travel-line-layer-coordinate"
+            type="line"
+            filter={['==', ['get', 'lineKind'], 'coordinate']}
             paint={{
               'line-color': ['get', 'color'],
               'line-width': 4,
@@ -1585,11 +1667,11 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
         <TrackWaypointMarkersMapLibre
           tracks={props.caseTracks}
-          trackPoints={props.caseTrackPoints}
+          trackPoints={trackPtsForMap}
           visibleTrackIds={props.visibleTrackIds}
           selectedPointId={props.selectedTrackPointId ?? null}
           getRouteColor={props.getRouteColor}
-          canManipulatePoint={props.canManipulateTrackPoint}
+          canManipulatePoint={canManipulateTrackPointOnMap}
           onSelectPoint={props.onSelectTrackPoint}
           draggable={props.caseTab === 'tracking'}
           onDragEndPoint={props.onTrackPointDragEnd}
@@ -1597,14 +1679,15 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           showMarkers={showDetailOverlays}
           mapLeftToolDockOpenRef={props.mapLeftToolDockOpenRef}
           blockMapCanvasPointerEvents={props.blockMapCanvasPointerEvents}
+          waypointGroupTolerance={props.waypointGroupTolerance}
         />
 
         <TrackTimeLabelsMapLibre
           tracks={props.caseTracks}
-          trackPoints={props.caseTrackPoints}
+          trackPoints={trackPtsForMap}
           visibleTrackIds={props.visibleTrackIds}
           getRouteColor={props.getRouteColor}
-          canManipulatePoint={props.canManipulateTrackPoint}
+          canManipulatePoint={canManipulateTrackPointOnMap}
           selectedPointId={props.selectedTrackPointId ?? null}
           onSelectPoint={props.onSelectTrackPoint}
           onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
