@@ -84,10 +84,10 @@ function rowToCase(r: CaseRow): CaseFile {
   }
 }
 
-function caseToRow(c: CaseFile): Record<string, unknown> {
+function caseToRow(c: CaseFile, ownerUserIdForRow?: string): Record<string, unknown> {
   return {
     id: c.id,
-    owner_user_id: c.ownerUserId,
+    owner_user_id: ownerUserIdForRow ?? c.ownerUserId,
     organization_id: c.organizationId ?? null,
     unit_id: c.unitId ?? null,
     case_number: c.caseNumber,
@@ -408,7 +408,7 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
   const {
     data: { session },
   } = await sb.auth.getSession()
-  const uid = session?.user?.id
+  const uid = session?.user?.id?.trim().toLowerCase()
   if (!uid) throw new Error('Not signed in')
 
   const { normalizeAppData } = await import('../db')
@@ -416,8 +416,10 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
 
   // RLS: only the case owner may insert/update vc_cases. Pushing every case (e.g. collaborator copies
   // or stale IndexedDB rows with a different owner_user_id) causes "new row violates row-level security".
-  const casesOwnedBySession = d.cases.filter((c) => c.ownerUserId === uid)
-  for (const batch of chunk(casesOwnedBySession.map(caseToRow), 80)) {
+  const casesOwnedBySession = d.cases.filter((c) => c.ownerUserId.trim().toLowerCase() === uid)
+  // Always write the session's canonical id as owner so WITH CHECK (owner_user_id = auth.uid()) passes
+  // even if local merge/import left different casing or stray whitespace on ownerUserId.
+  for (const batch of chunk(casesOwnedBySession.map((c) => caseToRow(c, uid)), 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').upsert(batch, { onConflict: 'id' })
     if (error) throw relationalPushError('vc_cases', error)
