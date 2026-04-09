@@ -37,10 +37,6 @@ export function useSupabaseAppDataSync(params: {
         if (cancelled || syncPullInFlightRef.current) return
         syncPullInFlightRef.current = true
         try {
-          const {
-            data: { session },
-          } = await sb.auth.getSession()
-          if (!session?.user) return
           const cur = dataRef.current
           const merged = await pullAndMergeWithLocal(cur)
           if (cancelled || !merged) return

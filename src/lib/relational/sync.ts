@@ -1,5 +1,6 @@
 import type { PostgrestError } from '@supabase/supabase-js'
 import { supabase } from '../supabase'
+import { getRelationalAuthUserId } from '../supabaseAuthSession'
 import type {
   AppData,
   AppUser,
@@ -341,7 +342,7 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
   const cases = (casesRows as CaseRow[]).map(rowToCase)
   const caseIds = cases.map((c) => c.id)
   if (caseIds.length === 0) {
-    const uid = (await supabase.auth.getUser()).data.user?.id
+    const uid = await getRelationalAuthUserId(supabase)
     const { data: selfRow } = uid
       ? await supabase.from('vc_profiles').select('*').eq('id', uid).maybeSingle()
       : { data: null as ProfileRow | null }
@@ -410,14 +411,7 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
 export async function pushAppDataToRelational(data: AppData): Promise<void> {
   if (!supabase) throw new Error('Supabase client missing')
   const sb = supabase
-  const gu = await sb.auth.getUser()
-  let uidRaw = gu.data.user?.id?.trim()
-  if (!uidRaw) {
-    const {
-      data: { session },
-    } = await sb.auth.getSession()
-    uidRaw = session?.user?.id?.trim()
-  }
+  const uidRaw = await getRelationalAuthUserId(sb)
   if (!uidRaw) throw new Error('Not signed in')
   const uidKey = normUuid(uidRaw)
 

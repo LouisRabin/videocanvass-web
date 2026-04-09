@@ -8,6 +8,7 @@ import {
 } from './types'
 import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
+import { getRelationalAuthUserId } from './supabaseAuthSession'
 import { setSyncStatus } from './syncStatus'
 
 /** Merge rules, polling, and Realtime overview: `docs/SYNC_CONTRACT.md`. */
@@ -322,10 +323,8 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
 
 export async function loadData(): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
-    if (session?.user) {
+    const uid = await getRelationalAuthUserId(supabase)
+    if (uid) {
       const { loadAppDataFromRelational } = await import('./relational/sync')
       const remote = await loadAppDataFromRelational()
       if (remote) {
@@ -368,11 +367,9 @@ export async function loadData(): Promise<AppData> {
  */
 export async function saveData(data: AppData): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+    const uid = await getRelationalAuthUserId(supabase)
     const payloadToSave = normalizeAppData(data)
-    if (!session?.user) {
+    if (!uid) {
       await localforage.setItem(STORE_KEY, payloadToSave)
       setSyncStatus({ mode: 'local_fallback', message: 'Not signed in; saved locally only' })
       return payloadToSave
@@ -388,7 +385,9 @@ export async function saveData(data: AppData): Promise<AppData> {
       await localforage.setItem(STORE_KEY, payloadToSave)
       const detail = formatDbErrorForSync(e)
       const clipped = detail.length > 200 ? `${detail.slice(0, 197)}…` : detail
-      setSyncStatus({ mode: 'local_fallback', message: `Database save failed: ${clipped}` })
+      const rlsHint =
+        /row-level security|\brls\b/i.test(detail) ? ' Try refreshing the page or signing in again.' : ''
+      setSyncStatus({ mode: 'local_fallback', message: `Database save failed: ${clipped}${rlsHint}` })
       return payloadToSave
     }
   }
@@ -453,10 +452,8 @@ export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
 /** Merge latest remote JSON blob into the current in-memory dataset (per-entity LWW). */
 export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | null> {
   if (relationalBackendEnabled() && supabase) {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
-    if (!session?.user) return null
+    const uid = await getRelationalAuthUserId(supabase)
+    if (!uid) return null
     const { loadAppDataFromRelational } = await import('./relational/sync')
     const remote = await loadAppDataFromRelational()
     if (!remote) return null
