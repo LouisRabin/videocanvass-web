@@ -246,6 +246,45 @@ ALTER TABLE public.vc_track_points ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vc_case_attachments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vc_audit_log ENABLE ROW LEVEL SECURITY;
 
+-- Idempotent: safe to re-run in SQL editor after a partial apply (avoids 42710 policy already exists).
+DROP POLICY IF EXISTS vc_org_select ON public.vc_organizations;
+DROP POLICY IF EXISTS vc_dept_select ON public.vc_departments;
+DROP POLICY IF EXISTS vc_unit_select ON public.vc_units;
+DROP POLICY IF EXISTS vc_udm_select ON public.vc_user_department_members;
+DROP POLICY IF EXISTS vc_uum_select ON public.vc_user_unit_members;
+DROP POLICY IF EXISTS vc_profiles_select ON public.vc_profiles;
+DROP POLICY IF EXISTS vc_profiles_update ON public.vc_profiles;
+DROP POLICY IF EXISTS vc_cases_select ON public.vc_cases;
+DROP POLICY IF EXISTS vc_cases_insert ON public.vc_cases;
+DROP POLICY IF EXISTS vc_cases_update ON public.vc_cases;
+DROP POLICY IF EXISTS vc_cases_delete ON public.vc_cases;
+DROP POLICY IF EXISTS vc_cc_select ON public.vc_case_collaborators;
+DROP POLICY IF EXISTS vc_cc_ins ON public.vc_case_collaborators;
+DROP POLICY IF EXISTS vc_cc_upd ON public.vc_case_collaborators;
+DROP POLICY IF EXISTS vc_cc_del ON public.vc_case_collaborators;
+DROP POLICY IF EXISTS vc_loc_select ON public.vc_locations;
+DROP POLICY IF EXISTS vc_loc_insert ON public.vc_locations;
+DROP POLICY IF EXISTS vc_loc_update ON public.vc_locations;
+DROP POLICY IF EXISTS vc_loc_delete ON public.vc_locations;
+DROP POLICY IF EXISTS vc_tracks_select ON public.vc_tracks;
+DROP POLICY IF EXISTS vc_tracks_write_ins ON public.vc_tracks;
+DROP POLICY IF EXISTS vc_tracks_write_upd ON public.vc_tracks;
+DROP POLICY IF EXISTS vc_tracks_del ON public.vc_tracks;
+DROP POLICY IF EXISTS vc_tp_select ON public.vc_track_points;
+DROP POLICY IF EXISTS vc_tp_ins ON public.vc_track_points;
+DROP POLICY IF EXISTS vc_tp_upd ON public.vc_track_points;
+DROP POLICY IF EXISTS vc_tp_del ON public.vc_track_points;
+DROP POLICY IF EXISTS vc_att_select ON public.vc_case_attachments;
+DROP POLICY IF EXISTS vc_att_ins ON public.vc_case_attachments;
+DROP POLICY IF EXISTS vc_att_upd ON public.vc_case_attachments;
+DROP POLICY IF EXISTS vc_att_del ON public.vc_case_attachments;
+DROP POLICY IF EXISTS vc_audit_ins ON public.vc_audit_log;
+DROP POLICY IF EXISTS vc_audit_sel ON public.vc_audit_log;
+DROP POLICY IF EXISTS case_attachments_select ON storage.objects;
+DROP POLICY IF EXISTS case_attachments_insert ON storage.objects;
+DROP POLICY IF EXISTS case_attachments_update ON storage.objects;
+DROP POLICY IF EXISTS case_attachments_delete ON storage.objects;
+
 -- Organizations / directory: any signed-in user can read (narrow for v2 via org membership)
 CREATE POLICY vc_org_select ON public.vc_organizations FOR SELECT TO authenticated USING (true);
 CREATE POLICY vc_dept_select ON public.vc_departments FOR SELECT TO authenticated USING (true);

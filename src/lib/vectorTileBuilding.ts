@@ -68,7 +68,8 @@ function ringsFromGeometry(geom: Geometry | null | undefined): LatLon[][] {
 
 /**
  * Pick a building outline from vector tile query results at a click.
- * Prefers the outer ring whose polygon contains the click, smallest area wins.
+ * Among rings that contain the click, **largest** area wins so the main footprint is chosen over
+ * a small shed/garage or `building:part` when both match the same tap (smallest-first was wrong for that).
  */
 export function buildingFootprintRingFromRenderedFeatures(
   features: Feature[],
@@ -89,7 +90,7 @@ export function buildingFootprintRingFromRenderedFeatures(
   }
 
   if (!cands.length) return null
-  cands.sort((a, b) => a.area - b.area)
+  cands.sort((a, b) => b.area - a.area)
   const best = cands[0]!.ring
   return best.length >= 3 ? best : null
 }

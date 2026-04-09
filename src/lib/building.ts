@@ -132,8 +132,20 @@ out geom;
 
 function pickBestFootprint(lat: number, lon: number, candidates: LatLon[][]): LatLon[] | null {
   if (!candidates.length) return null
-  for (const poly of candidates) {
-    if (pointInPolygon([lat, lon], poly)) return poly
+  const containing = candidates.filter((poly) => pointInPolygon([lat, lon], poly))
+  if (containing.length === 1) return containing[0]!
+  if (containing.length > 1) {
+    let best = containing[0]!
+    let bestArea = polygonAreaSqMeters(best)
+    for (let i = 1; i < containing.length; i++) {
+      const p = containing[i]!
+      const a = polygonAreaSqMeters(p)
+      if (a > bestArea) {
+        bestArea = a
+        best = p
+      }
+    }
+    return best
   }
   let best: LatLon[] | null = null
   let bestEdgeM = Number.POSITIVE_INFINITY
@@ -575,6 +587,10 @@ function preferRefinedFootprint(current: LatLon[], refined: LatLon[], lat: numbe
   const currentContains = pointInPolygon(pt, current)
   const refinedContains = pointInPolygon(pt, refined)
   if (refinedContains && !currentContains) return true
+  // Both contain the pin: do not swap a plausible main building for a tiny outbuilding (shed/garage).
+  if (refinedContains && currentContains && !isLikelyCoarseFootprint(current)) {
+    if (refinedArea < currentArea * 0.5) return false
+  }
   // Prefer materially tighter polygons to avoid school/campus parcels.
   if (refinedArea < currentArea * 0.6) return true
   return false
@@ -764,6 +780,18 @@ function validatedVectorTilePoly(raw: LatLon[] | null, lat: number, lon: number)
   return null
 }
 
+/** Prefer OSM/NYC merge result vs vector tile when both are valid; among those containing the pin, largest footprint wins. */
+function mergeVectorHintWithResult(
+  lat: number,
+  lon: number,
+  vectorValidated: LatLon[] | null,
+  merged: LatLon[] | null,
+): LatLon[] | null {
+  if (!vectorValidated) return merged
+  if (!merged) return vectorValidated
+  return pickBestFootprint(lat, lon, [merged, vectorValidated])
+}
+
 function mergeFootprintCandidates(
   overRaw: LatLon[] | null | undefined,
   nomRaw: LatLon[] | null | undefined,
@@ -783,7 +811,7 @@ function mergeFootprintCandidates(
     const overIn = pointInPolygon([lat, lon], overVal)
     if (nomIn && !overIn) return nomVal
     if (overIn && !nomIn) return overVal
-    return polygonAreaSqMeters(overVal) <= polygonAreaSqMeters(nomVal) ? overVal : nomVal
+    return pickBestFootprint(lat, lon, [overVal, nomVal]) ?? overVal
   }
   if (nomVal) return nomVal
   if (overVal) return overVal
@@ -798,10 +826,8 @@ export async function fetchBuildingFootprint(
   opts?: FootprintFetchOptions,
 ): Promise<LatLon[] | null> {
   const vecHint = opts?.vectorTileBuildingRing
-  if (vecHint && vecHint.length >= 3) {
-    const v = validatedVectorTilePoly(vecHint, lat, lon)
-    if (v) return v
-  }
+  const vectorValidated =
+    vecHint && vecHint.length >= 3 ? validatedVectorTilePoly(vecHint, lat, lon) : null
 
   let addressText = opts?.addressText?.trim() ?? null
   if (addressText && isLatLonOnlyLabel(addressText)) {
@@ -843,7 +869,9 @@ export async function fetchBuildingFootprint(
     .catch(() => null as LatLon[] | null)
 
   const [fromNyc, osmMerged] = await Promise.all([nycP, osmNomP])
-  if (fromNyc) return fromNyc
+  if (fromNyc) {
+    return mergeVectorHintWithResult(lat, lon, vectorValidated, fromNyc)
+  }
 
   let merged: LatLon[] | null = osmMerged
   if (addressText && !isLatLonOnlyLabel(addressText)) {
@@ -857,6 +885,6 @@ export async function fetchBuildingFootprint(
     }
   }
 
-  return merged
+  return mergeVectorHintWithResult(lat, lon, vectorValidated, merged)
 }
 

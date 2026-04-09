@@ -30,8 +30,19 @@ export type PendingAddItem = {
   vectorTileBuildingRing?: LatLon[] | null
 }
 
+/** Map-driven “record result” modal: one saved row, or a new pin from a map tap before save. */
+export type CanvassMapResultSession =
+  | { key: string; mode: 'existing'; locationId: string }
+  | ({ key: string; mode: 'new' } & PendingAddItem)
+
+export function newCanvassMapResultSessionKey(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export function samePendingPin(a: { lat: number; lon: number }, b: { lat: number; lon: number }) {
-  return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5
+  return a.lat === b.lat && a.lon === b.lon
 }
 
 /** Compact lat, lon for step headers, map chips, and notes context (five decimal places). */
@@ -172,20 +183,34 @@ export function casePhotoCarouselArrowStyle(side: 'left' | 'right'): CSSProperti
   }
 }
 
+function normalizeStreetTokenTail(segment: string): string {
+  let s = segment.trim()
+  s = s.replace(/\bstreet\b\.?$/i, 'st')
+  s = s.replace(/\bavenue\b\.?$/i, 'ave')
+  s = s.replace(/\broad\b\.?$/i, 'rd')
+  s = s.replace(/\bdrive\b\.?$/i, 'dr')
+  s = s.replace(/\bplace\b\.?$/i, 'pl')
+  s = s.replace(/\blane\b\.?$/i, 'ln')
+  s = s.replace(/\bboulevard\b\.?$/i, 'blvd')
+  return s.trim()
+}
+
 function normalizeAddressKey(addressText: string): string | null {
   const raw = (addressText ?? '').trim()
   if (!raw) return null
 
   // Normalize to "first comma segment" (usually: `${housenumber} ${street}`)
-  // Example: "160-25 150th St, Queens, New York, United States" -> "160-25 150th St"
+  // Example: "160-25 150th St, Queens, New York, United States" -> "160-25 150th st"
   const first = raw.split(',')[0]?.trim() ?? ''
   if (!first) return null
 
-  return first
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    // Make sure "160 - 23" and "160-23" match.
-    .replace(/\s*-\s*/g, '-')
+  return normalizeStreetTokenTail(
+    first
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      // Make sure "160 - 23" and "160-23" match.
+      .replace(/\s*-\s*/g, '-'),
+  )
 }
 
 export function findLocationByAddressText(locations: Location[], clickedAddressText: string): Location | null {
@@ -198,128 +223,44 @@ export function findLocationByAddressText(locations: Location[], clickedAddressT
   return null
 }
 
-/** ~50 m — same doorway / building when geocoder labels or coords differ slightly. */
-const CANVASS_DUP_MAX_METERS = 50
-
-function distanceMetersApprox(aLat: number, aLon: number, bLat: number, bLon: number): number {
-  const dLat = (bLat - aLat) * 111_320
-  const dLon = (bLon - aLon) * 111_320 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180))
-  return Math.hypot(dLat, dLon)
-}
-
-/**
- * Single saved pin per physical address: match normalized street line, footprint/bounds hit, or nearby coords.
- */
-export function findExistingLocationForCanvassAdd(
+/** Same-case duplicate check for `createLocation` (normalized street segment; St/Street, etc.). */
+export function findDuplicateLocationInCaseByAddressText(
   locations: Location[],
-  lat: number,
-  lon: number,
+  caseId: string,
   addressText: string,
-  outlineLoadingIds?: Set<string>,
 ): Location | null {
-  const byText = findLocationByAddressText(locations, addressText)
-  if (byText) return byText
-
-  const byHit = findLocationHitByMapClick(locations, lat, lon, outlineLoadingIds)
-  if (byHit) return byHit
-
-  let best: Location | null = null
-  let bestD = CANVASS_DUP_MAX_METERS + 1
-  for (const loc of locations) {
-    const d = distanceMetersApprox(lat, lon, loc.lat, loc.lon)
-    if (d < bestD && d <= CANVASS_DUP_MAX_METERS) {
-      bestD = d
-      best = loc
-    }
+  const clickedKey = normalizeAddressKey(addressText)
+  if (!clickedKey) return null
+  for (const l of locations) {
+    if (l.caseId !== caseId) continue
+    const key = normalizeAddressKey(l.addressText)
+    if (key && key === clickedKey) return l
   }
-  return best
-}
-
-/** ~13 m — tight hit target + map preview while a building outline is loading (not full Photon bbox). */
-const OUTLINE_LOADING_PIN_HALF_DEG = 0.00012
-
-function tightPinBoundsCorners(loc: Pick<Location, 'lat' | 'lon'>): [[number, number], [number, number]] {
-  const d = OUTLINE_LOADING_PIN_HALF_DEG
-  return [
-    [loc.lat - d, loc.lon - d],
-    [loc.lat + d, loc.lon + d],
-  ]
-}
-
-/** Ray-cast; ring is [lat, lon][] (Leaflet order). */
-function pointInPolygonLatLon(point: LatLon, polygon: LatLon[]): boolean {
-  const [py, px] = point
-  let inside = false
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [yi, xi] = polygon[i]!
-    const [yj, xj] = polygon[j]!
-    const intersect = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi
-    if (intersect) inside = !inside
-  }
-  return inside
-}
-
-/** Shoelace in projected meters so footprint vs bbox hits sort on the same scale. */
-function ringAreaSqMetersApprox(ring: LatLon[]): number {
-  if (ring.length < 3) return Number.POSITIVE_INFINITY
-  let avgLat = 0
-  for (const [la] of ring) avgLat += la
-  avgLat /= ring.length
-  const latM = 111_320
-  const lonM = Math.cos((avgLat * Math.PI) / 180) * 111_320
-  let area = 0
-  for (let i = 0; i < ring.length; i++) {
-    const [lat1, lon1] = ring[i]!
-    const [lat2, lon2] = ring[(i + 1) % ring.length]!
-    const x1 = lon1 * lonM
-    const y1 = lat1 * latM
-    const x2 = lon2 * lonM
-    const y2 = lat2 * latM
-    area += x1 * y2 - x2 * y1
-  }
-  return Math.abs(area / 2)
-}
-
-function latLngBoundsAreaSqMeters(bounds: {
-  getSouthWest: () => { lat: number; lng: number }
-  getNorthEast: () => { lat: number; lng: number }
-}): number {
-  const sw = bounds.getSouthWest()
-  const ne = bounds.getNorthEast()
-  const midLat = (sw.lat + ne.lat) / 2
-  const latM = 111_320
-  const lonM = Math.cos((midLat * Math.PI) / 180) * 111_320
-  return Math.abs((ne.lat - sw.lat) * latM * (ne.lng - sw.lng) * lonM)
+  return null
 }
 
 /**
- * Pin activated for edit when the click lies inside its footprint polygon, or inside its
- * bounds / fallback hit rectangle (loading, queued, no footprint yet). Smallest containing
- * region wins when overlaps occur (tight buildings side by side).
+ * Whether to update an existing location row or create a new one after the user picks a (non-probative) status.
+ * `mode: 'new'` creates unless the same normalized street label already exists in `locations` (case-scoped list).
  */
-export function findLocationHitByMapClick(
+export function decideCanvassSaveTarget(
   locations: Location[],
-  lat: number,
-  lon: number,
-  outlineLoadingIds?: Set<string>,
-): Location | null {
-  const pt: LatLon = [lat, lon]
-  type Hit = { loc: Location; area: number }
-  const hits: Hit[] = []
-
-  for (const loc of locations) {
-    if (loc.footprint && loc.footprint.length >= 3) {
-      if (pointInPolygonLatLon(pt, loc.footprint)) hits.push({ loc, area: ringAreaSqMetersApprox(loc.footprint) })
-      continue
-    }
-    const tight = outlineLoadingIds?.has(loc.id) ?? false
-    const b = tight ? tightPinBoundsCorners(loc) : locationBounds(loc)
-    const bounds = L.latLngBounds(b as [number, number][])
-    if (bounds.contains(L.latLng(lat, lon))) {
-      hits.push({ loc, area: latLngBoundsAreaSqMeters(bounds) })
-    }
+  session: CanvassMapResultSession,
+  _footprintLoadingIds: Set<string>,
+): { kind: 'update'; id: string } | { kind: 'create'; pending: PendingAddItem } {
+  if (session.mode === 'existing') {
+    return { kind: 'update', id: session.locationId }
   }
-  if (!hits.length) return null
-  hits.sort((a, b) => a.area - b.area)
-  return hits[0]!.loc
+  const dup = findLocationByAddressText(locations, session.addressText)
+  if (dup) {
+    return { kind: 'update', id: dup.id }
+  }
+  const pending: PendingAddItem = {
+    lat: session.lat,
+    lon: session.lon,
+    addressText: session.addressText,
+    bounds: session.bounds,
+    vectorTileBuildingRing: session.vectorTileBuildingRing,
+  }
+  return { kind: 'create', pending }
 }

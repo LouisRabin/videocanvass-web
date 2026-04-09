@@ -34,8 +34,18 @@ const PhotonReverseResponseSchema = z.object({
 
 const reverseCache = new Map<string, { at: number; value: string }>()
 const REVERSE_TTL_MS = 15 * 60 * 1000
+/** Fail fast when Komoot Photon stalls so Nominatim can run without waiting on the browser’s long default. */
+const PHOTON_REVERSE_TIMEOUT_MS = 6_000
+const NOMINATIM_REVERSE_TIMEOUT_MS = 12_000
+
 /** Same coordinate can be reverse-geocoded from the map click, pending-add queue, and post-save hooks — one HTTP pass. */
 const reverseInflight = new Map<string, Promise<string | null>>()
+
+function abortSignalWithTimeout(base: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const t = AbortSignal.timeout(timeoutMs)
+  if (!base) return t
+  return AbortSignal.any([base, t])
+}
 
 type PhotonRevProps = z.infer<typeof PhotonReversePropertiesSchema>
 
@@ -101,7 +111,7 @@ async function reverseGeocodePhoton(lat: number, lon: number, signal?: AbortSign
   url.searchParams.set('lon', String(lon))
   url.searchParams.set('lang', 'en')
 
-  const res = await fetch(url.toString(), { signal })
+  const res = await fetch(url.toString(), { signal: abortSignalWithTimeout(signal, PHOTON_REVERSE_TIMEOUT_MS) })
   if (!res.ok) return null
   const json = await res.json()
   const parsed = PhotonReverseResponseSchema.safeParse(json)
@@ -142,7 +152,7 @@ async function reverseGeocodeNominatim(lat: number, lon: number, signal?: AbortS
   url.searchParams.set('zoom', '18')
   url.searchParams.set('addressdetails', '1')
 
-  const res = await fetch(url.toString(), { signal })
+  const res = await fetch(url.toString(), { signal: abortSignalWithTimeout(signal, NOMINATIM_REVERSE_TIMEOUT_MS) })
   if (!res.ok) return null
   const json = (await res.json()) as {
     display_name?: string
@@ -155,7 +165,52 @@ async function reverseGeocodeNominatim(lat: number, lon: number, signal?: AbortS
 }
 
 /**
- * Human-readable label for a map point. Photon reverse first (browser-direct), then Nominatim via dev proxy if Photon misses.
+ * Run Photon (Komoot) and Nominatim in parallel; return the first non-null label.
+ * Cancels the other request via `parent` once a winner is found to reduce load.
+ */
+async function reverseGeocodeFirstNonNullParallel(
+  lat: number,
+  lon: number,
+  signal: AbortSignal | undefined,
+  parent: AbortController,
+): Promise<string | null> {
+  const combined = signal ? AbortSignal.any([signal, parent.signal]) : parent.signal
+
+  return await new Promise<string | null>((resolve) => {
+    let done = false
+    let nullCount = 0
+
+    const finish = (v: string | null) => {
+      if (done) return
+      if (v) {
+        done = true
+        try {
+          parent.abort()
+        } catch {
+          /* ignore */
+        }
+        resolve(v)
+        return
+      }
+      nullCount++
+      if (nullCount >= 2) {
+        done = true
+        resolve(null)
+      }
+    }
+
+    void reverseGeocodePhoton(lat, lon, combined)
+      .then(finish)
+      .catch(() => finish(null))
+    void reverseGeocodeNominatim(lat, lon, combined)
+      .then(finish)
+      .catch(() => finish(null))
+  })
+}
+
+/**
+ * Human-readable label for a map point. Photon (browser-direct) and Nominatim (app proxy) run in parallel;
+ * first successful non-null result wins and the other request is aborted. Callers share cache + inflight per rounded coordinate.
  */
 export async function reverseGeocodeAddressText(
   lat: number,
@@ -171,29 +226,16 @@ export async function reverseGeocodeAddressText(
   let inflight = reverseInflight.get(key)
   if (!inflight) {
     inflight = (async () => {
-      let photon: string | null = null
+      const parent = new AbortController()
       try {
-        photon = await reverseGeocodePhoton(lat, lon, signal)
-      } catch {
-        /* continue */
-      }
-
-      if (photon) {
-        reverseCache.set(key, { at: Date.now(), value: photon })
-        return photon
-      }
-
-      try {
-        const nom = await reverseGeocodeNominatim(lat, lon, signal)
-        if (nom) {
-          reverseCache.set(key, { at: Date.now(), value: nom })
-          return nom
+        const label = await reverseGeocodeFirstNonNullParallel(lat, lon, signal, parent)
+        if (label) {
+          reverseCache.set(key, { at: Date.now(), value: label })
         }
+        return label
       } catch {
-        /* both failed */
+        return null
       }
-
-      return null
     })().finally(() => {
       reverseInflight.delete(key)
     })

@@ -1,0 +1,1 @@
+-- First CLI-created migration (placeholder). Add DDL below when ready.

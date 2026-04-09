@@ -45,7 +45,7 @@ Consolidated notes for whoever picks up **Case page**, **geocoding**, **sync**, 
 
 **Behavior summary:** Single Photon `GET` per search. US-only via post-filter + continental `bbox` when `GEOCODE_SCOPE === 'us'`. When **Locate me** has not set `geoBias`, each search uses **current map center** as Photon `lat`/`lon` with `location_bias_scale=0.32`. Cache keys include rounded bias so panning does not reuse wrong suggestions.
 
-**Reverse geocode** (map tap): [`src/lib/reverseGeocodeAddressTextStable.ts`](src/lib/reverseGeocodeAddressTextStable.ts) — separate from autocomplete; do not casually duplicate logic.
+**Reverse geocode** (map tap, pending-add modal, saved-pin backfill): [`src/lib/reverseGeocodeAddressTextStable.ts`](src/lib/reverseGeocodeAddressTextStable.ts) — separate from autocomplete; do not casually duplicate logic. **Photon** (`photon.komoot.io/reverse`) and **Nominatim** (`/api/geocode/nominatim-reverse`) run **in parallel** with per-provider timeouts; the **first non-null** label wins and the other request is aborted to limit load. Cached and deduped per rounded lat/lon (5 decimals). Callers may pass `AbortSignal` (combined with an internal coordinator so both sub-requests cancel together).
 
 **DVR toolbar (web):** `hideManualOffset` on wide; panel max-height + inner scroll in `CasePage.tsx` (`mapToolsDockDvrPanel`).
 

@@ -3,6 +3,7 @@
  */
 
 import type { TrackPoint } from './types'
+import { isMapPlacedTrackPoint } from './trackPointPlacement'
 
 const EARTH_RADIUS_M = 6_371_000
 
@@ -154,6 +155,10 @@ export function filterTrackPointsForMapDisplay(
     const sel = selectedPointId && sorted.some((p) => p.id === selectedPointId) ? selectedPointId : null
     const ids = decimateTrackPointIds(sorted, eps, sel)
     for (const id of ids) kept.add(id)
+    // User-placed subject steps must all stay visible; decimation is for dense import/GPS paths.
+    for (const p of sorted) {
+      if (isMapPlacedTrackPoint(p)) kept.add(p.id)
+    }
   }
 
   return allPoints.filter((p) => kept.has(p.id))

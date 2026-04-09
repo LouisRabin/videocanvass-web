@@ -1,6 +1,9 @@
 /**
  * Parse pasted coordinate lines and spreadsheet grids (CSV / Excel matrix) for track point import.
  * Indices in GridParseOpts use 1-based rows/columns as shown to users (column 1 = A).
+ *
+ * **Scope:** Import pipeline and `TrackImportPanel` preview only. Overlap grouping here does not
+ * affect Video canvassing, address search, or `Location` selection (`casePageHelpers` / map tap).
  */
 
 import { parseImportInstantCell } from './trackImportTimeParse'
@@ -72,7 +75,10 @@ export type OverlapGroup = {
   indices: number[]
 }
 
-/** Group import rows that share the same coordinates after rounding (default ~1.1 m). */
+/**
+ * Group import rows that share the same coordinates after rounding (default ~1.1 m).
+ * For import UI / validation only — not used for canvass addresses or search dedup.
+ */
 export function groupOverlappingImportRows(rows: LatLonImportRow[], decimals = 5): OverlapGroup[] {
   const mult = 10 ** decimals
   const m = new Map<string, number[]>()

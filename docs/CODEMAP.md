@@ -17,6 +17,7 @@ Short orientation for humans and tooling. **Policy and tuning** for geocoding, f
 ## Map
 
 - [`src/app/AddressesMapLibre.tsx`](../src/app/AddressesMapLibre.tsx) — Case map: MapLibre via `react-map-gl`, layers, markers, interactions.
+- [`TrackWaypointMarkers`](../src/app/addressesMapLibre/TrackWaypointMarkers.tsx) — One numbered pin per visible `TrackPoint` on the subject map. **Video canvassing** taps and address search use [`casePageHelpers.ts`](../src/app/casePageHelpers.ts) and `resolveCanvassTapLocation` in `AddressesMapLibre`.
 - **Leaflet `L`** is used for **bounds/helpers** in [`CasePage.tsx`](../src/app/CasePage.tsx) (via [`casePageHelpers.ts`](../src/app/casePageHelpers.ts)) and related map code, not as the primary map renderer.
 
 ## Data and types
