@@ -1,4 +1,4 @@
-import { PHOTON_USER_AGENT } from './_proxyHeaders'
+import { PHOTON_USER_AGENT } from './_proxyHeaders.js'
 
 export const config = { runtime: 'edge' }
 
