@@ -1,4 +1,5 @@
 import type { PostgrestError } from '@supabase/supabase-js'
+import { z } from 'zod'
 import { supabase } from '../supabase'
 import { getRelationalAuthUserId } from '../supabaseAuthSession'
 import type {
@@ -51,11 +52,15 @@ type ProfileRow = {
 
 function profileToUser(p: ProfileRow): AppUser {
   const role = (p.app_role ?? '').trim().toLowerCase()
+  const emailRaw = (p.email ?? '').trim()
+  const email = z.string().email().safeParse(emailRaw).success ? emailRaw : 'user@local.invalid'
+  const taxRaw = (p.tax_number ?? '').trim()
+  const taxNumber = taxRaw.length > 0 ? taxRaw : '—'
   return {
     id: p.id,
-    displayName: p.display_name?.trim() || p.email || 'User',
-    email: p.email || '',
-    taxNumber: p.tax_number?.trim() || '',
+    displayName: p.display_name?.trim() || emailRaw || 'User',
+    email,
+    taxNumber,
     createdAt: new Date(p.created_at).getTime(),
     ...(role === 'admin' ? { appRole: 'admin' as const } : {}),
   }
@@ -351,7 +356,12 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
       ...DEFAULT_DATA,
       users,
     }
-    return normalizeAppData(AppDataSchema.parse(empty))
+    const parsedEmpty = AppDataSchema.safeParse(empty)
+    if (!parsedEmpty.success) {
+      console.warn('loadAppDataFromRelational empty state parse:', parsedEmpty.error)
+      return normalizeAppData({ ...DEFAULT_DATA, users: [] })
+    }
+    return normalizeAppData(parsedEmpty.data)
   }
 
   const [

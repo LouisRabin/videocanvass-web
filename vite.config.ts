@@ -73,6 +73,16 @@ export default defineConfig({
           'User-Agent': 'videocanvass-web-dev',
         },
       },
+      '/api/geocode/photon-api': {
+        target: 'https://photon.komoot.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace('/api/geocode/photon-api', '/api'),
+      },
+      '/api/geocode/photon-reverse': {
+        target: 'https://photon.komoot.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace('/api/geocode/photon-reverse', '/reverse'),
+      },
       '/api/nyc-open-data': {
         target: 'https://data.cityofnewyork.us',
         changeOrigin: true,

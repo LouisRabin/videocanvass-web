@@ -106,7 +106,7 @@ function labelFromPhotonProperties(p: PhotonRevProps, fallback: string | null): 
 }
 
 async function reverseGeocodePhoton(lat: number, lon: number, signal?: AbortSignal): Promise<string | null> {
-  const url = new URL('https://photon.komoot.io/reverse')
+  const url = new URL('/api/geocode/photon-reverse', window.location.origin)
   url.searchParams.set('lat', String(lat))
   url.searchParams.set('lon', String(lon))
   url.searchParams.set('lang', 'en')

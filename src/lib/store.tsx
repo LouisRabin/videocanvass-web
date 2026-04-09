@@ -50,7 +50,8 @@ import type {
 } from './types'
 
 /** Avoid indefinite "Loading…" if IndexedDB or Supabase never settles (e.g. throttled network). */
-const STORE_BOOTSTRAP_TIMEOUT_MS = 25_000
+/** Relational startup: auth validation + many parallel reads can exceed 25s on slow links; avoid empty-store false start. */
+const STORE_BOOTSTRAP_TIMEOUT_MS = 60_000
 
 /** Per-save ceiling so the UI cannot stick on "Saving N…" if PostgREST never responds. */
 const REMOTE_COMMIT_TIMEOUT_MS = 90_000

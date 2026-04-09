@@ -106,7 +106,7 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
 
   const fetchLimit = usOnly ? Math.min(50, Math.max(PHOTON_US_FETCH_MIN, limit * 3)) : limit
 
-  const url = new URL('https://photon.komoot.io/api/')
+  const url = new URL('/api/geocode/photon-api', window.location.origin)
   url.searchParams.set('q', q)
   url.searchParams.set('limit', String(fetchLimit))
   url.searchParams.set('lang', 'en')
