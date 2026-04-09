@@ -34,6 +34,7 @@ import {
   canManageCollaborators,
   findCase,
 } from './casePermissions'
+import { DEFAULT_DATA } from './types'
 import type {
   AddressBounds,
   AppData,
@@ -47,6 +48,9 @@ import type {
   Track,
   TrackPoint,
 } from './types'
+
+/** Avoid indefinite "Loading…" if IndexedDB or Supabase never settles (e.g. throttled network). */
+const STORE_BOOTSTRAP_TIMEOUT_MS = 25_000
 
 type StoreState = {
   ready: boolean
@@ -198,20 +202,48 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
-      const loaded = await loadData()
-      const d = ensurePocUsers(loaded)
-      if (!alive) return
-      dataRef.current = d
-      setData(d)
-      // Avoid blind startup writes that can accidentally overwrite shared cloud
-      // state if a transient load/parsing issue occurred.
-      const usersWereSeeded = loaded.users.length === 0 && d.users.length > 0
-      if (usersWereSeeded) {
-        const canonical = await saveData(d)
-        dataRef.current = canonical
-        setData(canonical)
+      try {
+        const loaded = await new Promise<AppData>((resolve, reject) => {
+          const t = setTimeout(() => {
+            reject(new Error(`Store bootstrap timed out after ${STORE_BOOTSTRAP_TIMEOUT_MS}ms`))
+          }, STORE_BOOTSTRAP_TIMEOUT_MS)
+          loadData()
+            .then((v) => {
+              clearTimeout(t)
+              resolve(v)
+            })
+            .catch((e) => {
+              clearTimeout(t)
+              reject(e)
+            })
+        })
+        const d = ensurePocUsers(loaded)
+        if (!alive) return
+        dataRef.current = d
+        setData(d)
+        // Avoid blind startup writes that can accidentally overwrite shared cloud
+        // state if a transient load/parsing issue occurred.
+        const usersWereSeeded = loaded.users.length === 0 && d.users.length > 0
+        if (usersWereSeeded) {
+          try {
+            const canonical = await saveData(d)
+            if (!alive) return
+            dataRef.current = canonical
+            setData(canonical)
+          } catch (e) {
+            console.warn('Initial POC seed save failed:', e)
+          }
+        }
+      } catch (e) {
+        console.warn('Store bootstrap failed:', e)
+        if (alive) {
+          const fallback = normalizeAppData(DEFAULT_DATA)
+          dataRef.current = fallback
+          setData(fallback)
+        }
+      } finally {
+        if (alive) setReady(true)
       }
-      setReady(true)
     })()
     return () => {
       alive = false
@@ -224,11 +256,15 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async () => {
-      const d = await loadData()
-      const next = ensurePocUsers(d)
-      dataRef.current = next
-      setData(next)
-      await writeLocalDataCache(next)
+      try {
+        const d = await loadData()
+        const next = ensurePocUsers(d)
+        dataRef.current = next
+        setData(next)
+        await writeLocalDataCache(next)
+      } catch (e) {
+        console.warn('Auth state data reload failed:', e)
+      }
     })
     return () => subscription.unsubscribe()
   }, [])
