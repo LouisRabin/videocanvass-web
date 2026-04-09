@@ -26,11 +26,31 @@ In the Vercel project: **Settings → Environment Variables**
   - `https://videocanvass-web.vercel.app/**`
   - `https://*.vercel.app/**` (only if acceptable for your security posture)
 
-## 3. Database — verify `vc_cases` RLS policies
+## 3. Database — schema, then RLS
 
-In **SQL Editor**, run the query in [`supabase/queries/verify_vc_cases_policies.sql`](../supabase/queries/verify_vc_cases_policies.sql).
+### Empty `public` schema (no tables in Table Editor)
 
-Confirm there are no unexpected extra `INSERT` policies or `RESTRICTIVE` policies beyond your migrations.
+If **Table Editor → `public`** shows no tables, the project was never migrated. Running only the RLS reset script will error (`relation "public.vc_cases" does not exist`).
+
+Apply migrations **in this order** (SQL editor: open each file from the repo, paste the full contents, **Run**; role **postgres** is fine):
+
+1. [`supabase/migrations/20260401120000_vc_relational_core.sql`](../supabase/migrations/20260401120000_vc_relational_core.sql) — creates all `vc_*` tables, RLS, storage bucket hooks.
+2. [`supabase/migrations/20260402130000_vc_lifecycle_global_canvass.sql`](../supabase/migrations/20260402130000_vc_lifecycle_global_canvass.sql)
+3. [`supabase/migrations/20260407120000_vc_track_points_placement_source.sql`](../supabase/migrations/20260407120000_vc_track_points_placement_source.sql)
+4. (Optional but recommended) [`supabase/migrations/20260410120000_vc_rls_reset_grants.sql`](../supabase/migrations/20260410120000_vc_rls_reset_grants.sql) — canonical `vc_cases` policies + `GRANT`s.
+
+Alternatively, from the repo with the CLI linked to this project: `supabase db push`.
+
+### Reset policies (if inserts still fail on an already-migrated DB)
+
+Apply migration [`supabase/migrations/20260410120000_vc_rls_reset_grants.sql`](../supabase/migrations/20260410120000_vc_rls_reset_grants.sql) via **`supabase db push`** or by pasting it into the SQL editor. It:
+
+- Drops **every** policy on `public.vc_cases` (including duplicates from the Dashboard), then recreates the four canonical owner-based policies with explicit `auth.uid() IS NOT NULL` checks.
+- Re-applies `GRANT` on `vc_*` tables to `authenticated` (harmless if already present).
+
+### Inspect current policies
+
+In **SQL Editor**, run [`supabase/queries/verify_vc_cases_policies.sql`](../supabase/queries/verify_vc_cases_policies.sql). After the reset migration you should see exactly **four** rows for `vc_cases`: `vc_cases_select`, `vc_cases_insert`, `vc_cases_update`, `vc_cases_delete`, all **PERMISSIVE**.
 
 ## 4. Debug build (optional)
 
