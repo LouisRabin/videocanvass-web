@@ -28,6 +28,67 @@ function normUuid(s: string): string {
   return s.trim().toLowerCase()
 }
 
+/** `auth.users.id` / JWT `sub` — reject empty or junk so we never upsert `owner_user_id: null` / invalid. */
+function assertAuthUuidForVcCases(ownerFromSession: string): string {
+  const n = normUuid(ownerFromSession)
+  if (!n) {
+    throw new Error('Cannot sync cases: missing owner user id. Sign in again.')
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(n)) {
+    throw new Error('Cannot sync cases: owner user id is not a valid uuid. Sign in again.')
+  }
+  return n
+}
+
+/**
+ * Payload for `vc_cases` upsert only. Never reads `c.ownerUserId` for `owner_user_id` — always session uuid.
+ * Omits nullable `organization_id` / `unit_id` when unset so we do not send explicit `null` for those keys.
+ */
+function vcCasePayloadForUpsert(c: CaseFile, ownerUuidLower: string): Record<string, unknown> {
+  const owner_user_id = assertAuthUuidForVcCases(ownerUuidLower)
+  const row: Record<string, unknown> = {
+    id: c.id,
+    owner_user_id,
+    case_number: c.caseNumber,
+    title: c.title,
+    description: c.description ?? '',
+    created_at_ms: c.createdAt,
+    updated_at_ms: c.updatedAt,
+    lifecycle: c.lifecycle ?? 'open',
+  }
+  const org = c.organizationId?.trim()
+  if (org) row.organization_id = normUuid(org)
+  const unit = c.unitId?.trim()
+  if (unit) row.unit_id = normUuid(unit)
+  return row
+}
+
+async function assertPostgrestSessionMatchesOwner(
+  sb: NonNullable<typeof supabase>,
+  expectedOwnerNorm: string,
+): Promise<void> {
+  const {
+    data: { session },
+  } = await sb.auth.getSession()
+  const token = session?.access_token
+  const sessionUid = normUuid(session?.user?.id ?? '')
+  if (!token || !sessionUid) {
+    throw new Error('Cannot sync cases: no access token on this device. Sign out, sign in, then retry.')
+  }
+  if (sessionUid === expectedOwnerNorm) return
+
+  const { data, error } = await sb.auth.refreshSession()
+  if (error?.message) {
+    console.warn('[sync] refreshSession before vc_cases upsert:', error.message)
+  }
+  const again = normUuid(data.session?.user?.id ?? '')
+  if (!data.session?.access_token || again !== expectedOwnerNorm) {
+    throw new Error(
+      'Cannot sync cases: browser session does not match the account that owns these cases. Sign out and sign in again.',
+    )
+  }
+}
+
 /** Include table name in the message so the sync bar / console show where push failed. */
 function relationalPushError(table: string, err: PostgrestError): Error {
   const parts = [err.message, err.details, err.hint].filter((x) => typeof x === 'string' && x.trim())
@@ -92,21 +153,6 @@ function rowToCase(r: CaseRow): CaseFile {
     createdAt: r.created_at_ms,
     updatedAt: r.updated_at_ms,
     lifecycle: lc === 'closed' ? 'closed' : 'open',
-  }
-}
-
-function caseToRow(c: CaseFile, ownerUserIdForRow?: string): Record<string, unknown> {
-  return {
-    id: c.id,
-    owner_user_id: ownerUserIdForRow ?? c.ownerUserId,
-    organization_id: c.organizationId ?? null,
-    unit_id: c.unitId ?? null,
-    case_number: c.caseNumber,
-    title: c.title,
-    description: c.description ?? '',
-    created_at_ms: c.createdAt,
-    updated_at_ms: c.updatedAt,
-    lifecycle: c.lifecycle ?? 'open',
   }
 }
 
@@ -428,8 +474,7 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
     if (!p) throw new Error('Not signed in')
     uidRaw = p.userId
   }
-  const uidKey = normUuid(uidRaw)
-  const ownerUuidForRow = uidKey
+  const uidKey = assertAuthUuidForVcCases(uidRaw)
 
   const { normalizeAppData } = await import('../db')
   const d = normalizeAppData(data)
@@ -464,8 +509,11 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
     )
   }
 
-  // `owner_user_id` must equal JWT `sub` (lowercase uuid string matches Postgres auth.uid()).
-  for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => caseToRow(c, ownerUuidForRow)), 80)) {
+  if (casesSafeForVcCasesUpsert.length) {
+    await assertPostgrestSessionMatchesOwner(sb, uidKey)
+  }
+
+  for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => vcCasePayloadForUpsert(c, uidKey)), 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').upsert(batch, { onConflict: 'id' })
     if (error) throw relationalPushError('vc_cases', error)
@@ -523,7 +571,7 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
       .from('vc_cases')
       .select('id')
       .in('id', batch)
-      .eq('owner_user_id', ownerUuidForRow)
+      .eq('owner_user_id', uidKey)
     if (selErr) throw relationalPushError('vc_cases(delete:select)', selErr)
     const ids = (ownIds ?? []).map((r) => (r as { id: string }).id)
     if (!ids.length) continue
