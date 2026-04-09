@@ -1,9 +1,9 @@
 import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
-import { relationalBackendEnabled } from './lib/backendMode'
+import { relationalBackendEnabled, relationalBackendFlagParsed } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
-import { supabase } from './lib/supabase'
+import { hasSupabaseConfig, supabase } from './lib/supabase'
 import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
@@ -266,9 +266,44 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
     color: vcGlassFgDarkReadable,
   }
 
+  const prodDemoMisconfig =
+    import.meta.env.PROD &&
+    (!hasSupabaseConfig || !relationalBackendFlagParsed())
+
   return (
     <Layout title="VideoCanvass POC" subtitle="Mock sign-in (demo only)">
       <div style={vcAuthMainCenterWrap}>
+        {prodDemoMisconfig ? (
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 460,
+              boxSizing: 'border-box',
+              marginBottom: 14,
+              padding: 14,
+              borderRadius: 12,
+              background: 'rgba(127, 29, 29, 0.12)',
+              border: '1px solid rgba(185, 28, 28, 0.45)',
+              color: '#7f1d1d',
+              fontSize: 14,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Production build is running in demo mode</div>
+            {!hasSupabaseConfig ? (
+              <p style={{ margin: 0 }}>
+                This bundle was built without <code style={{ fontSize: 13 }}>VITE_SUPABASE_URL</code> and{' '}
+                <code style={{ fontSize: 13 }}>VITE_SUPABASE_ANON_KEY</code>. In Vercel → Settings → Environment Variables, add both for{' '}
+                <strong>Production</strong>, then trigger a new deployment (Vite bakes these in at build time).
+              </p>
+            ) : (
+              <p style={{ margin: 0 }}>
+                Supabase URL/key are present, but <code style={{ fontSize: 13 }}>VITE_VC_RELATIONAL_BACKEND</code> is not truthy in this build.
+                Set it to <code style={{ fontSize: 13 }}>true</code> (or <code style={{ fontSize: 13 }}>1</code>) for <strong>Production</strong> and redeploy.
+              </p>
+            )}
+          </div>
+        ) : null}
         <div style={pickerCardStyle}>
           <div style={{ fontWeight: 800 }}>Choose demo user</div>
           {narrow ? (

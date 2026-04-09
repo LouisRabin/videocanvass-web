@@ -62,7 +62,8 @@ export function LoginPage() {
       <Layout title="VideoCanvass" subtitle="Configuration error">
         <div style={vcAuthMainCenterWrap}>
           <div style={{ ...vcLiquidGlassInnerSurface, maxWidth: 480, width: '100%', padding: 16, borderRadius: 14, color: '#92400e' }}>
-            Relational backend requires <code>VITE_VC_RELATIONAL_BACKEND=true</code> and Supabase URL/anon key.
+            Relational backend requires Supabase <code>VITE_SUPABASE_URL</code> / <code>VITE_SUPABASE_ANON_KEY</code> and{' '}
+            <code>VITE_VC_RELATIONAL_BACKEND=true</code> (or <code>1</code>) baked into the build. Set them for the right Vercel environment and redeploy.
           </div>
         </div>
       </Layout>

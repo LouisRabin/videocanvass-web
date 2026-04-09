@@ -1,4 +1,4 @@
-import { relationalBackendEnabled } from './backendMode'
+import { relationalBackendEnabled, relationalBackendEnvRaw, relationalBackendFlagParsed } from './backendMode'
 import { hasSupabaseConfig } from './supabase'
 
 export function vcDebugEnabled(): boolean {
@@ -17,5 +17,7 @@ export function vcBuildDebugSummary(): string {
       host = '(invalid VITE_SUPABASE_URL)'
     }
   }
-  return `relational=${rel} supabase_host=${host} has_supabase_config=${hasSupabaseConfig}`
+  const rawFlag = relationalBackendEnvRaw()
+  const flagNote = rawFlag === '' ? 'empty' : 'set'
+  return `relational=${rel} rel_flag=${relationalBackendFlagParsed()} rel_flag_raw=${flagNote} supabase_host=${host} has_supabase_config=${hasSupabaseConfig}`
 }
