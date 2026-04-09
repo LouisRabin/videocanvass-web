@@ -1,7 +1,30 @@
-import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Session, SupabaseClient } from '@supabase/supabase-js'
 
 function readUserId(user: { id?: string } | null | undefined): string {
   return user?.id?.trim() ?? ''
+}
+
+/**
+ * Session we can treat as "signed in" for app bootstrap. Clears broken state:
+ * no access token, or access token already expired (common after switching Supabase projects / env).
+ * Without this, `getSession()` still has `user` while relational load blocks on dead JWT + slow `getUser()`.
+ */
+export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Session | null> {
+  const {
+    data: { session },
+  } = await sb.auth.getSession()
+  if (!session?.user) return null
+  if (!session.access_token) {
+    await sb.auth.signOut()
+    return null
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const exp = session.expires_at
+  if (typeof exp === 'number' && exp <= now) {
+    await sb.auth.signOut()
+    return null
+  }
+  return session
 }
 
 /** Seconds before access-token expiry when we proactively refresh (PostgREST uses JWT `sub` as `auth.uid()`). */

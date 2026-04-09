@@ -8,11 +8,20 @@ import {
 } from './types'
 import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
-import { getRelationalAuthUserId, prepareRelationalWriteAuth } from './supabaseAuthSession'
+import {
+  getRelationalAuthUserId,
+  getUsableSessionOrSignOut,
+  prepareRelationalWriteAuth,
+} from './supabaseAuthSession'
 import { setSyncStatus } from './syncStatus'
 
 /** Merge rules, polling, and Realtime overview: `docs/SYNC_CONTRACT.md`. */
 const STORE_KEY = 'videocanvass:data:v1'
+
+/** Cap how long first relational pull can block store bootstrap (slow network / hung PostgREST). */
+const RELATIONAL_BOOTSTRAP_REMOTE_MS = 22_000
+/** Cap legacy `vc_app_state` fetch so SPA reaches UI when row is missing or API stalls. */
+const SHARED_TABLE_BOOTSTRAP_MS = 14_000
 
 function formatDbErrorForSync(e: unknown): string {
   if (e && typeof e === 'object' && 'message' in e) {
@@ -138,27 +147,53 @@ localforage.config({
 
 async function loadSharedData(): Promise<AppData | null> {
   if (!hasSupabaseConfig || !supabase) return null
-  try {
-    const { data, error } = await supabase.from('vc_app_state').select('payload').eq('workspace_id', SHARED_WORKSPACE_ID).maybeSingle()
-    if (error) {
-      console.warn('Supabase load failed, falling back to local storage:', error.message)
-      setSyncStatus({ mode: 'local_fallback', message: `Supabase load failed: ${error.message}` })
+  const sb = supabase
+
+  const loadInner = async (): Promise<AppData | null> => {
+    try {
+      const { data, error } = await sb
+        .from('vc_app_state')
+        .select('payload')
+        .eq('workspace_id', SHARED_WORKSPACE_ID)
+        .maybeSingle()
+      if (error) {
+        console.warn('Supabase load failed, falling back to local storage:', error.message)
+        setSyncStatus({ mode: 'local_fallback', message: `Supabase load failed: ${error.message}` })
+        return null
+      }
+      if (!data?.payload) return DEFAULT_DATA
+      const parsed = AppDataSchema.safeParse(data.payload)
+      if (!parsed.success) {
+        console.warn('Supabase payload parse failed; refusing to treat payload as empty/default.')
+        setSyncStatus({ mode: 'local_fallback', message: 'Supabase payload parse failed' })
+        return null
+      }
+      setSyncStatus({ mode: 'supabase_ok', message: 'Supabase load OK' })
+      return normalizeAppData(parsed.data)
+    } catch (err) {
+      console.warn('Supabase load threw unexpectedly, falling back to local storage:', err)
+      setSyncStatus({ mode: 'local_fallback', message: 'Supabase load threw unexpectedly' })
       return null
     }
-    if (!data?.payload) return DEFAULT_DATA
-    const parsed = AppDataSchema.safeParse(data.payload)
-    if (!parsed.success) {
-      console.warn('Supabase payload parse failed; refusing to treat payload as empty/default.')
-      setSyncStatus({ mode: 'local_fallback', message: 'Supabase payload parse failed' })
-      return null
-    }
-    setSyncStatus({ mode: 'supabase_ok', message: 'Supabase load OK' })
-    return normalizeAppData(parsed.data)
-  } catch (err) {
-    console.warn('Supabase load threw unexpectedly, falling back to local storage:', err)
-    setSyncStatus({ mode: 'local_fallback', message: 'Supabase load threw unexpectedly' })
+  }
+
+  type RaceOk = { tag: 'ok'; value: AppData | null }
+  type RaceTo = { tag: 'timeout' }
+  const raced = await Promise.race([
+    loadInner().then((value): RaceOk => ({ tag: 'ok', value })),
+    new Promise<RaceTo>((resolve) => {
+      setTimeout(() => resolve({ tag: 'timeout' }), SHARED_TABLE_BOOTSTRAP_MS)
+    }),
+  ])
+  if (raced.tag === 'timeout') {
+    console.warn(`vc_app_state bootstrap timed out after ${SHARED_TABLE_BOOTSTRAP_MS}ms`)
+    setSyncStatus({
+      mode: 'local_fallback',
+      message: 'Cloud workspace load timed out; using local data or empty start.',
+    })
     return null
   }
+  return raced.value
 }
 
 async function saveSharedData(data: AppData): Promise<boolean> {
@@ -323,21 +358,36 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
 
 export async function loadData(): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
-    // Fast path: no persisted session → skip getUser()/refreshSession() network chain so the login
-    // screen is not blocked for tens of seconds on first visit (production / slow links).
-    const {
-      data: { session: quickSession },
-    } = await supabase.auth.getSession()
+    const sb = supabase
+    // Drop expired / tokenless sessions so we do not treat them as "logged in" (blocks login + remote load).
+    const quickSession = await getUsableSessionOrSignOut(sb)
     if (!quickSession?.user) {
       setSyncStatus({ mode: 'local_fallback', message: 'Sign in to load cloud data' })
       const local = await loadLocalData()
       return local ?? DEFAULT_DATA
     }
 
-    const uid = await getRelationalAuthUserId(supabase)
+    const uid = await getRelationalAuthUserId(sb)
     if (uid) {
       const { loadAppDataFromRelational } = await import('./relational/sync')
-      const remote = await loadAppDataFromRelational()
+      type RaceOk = { tag: 'ok'; value: Awaited<ReturnType<typeof loadAppDataFromRelational>> }
+      type RaceTo = { tag: 'timeout' }
+      const remoteRaced = await Promise.race([
+        loadAppDataFromRelational().then((value): RaceOk => ({ tag: 'ok', value })),
+        new Promise<RaceTo>((resolve) => {
+          setTimeout(() => resolve({ tag: 'timeout' }), RELATIONAL_BOOTSTRAP_REMOTE_MS)
+        }),
+      ])
+      const remote = remoteRaced.tag === 'ok' ? remoteRaced.value : null
+      if (remoteRaced.tag === 'timeout') {
+        console.warn(`Relational bootstrap timed out after ${RELATIONAL_BOOTSTRAP_REMOTE_MS}ms`)
+        setSyncStatus({
+          mode: 'local_fallback',
+          message: 'Database load timed out; you can use local data or retry after sign-in.',
+        })
+        const local = await loadLocalData()
+        return local ?? DEFAULT_DATA
+      }
       if (remote) {
         await localforage.setItem(STORE_KEY, remote)
         setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
@@ -463,9 +513,7 @@ export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
 /** Merge latest remote JSON blob into the current in-memory dataset (per-entity LWW). */
 export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | null> {
   if (relationalBackendEnabled() && supabase) {
-    const {
-      data: { session: quick },
-    } = await supabase.auth.getSession()
+    const quick = await getUsableSessionOrSignOut(supabase)
     if (!quick?.user) return null
     const uid = await getRelationalAuthUserId(supabase)
     if (!uid) return null
