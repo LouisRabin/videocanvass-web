@@ -323,6 +323,17 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
 
 export async function loadData(): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
+    // Fast path: no persisted session → skip getUser()/refreshSession() network chain so the login
+    // screen is not blocked for tens of seconds on first visit (production / slow links).
+    const {
+      data: { session: quickSession },
+    } = await supabase.auth.getSession()
+    if (!quickSession?.user) {
+      setSyncStatus({ mode: 'local_fallback', message: 'Sign in to load cloud data' })
+      const local = await loadLocalData()
+      return local ?? DEFAULT_DATA
+    }
+
     const uid = await getRelationalAuthUserId(supabase)
     if (uid) {
       const { loadAppDataFromRelational } = await import('./relational/sync')
@@ -452,6 +463,10 @@ export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
 /** Merge latest remote JSON blob into the current in-memory dataset (per-entity LWW). */
 export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | null> {
   if (relationalBackendEnabled() && supabase) {
+    const {
+      data: { session: quick },
+    } = await supabase.auth.getSession()
+    if (!quick?.user) return null
     const uid = await getRelationalAuthUserId(supabase)
     if (!uid) return null
     const { loadAppDataFromRelational } = await import('./relational/sync')

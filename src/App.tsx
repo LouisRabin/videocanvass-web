@@ -112,7 +112,13 @@ function SessionGate() {
       return
     }
     setMfaGate('checking')
-    const need = await sessionNeedsTotpStep(supabase)
+    const MFA_AAL_CHECK_MS = 12_000
+    const need = await Promise.race([
+      sessionNeedsTotpStep(supabase),
+      new Promise<boolean>((resolve) => {
+        window.setTimeout(() => resolve(false), MFA_AAL_CHECK_MS)
+      }),
+    ])
     if (!need) {
       setMfaGate('off')
       return
