@@ -63,32 +63,6 @@ function vcCasePayloadForUpsert(c: CaseFile, ownerUuidLower: string): Record<str
   return row
 }
 
-async function assertPostgrestSessionMatchesOwner(
-  sb: NonNullable<typeof supabase>,
-  expectedOwnerNorm: string,
-): Promise<void> {
-  const {
-    data: { session },
-  } = await sb.auth.getSession()
-  const token = session?.access_token
-  const sessionUid = normUuid(session?.user?.id ?? '')
-  if (!token || !sessionUid) {
-    throw new Error('Cannot sync cases: no access token on this device. Sign out, sign in, then retry.')
-  }
-  if (sessionUid === expectedOwnerNorm) return
-
-  const { data, error } = await sb.auth.refreshSession()
-  if (error?.message) {
-    console.warn('[sync] refreshSession before vc_cases upsert:', error.message)
-  }
-  const again = normUuid(data.session?.user?.id ?? '')
-  if (!data.session?.access_token || again !== expectedOwnerNorm) {
-    throw new Error(
-      'Cannot sync cases: browser session does not match the account that owns these cases. Sign out and sign in again.',
-    )
-  }
-}
-
 /** Include table name in the message so the sync bar / console show where push failed. */
 function relationalPushError(table: string, err: PostgrestError): Error {
   const parts = [err.message, err.details, err.hint].filter((x) => typeof x === 'string' && x.trim())
@@ -467,13 +441,17 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
 export async function pushAppDataToRelational(data: AppData, authUserIdFromSession?: string): Promise<void> {
   if (!supabase) throw new Error('Supabase client missing')
   const sb = supabase
+  const { ensureRelationalClientSession } = await import('../supabaseAuthSession')
   let uidRaw = authUserIdFromSession?.trim()
-  if (!uidRaw) {
-    const { prepareRelationalWriteAuth } = await import('../supabaseAuthSession')
-    const p = await prepareRelationalWriteAuth(sb)
-    if (!p) throw new Error('Not signed in')
-    uidRaw = p.userId
+  const aligned = await ensureRelationalClientSession(sb, uidRaw || undefined)
+  if (!aligned) {
+    throw new Error(
+      uidRaw
+        ? 'Not signed in or session does not match this account. Sign out and sign in again.'
+        : 'Not signed in',
+    )
   }
+  uidRaw = aligned.userId
   const uidKey = assertAuthUuidForVcCases(uidRaw)
 
   const { normalizeAppData } = await import('../db')
@@ -509,8 +487,16 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
     )
   }
 
-  if (casesSafeForVcCasesUpsert.length) {
-    await assertPostgrestSessionMatchesOwner(sb, uidKey)
+  if (import.meta.env.VITE_VC_DEBUG === 'true' && casesSafeForVcCasesUpsert.length) {
+    const {
+      data: { session: dbgSession },
+    } = await sb.auth.getSession()
+    console.warn('[vc_debug] vc_cases upsert', {
+      hasAccessToken: Boolean(dbgSession?.access_token),
+      sessionUserId: dbgSession?.user?.id ?? null,
+      ownerNorm: uidKey,
+      batchSize: casesSafeForVcCasesUpsert.length,
+    })
   }
 
   for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => vcCasePayloadForUpsert(c, uidKey)), 80)) {

@@ -9,9 +9,9 @@ import {
 import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
 import {
+  ensureRelationalClientSession,
   getRelationalAuthUserId,
   getUsableSessionOrSignOut,
-  prepareRelationalWriteAuth,
 } from './supabaseAuthSession'
 import { setSyncStatus } from './syncStatus'
 
@@ -429,7 +429,7 @@ export async function loadData(): Promise<AppData> {
 export async function saveData(data: AppData): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
     const payloadToSave = normalizeAppData(data)
-    const writeAuth = await prepareRelationalWriteAuth(supabase)
+    const writeAuth = await ensureRelationalClientSession(supabase)
     if (!writeAuth) {
       await localforage.setItem(STORE_KEY, payloadToSave)
       setSyncStatus({ mode: 'local_fallback', message: 'Not signed in; saved locally only' })

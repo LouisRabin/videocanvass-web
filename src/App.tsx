@@ -9,6 +9,7 @@ import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
 import { CasesPage } from './app/CasesPage'
 import { Layout } from './app/Layout'
+import { BuildDebugStrip } from './app/BuildDebugStrip'
 import { LoginPage } from './app/LoginPage'
 import { MfaTotpChallengePanel } from './app/MfaTotpChallengePanel'
 import { getPreferredTotpFactorId, sessionNeedsTotpStep } from './lib/mfaAuth'
@@ -64,6 +65,7 @@ function App() {
   return (
     <StoreProvider>
       <SessionGate />
+      <BuildDebugStrip />
     </StoreProvider>
   )
 }

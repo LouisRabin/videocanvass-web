@@ -4,6 +4,10 @@ function readUserId(user: { id?: string } | null | undefined): string {
   return user?.id?.trim() ?? ''
 }
 
+function normUuid(s: string): string {
+  return s.trim().toLowerCase()
+}
+
 /**
  * Session we can treat as "signed in" for app bootstrap. Clears broken state:
  * no access token, or access token already expired (common after switching Supabase projects / env).
@@ -30,39 +34,59 @@ export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Ses
 /** Seconds before access-token expiry when we proactively refresh (PostgREST uses JWT `sub` as `auth.uid()`). */
 const WRITE_AUTH_REFRESH_BUFFER_SEC = 120
 
+function sessionTokenFresh(session: Session | null, now: number): boolean {
+  return (
+    Boolean(session?.access_token) &&
+    Boolean(readUserId(session?.user)) &&
+    (typeof session?.expires_at !== 'number' || session.expires_at >= now + WRITE_AUTH_REFRESH_BUFFER_SEC)
+  )
+}
+
+async function refreshSessionAndReload(sb: SupabaseClient): Promise<Session | null> {
+  const { data, error } = await sb.auth.refreshSession()
+  if (error?.message) {
+    console.warn('[auth] refreshSession (relational client):', error.message)
+  }
+  let session = data.session ?? null
+  if (!session?.access_token) {
+    ;({
+      data: { session },
+    } = await sb.auth.getSession())
+  }
+  return session
+}
+
 /**
- * Refresh session if needed, then return the user id that matches the **access token** PostgREST sends.
- * Use this immediately before relational writes: `getUser()` alone can succeed while `getSession()` still
- * has no/expired `access_token`, so RLS sees `auth.uid()` as null and rejects `vc_cases` inserts.
+ * Single entry for relational writes: ensure a non-expired access token and return ids PostgREST will use.
+ * If `alignWithUserId` is set, after refresh the session user must match (normalized uuid) or returns null.
+ * Replaces the previous split between `prepareRelationalWriteAuth` and pre-upsert session checks.
  */
-export async function prepareRelationalWriteAuth(sb: SupabaseClient): Promise<{ userId: string } | null> {
+export async function ensureRelationalClientSession(
+  sb: SupabaseClient,
+  alignWithUserId?: string,
+): Promise<{ userId: string; accessToken: string } | null> {
   const now = Math.floor(Date.now() / 1000)
   let {
     data: { session },
   } = await sb.auth.getSession()
 
-  const expiresAt = session?.expires_at
-  const tokenFresh =
-    Boolean(session?.access_token) &&
-    typeof expiresAt === 'number' &&
-    expiresAt >= now + WRITE_AUTH_REFRESH_BUFFER_SEC
+  if (!sessionTokenFresh(session, now)) {
+    session = await refreshSessionAndReload(sb)
+  }
 
-  if (!session?.access_token || !readUserId(session.user) || !tokenFresh) {
-    const { data, error } = await sb.auth.refreshSession()
-    if (error?.message) {
-      console.warn('[auth] refreshSession (relational write):', error.message)
-    }
-    session = data.session ?? session
-    if (!session?.access_token) {
-      ;({
-        data: { session },
-      } = await sb.auth.getSession())
+  let userId = readUserId(session?.user)
+  if (!session?.access_token || !userId) return null
+
+  if (alignWithUserId?.trim()) {
+    const need = normUuid(alignWithUserId)
+    if (normUuid(userId) !== need) {
+      session = await refreshSessionAndReload(sb)
+      userId = readUserId(session?.user)
+      if (!session?.access_token || normUuid(userId) !== need) return null
     }
   }
 
-  const userId = readUserId(session?.user)
-  if (!session?.access_token || !userId) return null
-  return { userId }
+  return { userId: normUuid(userId), accessToken: session.access_token }
 }
 
 /**
@@ -76,7 +100,10 @@ export async function prepareRelationalWriteAuth(sb: SupabaseClient): Promise<{ 
  */
 export async function getRelationalAuthUserId(sb: SupabaseClient): Promise<string | null> {
   const tryGetUser = async () => {
-    const { data: { user }, error } = await sb.auth.getUser()
+    const {
+      data: { user },
+      error,
+    } = await sb.auth.getUser()
     return { uid: readUserId(user), error }
   }
 
