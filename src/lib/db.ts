@@ -8,7 +8,7 @@ import {
 } from './types'
 import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
-import { getRelationalAuthUserId } from './supabaseAuthSession'
+import { getRelationalAuthUserId, prepareRelationalWriteAuth } from './supabaseAuthSession'
 import { setSyncStatus } from './syncStatus'
 
 /** Merge rules, polling, and Realtime overview: `docs/SYNC_CONTRACT.md`. */
@@ -367,16 +367,16 @@ export async function loadData(): Promise<AppData> {
  */
 export async function saveData(data: AppData): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
-    const uid = await getRelationalAuthUserId(supabase)
     const payloadToSave = normalizeAppData(data)
-    if (!uid) {
+    const writeAuth = await prepareRelationalWriteAuth(supabase)
+    if (!writeAuth) {
       await localforage.setItem(STORE_KEY, payloadToSave)
       setSyncStatus({ mode: 'local_fallback', message: 'Not signed in; saved locally only' })
       return payloadToSave
     }
     try {
       const { pushAppDataToRelational } = await import('./relational/sync')
-      await pushAppDataToRelational(payloadToSave)
+      await pushAppDataToRelational(payloadToSave, writeAuth.userId)
       await localforage.setItem(STORE_KEY, payloadToSave)
       setSyncStatus({ mode: 'supabase_ok', message: 'Saved to database' })
       return payloadToSave

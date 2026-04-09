@@ -4,6 +4,44 @@ function readUserId(user: { id?: string } | null | undefined): string {
   return user?.id?.trim() ?? ''
 }
 
+/** Seconds before access-token expiry when we proactively refresh (PostgREST uses JWT `sub` as `auth.uid()`). */
+const WRITE_AUTH_REFRESH_BUFFER_SEC = 120
+
+/**
+ * Refresh session if needed, then return the user id that matches the **access token** PostgREST sends.
+ * Use this immediately before relational writes: `getUser()` alone can succeed while `getSession()` still
+ * has no/expired `access_token`, so RLS sees `auth.uid()` as null and rejects `vc_cases` inserts.
+ */
+export async function prepareRelationalWriteAuth(sb: SupabaseClient): Promise<{ userId: string } | null> {
+  const now = Math.floor(Date.now() / 1000)
+  let {
+    data: { session },
+  } = await sb.auth.getSession()
+
+  const expiresAt = session?.expires_at
+  const tokenFresh =
+    Boolean(session?.access_token) &&
+    typeof expiresAt === 'number' &&
+    expiresAt >= now + WRITE_AUTH_REFRESH_BUFFER_SEC
+
+  if (!session?.access_token || !readUserId(session.user) || !tokenFresh) {
+    const { data, error } = await sb.auth.refreshSession()
+    if (error?.message) {
+      console.warn('[auth] refreshSession (relational write):', error.message)
+    }
+    session = data.session ?? session
+    if (!session?.access_token) {
+      ;({
+        data: { session },
+      } = await sb.auth.getSession())
+    }
+  }
+
+  const userId = readUserId(session?.user)
+  if (!session?.access_token || !userId) return null
+  return { userId }
+}
+
 /**
  * User id that PostgREST will treat as `auth.uid()` for RLS.
  *

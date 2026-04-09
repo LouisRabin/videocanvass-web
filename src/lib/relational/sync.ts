@@ -418,12 +418,18 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
   return normalizeAppData(parsed.data)
 }
 
-export async function pushAppDataToRelational(data: AppData): Promise<void> {
+export async function pushAppDataToRelational(data: AppData, authUserIdFromSession?: string): Promise<void> {
   if (!supabase) throw new Error('Supabase client missing')
   const sb = supabase
-  const uidRaw = await getRelationalAuthUserId(sb)
-  if (!uidRaw) throw new Error('Not signed in')
+  let uidRaw = authUserIdFromSession?.trim()
+  if (!uidRaw) {
+    const { prepareRelationalWriteAuth } = await import('../supabaseAuthSession')
+    const p = await prepareRelationalWriteAuth(sb)
+    if (!p) throw new Error('Not signed in')
+    uidRaw = p.userId
+  }
   const uidKey = normUuid(uidRaw)
+  const ownerUuidForRow = uidKey
 
   const { normalizeAppData } = await import('../db')
   const d = normalizeAppData(data)
@@ -458,8 +464,8 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
     )
   }
 
-  // Use the session id exactly as Supabase exposes it so it matches auth.uid() in Postgres.
-  for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => caseToRow(c, uidRaw)), 80)) {
+  // `owner_user_id` must equal JWT `sub` (lowercase uuid string matches Postgres auth.uid()).
+  for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => caseToRow(c, ownerUuidForRow)), 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').upsert(batch, { onConflict: 'id' })
     if (error) throw relationalPushError('vc_cases', error)
@@ -513,7 +519,11 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
 
   for (const batch of chunk(d.deletedCaseIds, 50)) {
     if (!batch.length) continue
-    const { data: ownIds, error: selErr } = await sb.from('vc_cases').select('id').in('id', batch).eq('owner_user_id', uidRaw)
+    const { data: ownIds, error: selErr } = await sb
+      .from('vc_cases')
+      .select('id')
+      .in('id', batch)
+      .eq('owner_user_id', ownerUuidForRow)
     if (selErr) throw relationalPushError('vc_cases(delete:select)', selErr)
     const ids = (ownIds ?? []).map((r) => (r as { id: string }).id)
     if (!ids.length) continue
