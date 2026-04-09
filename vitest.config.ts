@@ -1,11 +1,14 @@
+import { mergeConfig } from 'vite'
 import { defineConfig } from 'vitest/config'
-import react from '@vitejs/plugin-react'
+import viteConfig from './vite.config'
 
-export default defineConfig({
-  plugins: [react()],
-  test: {
-    environment: 'node',
-    include: ['tests/**/*.test.ts'],
-    passWithNoTests: false,
-  },
-})
+export default mergeConfig(
+  viteConfig,
+  defineConfig({
+    test: {
+      environment: 'node',
+      include: ['tests/**/*.test.ts'],
+      passWithNoTests: false,
+    },
+  }),
+)

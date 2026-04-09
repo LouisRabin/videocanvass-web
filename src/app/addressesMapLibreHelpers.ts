@@ -1,4 +1,4 @@
-import type { GeoJSONSource, Map as GlMap, StyleSpecification } from 'maplibre-gl'
+import type { StyleSpecification } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Position } from 'geojson'
 import L from 'leaflet'
 
@@ -55,74 +55,10 @@ export const VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS = 480
 export const VIEWPORT_OUTLINE_PRELOAD_BOUNDS_PAD = 0.14
 export const VIEWPORT_OUTLINE_PRELOAD_MAX = 24
 
-/** At zoom &lt; this: clustered pins for tracks + canvass sites; per-pin markers and time chips hidden. */
+/** At zoom &lt; this: React track waypoint markers and time chips are hidden (WebGL route pins still draw). */
 export const MAP_DETAIL_MIN_ZOOM = 14
 /** Opening the case map on the last selected canvass pin or track step (localStorage). */
 export const MAP_RESUME_FOCUS_ZOOM = 17
-export const CLUSTER_MAX_ZOOM = 13
-export const CLUSTER_RADIUS_PX = 52
-
-export type TrackClusterMembersPayload = {
-  pointCount: number
-  center: { lat: number; lon: number }
-  members: Array<{ pointId: string; stepNum: number; trackId: string; label: string }>
-}
-
-const TRACK_CLUSTER_LEAVES_MAX = 200
-
-/** Resolve clustered waypoint features to leaf properties (MapLibre GeoJSON source). */
-export async function fetchTrackClusterLeaves(
-  map: GlMap,
-  sourceId: string,
-  clusterFeature: Feature,
-  limit = TRACK_CLUSTER_LEAVES_MAX,
-): Promise<TrackClusterMembersPayload['members']> {
-  const raw = clusterFeature.properties?.cluster_id
-  const clusterId = typeof raw === 'number' ? raw : Number(raw)
-  if (!Number.isFinite(clusterId)) return []
-
-  const src = map.getSource(sourceId) as
-    | (GeoJSONSource & { getClusterLeaves?: (id: number, lim: number, off: number) => Promise<Feature[]> })
-    | undefined
-  const getLeaves = src?.getClusterLeaves
-  if (typeof getLeaves !== 'function') return []
-
-  try {
-    const leaves = await getLeaves.call(src, clusterId, limit, 0)
-    return leaves
-      .map((leaf) => ({
-        pointId: String(leaf.properties?.pid ?? ''),
-        stepNum: Number(leaf.properties?.stepNum ?? 0),
-        trackId: String(leaf.properties?.trackId ?? ''),
-        label: String(leaf.properties?.wptLabel ?? ''),
-      }))
-      .filter((m) => m.pointId)
-  } catch {
-    return []
-  }
-}
-
-export function easeClusterExpansion(
-  map: GlMap,
-  sourceId: string,
-  feature: { geometry?: Feature['geometry']; properties?: Record<string, unknown> | null },
-): boolean {
-  const raw = feature.properties?.cluster_id
-  const clusterId = typeof raw === 'number' ? raw : Number(raw)
-  if (!Number.isFinite(clusterId)) return false
-  const g = feature.geometry
-  if (!g || g.type !== 'Point') return false
-  const center = g.coordinates as [number, number]
-  const src = map.getSource(sourceId) as GeoJSONSource | undefined
-  if (!src?.getClusterExpansionZoom) return false
-  void src
-    .getClusterExpansionZoom(clusterId)
-    .then((targetZ: number) => {
-      map.easeTo({ center, zoom: Math.min(targetZ + 0.25, 18) })
-    })
-    .catch(() => {})
-  return true
-}
 
 export function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
   const ds = a.sequence - b.sequence
@@ -309,18 +245,6 @@ export function buildTrackWaypointClusterCollection(
     }
   }
   return { type: 'FeatureCollection', features }
-}
-
-/** One point per canvass location (centroid) for low-zoom count clusters. Footprints stay as polygons. */
-export function buildCanvassLocationClusterCollection(mapPins: Location[]): FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: mapPins.map((l) => ({
-      type: 'Feature' as const,
-      properties: { locId: l.id, color: statusColor(l.status) },
-      geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
-    })),
-  }
 }
 
 export { buildTracksData } from '../lib/buildTrackLinesGeojson'

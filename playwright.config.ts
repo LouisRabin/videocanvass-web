@@ -16,6 +16,8 @@ export default defineConfig({
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: true,
     timeout: 120000,
+    // E2E assumes mock sign-in ("Enter app") + shared demo store, not Supabase session login.
+    env: { ...process.env, VITE_VC_RELATIONAL_BACKEND: 'false' },
   },
   projects: [
     {

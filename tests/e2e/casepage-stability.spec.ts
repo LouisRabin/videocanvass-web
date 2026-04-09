@@ -3,7 +3,18 @@ import { expect, test, type Page } from '@playwright/test'
 async function enterFirstCase(page: Page) {
   await page.goto('/')
   await page.getByRole('button', { name: 'Enter app' }).click()
-  await page.getByRole('button', { name: 'Open' }).first().click()
+  const openExisting = page.getByRole('button', { name: /^(Open|Reopen)$/ }).first()
+  if (await openExisting.isVisible().catch(() => false)) {
+    await openExisting.click()
+  } else {
+    await page.getByRole('button', { name: /\+ New( case)?$/ }).click()
+    const dialog = page.getByRole('dialog', { name: 'Create case' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByPlaceholder('Required').fill(`E2E ${Date.now()}`)
+    await dialog.getByRole('button', { name: 'Save case' }).click()
+  }
+  // Narrow layout hides the web dock until "Open map tools" — Back is always on CasePage.
+  await expect(page.getByRole('button', { name: 'Back to cases' })).toBeVisible({ timeout: 20000 })
 }
 
 async function openViewTools(page: Page) {

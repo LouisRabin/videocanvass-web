@@ -11,7 +11,7 @@ import {
 import { Layout } from './Layout'
 import { Modal } from './Modal'
 import { AddressesMapLibre, type UnifiedCaseMapHandle } from './AddressesMapLibre'
-import type { TrackClusterMembersPayload } from './addressesMapLibreHelpers'
+import { downloadCaseLocationsCsv } from '../lib/caseLocationsCsv'
 import { useStore } from '../lib/store'
 import {
   canAddCaseContent,
@@ -52,14 +52,14 @@ import {
   casePhotoCarouselArrowStyle,
   extendBoundsWithLocations,
   extendBoundsWithPathPoints,
-  findExistingLocationForCanvassAdd,
   findLocationByAddressText,
-  findLocationHitByMapClick,
   formatAddressLineForMapList,
   isProvisionalCanvassLabel,
   LIST_STATUS_SORT_ORDER,
   OUTLINE_CONCURRENCY,
+  type CanvassMapResultSession,
   type PendingAddItem,
+  newCanvassMapResultSessionKey,
   readStoredCaseMapFocus,
   samePendingPin,
   sortTrackPointsStable,
@@ -71,6 +71,9 @@ import {
   type VcCaseMapBasemapId,
 } from './addressesMapLibreHelpers'
 
+import { CaseInlineSyncBar } from './case/CaseInlineSyncBar'
+import { CanvassMapResultModal } from './case/CanvassMapResultModal'
+import { UndoSnackbar } from './case/UndoSnackbar'
 import {
   LegendChip,
   LocationDrawer,
@@ -122,7 +125,6 @@ import {
   loadStoredTrackDisplayTimeZone,
   saveTrackDisplayTimeZone,
 } from '../lib/trackTimeDisplay'
-import { readStoredWaypointGroupTolerance, saveWaypointGroupTolerance } from '../lib/trackWaypointProximityGroups'
 import {
   isImportedCoordinatePoint,
   isMapPlacedTrackPoint,
@@ -246,6 +248,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     createLocation,
     updateLocation,
     deleteLocation,
+    restoreDeletedLocation,
+    restoreDeletedTrackPoint,
     updateCase,
     addCaseAttachment,
     updateCaseAttachment,
@@ -314,7 +318,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   type MapToolsDockRailSection = MapToolsDockSection
   const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
   const [trackImportModalOpen, setTrackImportModalOpen] = useState(false)
-  const [trackClusterModal, setTrackClusterModal] = useState<TrackClusterMembersPayload | null>(null)
   /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
   const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
   /** Addresses list panel: status filter chips collapsed until user taps Filters. */
@@ -381,6 +384,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const caseTabRef = useRef<'addresses' | 'tracking'>('addresses')
   const viewModeRef = useRef<'map' | 'list'>('map')
   const probativePlacementSessionRef = useRef<null | { trackId: string }>(null)
+  /** Drop duplicate map `click` bursts at the same lat/lon (e.g. touch + synthetic click). */
+  const trackMapAddDedupeRef = useRef<{ t: number; lat: number; lon: number } | null>(null)
   const closeMapToolsDock = useCallback((opts?: { suppressMapFollowupMs?: number }) => {
     mapToolsDockIgnoreOutsideUntilRef.current = 0
     const ms = opts?.suppressMapFollowupMs
@@ -512,6 +517,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [listAddressNotesForId, setListAddressNotesForId] = useState<string | null>(null)
   /** Map list: one row expanded at a time for actions + status (collapsed shows address + badge + updated only). */
   const [listRowExpandedId, setListRowExpandedId] = useState<string | null>(null)
+  /** Map tap / add-from-search queue: record-result modal for each pending canvass pin. */
+  const [canvassMapResultQueue, setCanvassMapResultQueue] = useState<CanvassMapResultSession[]>([])
   const listNotesLocation = useMemo(
     () =>
       listAddressNotesForId
@@ -519,7 +526,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         : null,
     [data.locations, listAddressNotesForId],
   )
-  const selected = useMemo(() => (selectedId ? locations.find((l) => l.id === selectedId) ?? null : null), [locations, selectedId])
+
+  const mapChromeLocation = useMemo(() => {
+    if (!selectedId) return null
+    return locations.find((l) => l.id === selectedId) ?? null
+  }, [selectedId, locations])
+
+  const addressModalLocation = useMemo(() => {
+    if (!selectedId) return null
+    return locations.find((l) => l.id === selectedId) ?? null
+  }, [selectedId, locations])
 
   useEffect(() => {
     if (!selectedId) setLocationDetailOpen(false)
@@ -528,6 +544,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   useEffect(() => {
     setListAddressNotesForId(null)
     setListRowExpandedId(null)
+    setCanvassMapResultQueue([])
   }, [props.caseId])
 
   useEffect(() => {
@@ -537,10 +554,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [data.locations, listAddressNotesForId])
 
-  /** Map tap: always select the location and open the notes/drawer (one click). */
+  /** Map tap on a saved pin: show the address pill; open notes via double-click on the pill (or Enter). */
   const onMapLocationPress = useCallback((id: string) => {
     setSelectedId(id)
     setLocationDetailOpen(true)
+    setAddressMapModalOpen(false)
   }, [])
 
   const mapPins = useMemo(() => {
@@ -567,6 +585,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   })
   const caseTab = workspaceMode.caseTab
   const viewMode = workspaceMode.viewMode
+
+  useEffect(() => {
+    if (caseTab !== 'addresses') setCanvassMapResultQueue([])
+  }, [caseTab])
+
   /** Locations list over map (narrow always; wide when list chosen and tools panel closed). Shown in Video canvassing or Subject tracking. */
   const showAddressesListBottomSheet =
     (caseTab === 'addresses' || caseTab === 'tracking') &&
@@ -707,6 +730,59 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [visibleTrackIds, setVisibleTrackIds] = useState<Record<string, boolean>>({})
   const caseTrackPoints = useMemo(() => data.trackPoints.filter((p) => p.caseId === props.caseId), [data.trackPoints, props.caseId])
 
+  type UndoSnackState =
+    | null
+    | { kind: 'location'; snapshot: { location: Location; trackPoints: TrackPoint[] } }
+    | { kind: 'trackPoint'; point: TrackPoint }
+  const [undoSnack, setUndoSnack] = useState<UndoSnackState>(null)
+  const undoSnackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearUndoSnackTimer = useCallback(() => {
+    if (undoSnackTimerRef.current) {
+      clearTimeout(undoSnackTimerRef.current)
+      undoSnackTimerRef.current = null
+    }
+  }, [])
+  const showUndoSnack = useCallback(
+    (payload: Exclude<UndoSnackState, null>) => {
+      clearUndoSnackTimer()
+      setUndoSnack(payload)
+      undoSnackTimerRef.current = window.setTimeout(() => {
+        setUndoSnack(null)
+        undoSnackTimerRef.current = null
+      }, 8500)
+    },
+    [clearUndoSnackTimer],
+  )
+  useEffect(() => () => clearUndoSnackTimer(), [clearUndoSnackTimer])
+
+  const removeCaseLocation = useCallback(
+    async (locationId: string) => {
+      const loc = locations.find((l) => l.id === locationId)
+      if (!loc) return
+      const orphaned = caseTrackPoints.filter((p) => p.locationId === locationId)
+      const snapshot = { location: { ...loc }, trackPoints: orphaned.map((p) => ({ ...p })) }
+      await deleteLocation(actorId, locationId)
+      showUndoSnack({ kind: 'location', snapshot })
+    },
+    [actorId, caseTrackPoints, deleteLocation, locations, showUndoSnack],
+  )
+
+  const removeCaseTrackPoint = useCallback(
+    async (pointId: string) => {
+      const pt = caseTrackPoints.find((p) => p.id === pointId)
+      if (!pt) return
+      const snapshot = { ...pt }
+      await deleteTrackPoint(actorId, pointId)
+      showUndoSnack({ kind: 'trackPoint', point: snapshot })
+    },
+    [actorId, caseTrackPoints, deleteTrackPoint, showUndoSnack],
+  )
+
+  const exportCaseAddressesCsv = useCallback(() => {
+    if (!c) return
+    downloadCaseLocationsCsv(c.caseNumber, locations)
+  }, [c, locations])
+
   /** Map tools Tracks tab: subject paths only (empty or map-placed steps). Import-only paths → Import coordinates. */
   const caseTracksForMapDockTracksTab = useMemo(
     () => caseTracks.filter((t) => trackBelongsInTracksMapTab(t, caseTrackPoints)),
@@ -723,15 +799,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
   }, [caseTracks, caseTrackPoints])
 
-  const trackClusterModalVisibleMembers = useMemo(() => {
-    if (!trackClusterModal) return []
-    if (caseTab !== 'tracking') return trackClusterModal.members
-    return trackClusterModal.members.filter((m) => {
-      const pt = caseTrackPoints.find((p) => p.id === m.pointId)
-      return pt != null && isMapPlacedTrackPoint(pt)
-    })
-  }, [trackClusterModal, caseTab, caseTrackPoints])
-
   const [trackSimplifyPreset, setTrackSimplifyPreset] = useState<TrackSimplifyPreset>(() => readStoredTrackSimplifyPreset())
   useEffect(() => {
     try {
@@ -747,11 +814,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   useEffect(() => {
     if (isValidIanaTimeZone(trackDisplayTzInput)) saveTrackDisplayTimeZone(trackDisplayTzInput.trim())
   }, [trackDisplayTzInput])
-
-  const [waypointGroupTolerance, setWaypointGroupTolerance] = useState(() => readStoredWaypointGroupTolerance())
-  useEffect(() => {
-    saveWaypointGroupTolerance(waypointGroupTolerance)
-  }, [waypointGroupTolerance])
 
   const [importPanelDwellExpanded, setImportPanelDwellExpanded] = useState(false)
   useEffect(() => {
@@ -999,8 +1061,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   )
 
   useEffect(() => {
-    if (selectedId && !locations.some((l) => l.id === selectedId)) setSelectedId(null)
+    if (selectedId && !locations.some((l) => l.id === selectedId)) {
+      setSelectedId(null)
+    }
   }, [locations, selectedId])
+
+  useEffect(() => {
+    setCanvassMapResultQueue((q) =>
+      q.filter((s) => s.mode !== 'existing' || locations.some((l) => l.id === s.locationId)),
+    )
+  }, [locations])
 
   const resumeMapFocus = useMemo(() => {
     const s = readStoredCaseMapFocus(props.caseId)
@@ -1039,9 +1109,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     addrBlurClearRef.current = window.setTimeout(() => {
       addrBlurClearRef.current = null
       setAddrFieldFocused(false)
+      setSuggestions([])
+      setLoadingSug(false)
     }, 180)
-  }, [])
+  }, [setSuggestions, setLoadingSug])
   const addrAutocompleteEngaged = addrFieldFocused || loadingSug || suggestions.length > 0
+  /** Map shield / `addrSearchBlocksMapClicks` / list selection only while the field is active or loading — not stale suggestions after blur. */
+  const addrSearchBlocksMapInteraction = addrFieldFocused || loadingSug
   const dismissAddressSearch = useCallback(() => {
     addrMapInteractionFreezeUntilRef.current = performance.now() + ADDR_MAP_INTERACTION_FREEZE_MS
     mapRef.current?.clearPendingMapTap()
@@ -1057,9 +1131,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [])
 
-  // Map-click create flow: user must choose a status before we create a saved location.
-  const [pendingAddQueue, setPendingAddQueue] = useState<PendingAddItem[]>([])
-  const pendingAdd: PendingAddItem | null = pendingAddQueue[0] ?? null
+  const canvassMapResultQueueRef = useRef(canvassMapResultQueue)
+  canvassMapResultQueueRef.current = canvassMapResultQueue
+
   const [addLocationSaving, setAddLocationSaving] = useState(false)
   const addCategoryInFlightRef = useRef(false)
 
@@ -1079,7 +1153,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const probativePlacementLockRef = useRef(false)
 
   const addrSearchMapShieldActive =
-    addrAutocompleteEngaged && !probativePlacementSession && (caseTab === 'tracking' || caseTab === 'addresses')
+    addrSearchBlocksMapInteraction && !probativePlacementSession && (caseTab === 'tracking' || caseTab === 'addresses')
 
   const postProbativeEffectiveTrackId = useMemo(() => {
     if (postProbativeMarkerPhase !== 'ask' || !caseTracksForMapDockTracksTab.length) return ''
@@ -1115,7 +1189,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         return
       }
       if (caseMetaEditing) return
-      if (pendingAddQueue.length > 0 || showManageTracks) return
+      if (canvassMapResultQueue.length > 0 || showManageTracks) return
       if (probativeFlow != null) return
       if (postProbativeMarkerPhase != null) return
 
@@ -1123,7 +1197,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         const pt = caseTrackPoints.find((p) => p.id === selectedTrackPointId)
         if (!pt || !isMapPlacedTrackPoint(pt) || !canDeleteTrackPoint(data, actorId, pt)) return
         e.preventDefault()
-        void deleteTrackPoint(actorId, selectedTrackPointId)
+        void removeCaseTrackPoint(selectedTrackPointId)
         setSelectedTrackPointId(null)
         return
       }
@@ -1132,9 +1206,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         const loc = locations.find((l) => l.id === selectedId)
         if (!loc || !canDeleteLocation(data, actorId, loc)) return
         e.preventDefault()
-        if (!window.confirm('Delete this address from the case? This cannot be undone.')) return
+        if (!window.confirm('Delete this address? You can undo for a few seconds.')) return
         setProbativeFlow(null)
-        void deleteLocation(actorId, selectedId)
+        void removeCaseLocation(selectedId)
         setSelectedId(null)
       }
     }
@@ -1149,7 +1223,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     deleteLocation,
     deleteTrackPoint,
     locations,
-    pendingAddQueue.length,
+    removeCaseLocation,
+    removeCaseTrackPoint,
+    canvassMapResultQueue.length,
     probativeFlow,
     selectedId,
     selectedTrackPointId,
@@ -1177,30 +1253,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       bounds?: Location['bounds'] | null
       vectorTileBuildingRing?: LatLon[] | null
     }) => {
-      const existing = findExistingLocationForCanvassAdd(
-        locations,
-        payload.lat,
-        payload.lon,
-        payload.addressText,
-        footprintLoadingIds,
-      )
-      if (existing) {
-        dismissAddressSearch()
-        setAddr('')
-        mapRef.current?.clearPendingMapTap()
-        setSelectedId(existing.id)
-        setLocationDetailOpen(true)
-        window.setTimeout(() => {
-          const m = mapRef.current
-          if (m) m.flyTo(existing.lat, existing.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-        }, 0)
-        return
-      }
+      setSelectedId(null)
+      setLocationDetailOpen(false)
+      setAddressMapModalOpen(false)
       addCategoryInFlightRef.current = false
       setAddLocationSaving(false)
-      setPendingAddQueue((q) => {
-        if (q.some((x) => samePendingPin(x, payload))) return q
-        const item: PendingAddItem = {
+      setCanvassMapResultQueue((q) => {
+        if (q.some((x) => x.mode === 'new' && samePendingPin(x, payload))) return q
+        const item: CanvassMapResultSession = {
+          key: newCanvassMapResultSessionKey(),
+          mode: 'new',
           lat: payload.lat,
           lon: payload.lon,
           addressText: payload.addressText,
@@ -1210,18 +1272,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         return [...q, item]
       })
     },
-    [dismissAddressSearch, footprintLoadingIds, locations, setAddr],
+    [dismissAddressSearch, setAddr],
   )
   const closeAddLocationModal = useCallback(() => {
     addCategoryInFlightRef.current = false
     setAddLocationSaving(false)
-    setPendingAddQueue((q) => q.slice(1))
+    setCanvassMapResultQueue((q) => q.slice(1))
   }, [])
 
-  /** One in-flight reverse lookup per map coordinate so the add modal can fill in street text while you keep working. */
+  /** One in-flight reverse lookup per map coordinate so the record-result modal can fill in street text while you keep working. */
   const pendingQueueGeoKeysRef = useRef<Set<string>>(new Set())
   useEffect(() => {
-    for (const item of pendingAddQueue) {
+    for (const item of canvassMapResultQueue) {
+      if (item.mode !== 'new') continue
       if (!isProvisionalCanvassLabel(item.addressText)) continue
       const key = `${item.lat.toFixed(6)},${item.lon.toFixed(6)}`
       if (pendingQueueGeoKeysRef.current.has(key)) continue
@@ -1232,12 +1295,23 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         try {
           const resolved = await reverseGeocodeAddressText(lat, lon).catch(() => null)
           if (!resolved?.trim() || isProvisionalCanvassLabel(resolved)) return
-          setPendingAddQueue((q) => {
-            const i = q.findIndex((x) => samePendingPin(x, { lat, lon }))
+          const resolvedTrim = resolved.trim()
+          setCanvassMapResultQueue((q) => {
+            const i = q.findIndex((x) => x.mode === 'new' && samePendingPin(x, { lat, lon }))
             if (i < 0) return q
-            if (!isProvisionalCanvassLabel(q[i]!.addressText)) return q
+            const cur = q[i]!
+            if (cur.mode !== 'new' || !isProvisionalCanvassLabel(cur.addressText)) return q
+            const dup = findLocationByAddressText(locationsRef.current, resolvedTrim)
+            if (dup) {
+              queueMicrotask(() => {
+                setSelectedId(dup.id)
+                setLocationDetailOpen(true)
+                setAddressMapModalOpen(false)
+              })
+              return q.filter((_, j) => j !== i)
+            }
             const next = q.slice()
-            next[i] = { ...next[i]!, addressText: resolved.trim() }
+            next[i] = { ...cur, addressText: resolvedTrim }
             return next
           })
         } finally {
@@ -1245,7 +1319,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         }
       })()
     }
-  }, [pendingAddQueue])
+  }, [canvassMapResultQueue])
 
   /** Saved pins that still have a coordinate-only label get a street line without blocking the outline pipeline. */
   const savedProvisionalGeoIdsRef = useRef<Set<string>>(new Set())
@@ -1308,17 +1382,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       if (addCategoryInFlightRef.current) return
       const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
       const { addressText } = snapshot
-      const dup = findExistingLocationForCanvassAdd(locations, lat, lon, addressText, footprintLoadingIds)
-      if (dup) {
-        closeAddLocationModal()
-        setLocationDetailOpen(false)
-        setSelectedId(dup.id)
-        window.setTimeout(() => {
-          const m = mapRef.current
-          if (m) m.flyTo(dup.lat, dup.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-        }, 0)
-        return
-      }
       addCategoryInFlightRef.current = true
       setAddLocationSaving(true)
       try {
@@ -1361,12 +1424,18 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       closeAddLocationModal,
       createLocation,
       enqueueOutlineForLocation,
-      footprintLoadingIds,
-      locations,
       props.caseId,
       updateLocation,
     ],
   )
+
+  const popCanvassResultIfFrontExistingId = useCallback((locationId: string) => {
+    setCanvassMapResultQueue((q) => {
+      const front = q[0]
+      if (front?.mode === 'existing' && front.locationId === locationId) return q.slice(1)
+      return q
+    })
+  }, [])
 
   const handleProbativeAccurate = useCallback(() => {
     const f = probativeFlowRef.current
@@ -1375,11 +1444,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setProbativeFlow(null)
     setPostProbativeMarkerPhase('ask')
     if (t.kind === 'existing') {
-      void updateLocation(actorId, t.locationId, { status: 'probativeFootage' })
+      void updateLocation(actorId, t.locationId, { status: 'probativeFootage' }).then(() => {
+        popCanvassResultIfFrontExistingId(t.locationId)
+      })
     } else {
       void completePendingLocation(t.pending, 'probativeFootage')
     }
-  }, [completePendingLocation, updateLocation])
+  }, [completePendingLocation, popCanvassResultIfFrontExistingId, updateLocation])
 
   const handleProbativeNotAccurate = useCallback(() => {
     setProbativeFlow((pf) => (pf && pf.step === 'accuracy' ? { ...pf, step: 'calc' } : pf))
@@ -1408,7 +1479,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setProbativeFlow((pf) => {
       if (!pf) return pf
       if (pf.target.kind === 'new' || pf.target.kind === 'dvr_only') return pf
-      // Clear when the user selects a different location; keep when selection is cleared (list / after drawer close).
       if (selectedId != null && selectedId !== pf.target.locationId) return null
       return pf
     })
@@ -1430,12 +1500,87 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         void updateLocation(actorId, t.locationId, {
           status: 'probativeFootage',
           notes: appendToNotes(loc?.notes ?? '', notesAppend),
+        }).then(() => {
+          popCanvassResultIfFrontExistingId(t.locationId)
         })
       } else {
         void completePendingLocation(t.pending, 'probativeFootage', notesAppend)
       }
     },
-    [completePendingLocation, data.locations, finalizeDvrOnlyCalculatorApply, updateLocation],
+    [
+      completePendingLocation,
+      data.locations,
+      finalizeDvrOnlyCalculatorApply,
+      popCanvassResultIfFrontExistingId,
+      updateLocation,
+    ],
+  )
+
+  const pickCanvassMapResultStatus = useCallback(
+    async (status: CanvassStatus, sessionKey: string) => {
+      if (addCategoryInFlightRef.current) return
+      const q = canvassMapResultQueueRef.current
+      const front = q[0]
+      if (!front || front.key !== sessionKey) return
+
+      if (status === 'probativeFootage') {
+        if (front.mode === 'existing') {
+          setProbativeFlow({
+            step: 'accuracy',
+            target: { kind: 'existing', locationId: front.locationId },
+          })
+        } else {
+          setProbativeFlow({
+            step: 'accuracy',
+            target: {
+              kind: 'new',
+              pending: {
+                lat: front.lat,
+                lon: front.lon,
+                addressText: front.addressText,
+                bounds: front.bounds,
+                vectorTileBuildingRing: front.vectorTileBuildingRing,
+              },
+            },
+          })
+        }
+        return
+      }
+
+      setProbativeFlow(null)
+
+      if (front.mode === 'existing') {
+        addCategoryInFlightRef.current = true
+        setAddLocationSaving(true)
+        try {
+          await updateLocation(actorId, front.locationId, { status })
+          closeAddLocationModal()
+          setLocationDetailOpen(false)
+          setSelectedId(front.locationId)
+          window.setTimeout(() => {
+            const loc = locationsRef.current.find((l) => l.id === front.locationId)
+            const m = mapRef.current
+            if (loc && m) m.flyTo(loc.lat, loc.lon, Math.max(m.getZoom(), 16), { duration: 0.55 })
+          }, 0)
+        } finally {
+          setAddLocationSaving(false)
+          addCategoryInFlightRef.current = false
+        }
+        return
+      }
+
+      await completePendingLocation(
+        {
+          lat: front.lat,
+          lon: front.lon,
+          addressText: front.addressText,
+          bounds: front.bounds,
+          vectorTileBuildingRing: front.vectorTileBuildingRing,
+        },
+        status,
+      )
+    },
+    [actorId, closeAddLocationModal, completePendingLocation, updateLocation],
   )
 
   useEffect(() => {
@@ -1443,6 +1588,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setMapLeftToolSection((s) => (s === 'dvr' ? null : s))
     }
   }, [probativeFlow])
+
+  const recordResultModalAddressLine = useMemo(() => {
+    const s = canvassMapResultQueue[0]
+    if (!s) return ''
+    if (s.mode === 'existing') {
+      const loc = locations.find((l) => l.id === s.locationId)
+      return loc ? formatAddressLineForMapList(loc.addressText) : 'Address'
+    }
+    return s.addressText
+  }, [canvassMapResultQueue, locations])
 
   useEffect(() => {
     const available = OUTLINE_CONCURRENCY - outlineInFlightRef.current.size
@@ -1753,29 +1908,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ? `[Canvass — DVR link] Probative. ${s.label}`
         : `[Canvass — DVR link] Not probative. ${s.label}`
       const mergedNotes = appendToNotes(dvrLinkLocationSession.notesAppend, canvassLine)
-      const existing = findExistingLocationForCanvassAdd(locations, s.lat, s.lon, s.label, footprintLoadingIds)
 
       setDvrLinkSaving(true)
       try {
-        if (existing) {
-          if (!canEditLocation(data, actorId, existing)) return
-          await updateLocation(actorId, existing.id, {
-            status,
-            notes: appendToNotes(existing.notes ?? '', mergedNotes),
-          })
-          clearDvrLinkLocationUi()
-          setSelectedId(existing.id)
-          setWorkspaceCaseTab('addresses')
-          setWorkspaceViewMode('map')
-          setLocationDetailOpen(true)
-          enqueueOutlineForLocation(existing.id, s.lat, s.lon, s.label, null)
-          closeMapToolsDock()
-          window.setTimeout(() => {
-            const m = mapRef.current
-            if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-          }, 0)
-          return
-        }
         if (!canAddCaseContentHere) return
         const id = await createLocation({
           caseId: props.caseId,
@@ -1810,14 +1945,10 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       clearDvrLinkLocationUi,
       closeMapToolsDock,
       createLocation,
-      data,
       dvrLinkLocationSession,
       dvrLinkPicked,
       enqueueOutlineForLocation,
-      footprintLoadingIds,
-      locations,
       props.caseId,
-      updateLocation,
     ],
   )
 
@@ -1916,11 +2047,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
 
   /** MapLibre only: query Carto vector `building` layers at a pin (speeds queued fetches). */
   const vectorRingLookupRef = useRef<((lat: number, lon: number) => LatLon[] | null) | null>(null)
-
-  const findLocationHit = useCallback(
-    (lat: number, lon: number) => findLocationHitByMapClick(locations, lat, lon, footprintLoadingIds),
-    [locations, footprintLoadingIds],
-  )
 
   const findLocationByAddrMemo = useCallback(
     (text: string) => findLocationByAddressText(locations, text),
@@ -2042,6 +2168,19 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         const placeTid = probativePlacementSession?.trackId
         const tid = placeTid ?? trackForMapAdd
         if (!tid) return
+        const nowDedupe = Date.now()
+        const prev = trackMapAddDedupeRef.current
+        const dedupeMs = 450
+        const eps = 1e-6
+        if (
+          prev &&
+          nowDedupe - prev.t < dedupeMs &&
+          Math.abs(prev.lat - lat) < eps &&
+          Math.abs(prev.lon - lon) < eps
+        ) {
+          return
+        }
+        trackMapAddDedupeRef.current = { t: nowDedupe, lat, lon }
         if (placeTid) {
           if (probativePlacementLockRef.current) return
           probativePlacementLockRef.current = true
@@ -2088,9 +2227,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ? {
             display: 'grid',
             gridTemplateColumns: '1fr',
-            gridTemplateRows: 'minmax(0, 1fr)',
-            gridTemplateAreas: '"map"',
-            gap: 0,
+            gridTemplateRows: 'auto minmax(0, 1fr)',
+            gridTemplateAreas: '"sync" "map"',
+            gap: 6,
             alignItems: 'stretch',
             flex: 1,
             minHeight: 0,
@@ -2099,9 +2238,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         : {
             display: 'grid',
             gridTemplateColumns: '1fr',
-            gridTemplateRows: 'minmax(0, 1fr)',
-            gridTemplateAreas: '"map"',
-            gap: 0,
+            gridTemplateRows: 'auto minmax(0, 1fr)',
+            gridTemplateAreas: '"sync" "map"',
+            gap: 8,
             alignItems: 'stretch',
             flex: 1,
             minHeight: 0,
@@ -2160,9 +2299,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     minWidth: 0,
   }
   const mapColumnWrapperStyle: CSSProperties = {
-    gridArea: 'map',
     display: 'flex',
     flexDirection: 'column',
+    flex: 1,
     minWidth: 0,
     minHeight: 0,
     height: '100%',
@@ -3472,54 +3611,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   marginBottom: 4,
                 }}
               >
-                Nearby steps lumped on map
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={waypointGroupTolerance}
-                onChange={(e) => setWaypointGroupTolerance(Number(e.target.value))}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={waypointGroupTolerance}
-                aria-label="Step lumping tolerance on map"
-                style={{ width: '100%', boxSizing: 'border-box' }}
-              />
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: 9,
-                  fontWeight: 600,
-                  color: isNarrow ? '#9ca3af' : '#94a3b8',
-                  marginTop: 2,
-                }}
-              >
-                <span>Stricter (more pins)</span>
-                <span>Looser (fewer pins)</span>
-              </div>
-              <div
-                style={{
-                  fontSize: 9,
-                  fontWeight: 600,
-                  color: isNarrow ? '#9ca3af' : '#94a3b8',
-                  lineHeight: 1.35,
-                  marginTop: 4,
-                }}
-              >
-                Groups steps that are close in distance and time; tap a lump to expand. Saved on this device.
-              </div>
-            </div>
-            <div>
-              <div
-                style={{
-                  fontSize: 10,
-                  fontWeight: 800,
-                  color: isNarrow ? '#6b7280' : '#94a3b8',
-                  marginBottom: 4,
-                }}
-              >
                 Map path (dense tracks)
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -3933,7 +4024,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             </div>
           ) : null}
         </div>
-        {filtered.length ? (
+        {filtered.length > 0 ? (
           <div
             style={{
               flex: 1,
@@ -3997,6 +4088,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       if (isListExpanded) {
                         setListRowExpandedId(null)
                         setSelectedId(null)
+                        popCanvassResultIfFrontExistingId(l.id)
                       } else {
                         setListRowExpandedId(l.id)
                         setSelectedId(l.id)
@@ -4089,8 +4181,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         window.alert('You do not have permission to remove this address.')
                         return
                       }
-                      if (!window.confirm('Delete this address from the case? This cannot be undone.')) return
-                      void deleteLocation(actorId, l.id)
+                      if (!window.confirm('Delete this address? You can undo for a few seconds.')) return
+                      void removeCaseLocation(l.id)
+                      popCanvassResultIfFrontExistingId(l.id)
                       setSelectedId((id) => (id === l.id ? null : id))
                       setListRowExpandedId((exp) => (exp === l.id ? null : exp))
                       setListAddressNotesForId((n) => (n === l.id ? null : n))
@@ -4144,7 +4237,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                           stretch
                           onClick={() => {
                             setProbativeFlow(null)
-                            void updateLocation(actorId, l.id, { status: 'noCameras' })
+                            void updateLocation(actorId, l.id, { status: 'noCameras' }).then(() => {
+                              popCanvassResultIfFrontExistingId(l.id)
+                            })
                           }}
                         />
                         <RowStatusButton
@@ -4155,7 +4250,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                           stretch
                           onClick={() => {
                             setProbativeFlow(null)
-                            void updateLocation(actorId, l.id, { status: 'camerasNoAnswer' })
+                            void updateLocation(actorId, l.id, { status: 'camerasNoAnswer' }).then(() => {
+                              popCanvassResultIfFrontExistingId(l.id)
+                            })
                           }}
                         />
                         <RowStatusButton
@@ -4166,7 +4263,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                           stretch
                           onClick={() => {
                             setProbativeFlow(null)
-                            void updateLocation(actorId, l.id, { status: 'notProbativeFootage' })
+                            void updateLocation(actorId, l.id, { status: 'notProbativeFootage' }).then(() => {
+                              popCanvassResultIfFrontExistingId(l.id)
+                            })
                           }}
                         />
                         <RowStatusButton
@@ -4183,7 +4282,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                               setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: l.id } })
                               return
                             }
-                            void updateLocation(actorId, l.id, { status: 'probativeFootage' })
+                            void updateLocation(actorId, l.id, { status: 'probativeFootage' }).then(() => {
+                              popCanvassResultIfFrontExistingId(l.id)
+                            })
                           }}
                         />
                       </div>
@@ -4776,12 +4877,35 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               Tour
             </button>
           ) : null}
+          {c ? (
+            <button
+              type="button"
+              onClick={exportCaseAddressesCsv}
+              style={vcGlassHeaderBtn}
+              title="Download a CSV of addresses on this case"
+            >
+              Export CSV
+            </button>
+          ) : null}
         </div>
       }
     >
       <WorkspaceShell {...workspaceShellProps} isNarrow={isNarrow}>
-        {controlPaneBlock}
-        <div ref={mapPaneShellRef} style={mapColumnWrapperStyle}>
+        <div style={{ gridArea: 'sync', minWidth: 0 }}>
+          <CaseInlineSyncBar />
+        </div>
+        <div
+          style={{
+            gridArea: 'map',
+            minHeight: 0,
+            minWidth: 0,
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          {controlPaneBlock}
+          <div ref={mapPaneShellRef} style={mapColumnWrapperStyle}>
           <div style={mapPaneInnerShellStyle}>
             <div style={mapPaneMapStackAreaStyle}>
               {probativePlacementSession ? (
@@ -5053,10 +5177,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     visibleTrackIds={visibleTrackIds}
                     trackingMapPoints={trackingMapPoints}
                     getRouteColor={getRouteColorMemo}
-                    findHit={findLocationHit}
                     findByAddressText={findLocationByAddrMemo}
                     onSelectLocation={(id) => {
-                      if (addrAutocompleteEngaged || mapLeftToolDockOpen) return
+                      if (addrSearchBlocksMapInteraction || mapLeftToolDockOpen) return
                       onMapLocationPress(id)
                     }}
                     onEnsureFootprint={enqueueOutlineForLocation}
@@ -5073,21 +5196,25 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       })
                     }}
                     onCanvassAddAddressResolved={(result) => {
-                      if (result.existingLocationId) {
-                        setPendingAddQueue((q) => q.filter((x) => !samePendingPin(x, result)))
-                        setLocationDetailOpen(false)
-                        setSelectedId(result.existingLocationId)
-                        const match = locationsRef.current.find((l) => l.id === result.existingLocationId)
-                        if (match && (!match.footprint || match.footprint.length < 3)) {
-                          enqueueOutlineForLocation(match.id, match.lat, match.lon, match.addressText)
-                        }
-                        return
-                      }
-                      setPendingAddQueue((q) => {
-                        const i = q.findIndex((x) => samePendingPin(x, result))
+                      setCanvassMapResultQueue((q) => {
+                        const i = q.findIndex((x) => x.mode === 'new' && samePendingPin(x, result))
                         if (i < 0) return q
+                        const cur = q[i]!
+                        if (cur.mode !== 'new') return q
+                        const text = result.addressText.trim()
+                        if (!isProvisionalCanvassLabel(text)) {
+                          const dup = findLocationByAddressText(locationsRef.current, text)
+                          if (dup) {
+                            queueMicrotask(() => {
+                              setSelectedId(dup.id)
+                              setLocationDetailOpen(true)
+                              setAddressMapModalOpen(false)
+                            })
+                            return q.filter((_, j) => j !== i)
+                          }
+                        }
                         const next = q.slice()
-                        next[i] = { ...next[i]!, addressText: result.addressText }
+                        next[i] = { ...cur, addressText: result.addressText }
                         return next
                       })
                     }}
@@ -5110,11 +5237,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onDoubleTapLocation={onDoubleTapLocationFromMap}
                     visitHeatmapGeojson={visitHeatmapGeojson}
                     showVisitHeatmap={canUseVisitHeatmap && visitHeatmapOn && caseTab === 'addresses'}
-                    waypointGroupTolerance={waypointGroupTolerance}
                     basemap={mapBasemap}
-                    onTrackClusterMembersOpen={(payload) => {
-                      setTrackClusterModal(payload)
-                    }}
                   />
                     {mapLeftToolDockOpen && !probativePlacementSession ? (
                       <div
@@ -5190,22 +5313,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       <VcCaseMapBasemapSatelliteGlyph size={MAP_LAYERS_GLYPH_PX} />
                     </button>
                   ) : null}
-                  {!isNarrow && viewMode === 'map' && caseTab === 'addresses' && selected && locationDetailOpen ? (
+                  {!isNarrow && viewMode === 'map' && caseTab === 'addresses' && mapChromeLocation && locationDetailOpen ? (
                     <div style={mapSelectionPillWrapStyleWebInMapLayer}>
                       <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyleWebInMapLayerInteractive}>
                         <MapAddressSelectionPill
                           pillChrome="webDock"
-                          addressText={selected.addressText}
-                          status={selected.status}
-                          canDelete={canDeleteLocation(data, actorId, selected)}
-                          onOpenDetail={() => setAddressMapModalOpen(true)}
+                          addressText={mapChromeLocation.addressText}
+                          status={mapChromeLocation.status}
+                          canDelete={canDeleteLocation(data, actorId, mapChromeLocation)}
+                          onOpenNotes={() => setAddressMapModalOpen(true)}
                           onRemove={() => {
-                            void deleteLocation(actorId, selected.id)
+                            void removeCaseLocation(mapChromeLocation.id)
+                            popCanvassResultIfFrontExistingId(mapChromeLocation.id)
                             setSelectedId(null)
                             setLocationDetailOpen(false)
                             setAddressMapModalOpen(false)
                           }}
                           onDismissSelection={() => {
+                            popCanvassResultIfFrontExistingId(mapChromeLocation.id)
                             setSelectedId(null)
                             setLocationDetailOpen(false)
                             setAddressMapModalOpen(false)
@@ -5234,7 +5359,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                             setTrackMapModalOpen(true)
                           }}
                           onRemove={() => {
-                            void deleteTrackPoint(actorId, selectedTrackPoint.id)
+                            void removeCaseTrackPoint(selectedTrackPoint.id)
                             setSelectedTrackPointId(null)
                             setTrackStepUndoTargetId(null)
                             setTrackMapPillShowFull(false)
@@ -5316,22 +5441,24 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 </>
               ) : null}
 
-              {isNarrow && viewMode === 'map' && caseTab === 'addresses' && selected && locationDetailOpen ? (
+              {isNarrow && viewMode === 'map' && caseTab === 'addresses' && mapChromeLocation && locationDetailOpen ? (
                 <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyle}>
                   <MapAddressSelectionPill
                     pillLayout="hug"
                     pillChrome="webDock"
-                    addressText={selected.addressText}
-                    status={selected.status}
-                    canDelete={canDeleteLocation(data, actorId, selected)}
-                    onOpenDetail={() => setAddressMapModalOpen(true)}
+                    addressText={mapChromeLocation.addressText}
+                    status={mapChromeLocation.status}
+                    canDelete={canDeleteLocation(data, actorId, mapChromeLocation)}
+                    onOpenNotes={() => setAddressMapModalOpen(true)}
                     onRemove={() => {
-                      void deleteLocation(actorId, selected.id)
+                      void removeCaseLocation(mapChromeLocation.id)
+                      popCanvassResultIfFrontExistingId(mapChromeLocation.id)
                       setSelectedId(null)
                       setLocationDetailOpen(false)
                       setAddressMapModalOpen(false)
                     }}
                     onDismissSelection={() => {
+                      popCanvassResultIfFrontExistingId(mapChromeLocation.id)
                       setSelectedId(null)
                       setLocationDetailOpen(false)
                       setAddressMapModalOpen(false)
@@ -5361,7 +5488,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       setTrackMapModalOpen(true)
                     }}
                     onRemove={() => {
-                      void deleteTrackPoint(actorId, selectedTrackPoint.id)
+                      void removeCaseTrackPoint(selectedTrackPoint.id)
                       setSelectedTrackPointId(null)
                       setTrackStepUndoTargetId(null)
                       setTrackMapPillShowFull(false)
@@ -5380,161 +5507,81 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             </div>
           </div>
         </div>
+        </div>
       </WorkspaceShell>
       </Layout>
 
-    <Modal
-      title="Add location"
-      open={pendingAddQueue.length > 0}
-      onClose={() => {
-        closeAddLocationModal()
-      }}
-    >
-      {pendingAdd ? (
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>
-            Selected point
-            {pendingAddQueue.length > 1 ? (
-              <span style={{ fontWeight: 600, color: '#6b7280' }}> · {pendingAddQueue.length - 1} more queued</span>
-            ) : null}
-          </div>
-          <div style={{ fontWeight: 900, lineHeight: 1.2 }}>{pendingAdd.addressText}</div>
-          {isProvisionalCanvassLabel(pendingAdd.addressText) ? (
-            <div style={{ color: '#6b7280', fontSize: 12, fontWeight: 600 }}>Looking up street address…</div>
-          ) : null}
-          <div style={{ color: '#374151', fontSize: 12, fontWeight: 800 }}>Select a category to add to the list.</div>
-
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {(['noCameras', 'camerasNoAnswer', 'notProbativeFootage', 'probativeFootage'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={async () => {
-                  if (addLocationSaving || addCategoryInFlightRef.current) return
-                  const snapshot = pendingAdd
-                  if (s === 'probativeFootage') {
-                    setProbativeFlow({ step: 'accuracy', target: { kind: 'new', pending: snapshot } })
-                    return
-                  }
-                  addCategoryInFlightRef.current = true
-                  const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
-                  const { addressText } = snapshot
-                  const dup = findExistingLocationForCanvassAdd(
-                    locations,
-                    lat,
-                    lon,
-                    addressText,
-                    footprintLoadingIds,
-                  )
-                  if (dup) {
-                    addCategoryInFlightRef.current = false
-                    closeAddLocationModal()
-                    setLocationDetailOpen(false)
-                    setSelectedId(dup.id)
-                    window.setTimeout(() => {
-                      const m = mapRef.current
-                      if (m) m.flyTo(dup.lat, dup.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-                    }, 0)
-                    return
-                  }
-                  setAddLocationSaving(true)
-                  try {
-                    const id = await createLocation({
-                      caseId: props.caseId,
-                      createdByUserId: actorId,
-                      addressText,
-                      lat,
-                      lon,
-                      bounds: bounds ?? null,
-                      status: s,
-                    })
-                    closeAddLocationModal()
-                    setLocationDetailOpen(false)
-                    setSelectedId(id)
-                    enqueueOutlineForLocation(id, lat, lon, addressText, vectorTileBuildingRing ?? null)
-
-                    if (isProvisionalCanvassLabel(addressText)) {
-                      const lat0 = lat
-                      const lon0 = lon
-                      void (async () => {
-                        const signal =
-                          typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
-                            ? AbortSignal.timeout(12_000)
-                            : undefined
-                        const resolved = await reverseGeocodeAddressText(lat0, lon0, signal).catch(() => null)
-                        if (resolved?.trim() && !isProvisionalCanvassLabel(resolved)) {
-                          void updateLocation(actorId, id, { addressText: resolved.trim() })
-                        }
-                      })()
-                    }
-                  } finally {
-                    setAddLocationSaving(false)
-                    addCategoryInFlightRef.current = false
-                  }
-                }}
-                disabled={addLocationSaving}
-                style={{
-                  border: '1px solid #e5e7eb',
-                  borderRadius: 999,
-                  padding: '8px 10px',
-                  cursor: 'pointer',
-                  fontWeight: 900,
-                  fontSize: 12,
-                  borderColor: statusColor(s),
-                  background: addLocationSaving ? 'rgba(241, 245, 249, 0.92)' : `${statusColor(s)}22`,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 8,
-                }}
-              >
-                <span style={{ width: 10, height: 10, borderRadius: 999, background: statusColor(s), display: 'inline-block' }} />
-                {statusLabel(s)}
-              </button>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button
-              type="button"
-              style={btn}
-              onClick={() => closeAddLocationModal()}
-              disabled={addLocationSaving}
-              title={addLocationSaving ? 'Saving…' : 'Close'}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+      {undoSnack ? (
+        <UndoSnackbar
+          message={undoSnack.kind === 'location' ? 'Address removed from case.' : 'Track step removed.'}
+          onUndo={() => {
+            const u = undoSnack
+            clearUndoSnackTimer()
+            setUndoSnack(null)
+            if (u.kind === 'location') void restoreDeletedLocation(actorId, u.snapshot)
+            else void restoreDeletedTrackPoint(actorId, u.point)
+          }}
+          onDismiss={() => {
+            clearUndoSnackTimer()
+            setUndoSnack(null)
+          }}
+        />
       ) : null}
-      </Modal>
+
+    <CanvassMapResultModal
+      open={canvassMapResultQueue.length > 0}
+      addressLine={recordResultModalAddressLine}
+      queuedExtraCount={Math.max(0, canvassMapResultQueue.length - 1)}
+      addressResolving={(() => {
+        const s = canvassMapResultQueue[0]
+        return s?.mode === 'new' && isProvisionalCanvassLabel(s.addressText)
+      })()}
+      saving={addLocationSaving}
+      onClose={closeAddLocationModal}
+      onPickStatus={(s) => {
+        const k = canvassMapResultQueueRef.current[0]?.key
+        if (!k) return
+        void pickCanvassMapResultStatus(s, k)
+      }}
+    />
 
     <Modal
-      title={selected ? formatAddressLineForMapList(selected.addressText) : 'Address'}
-      open={addressMapModalOpen && !!selected}
+      title={addressModalLocation ? formatAddressLineForMapList(addressModalLocation.addressText) : 'Address'}
+      open={addressMapModalOpen && !!addressModalLocation}
       onClose={() => setAddressMapModalOpen(false)}
     >
-      {selected ? (
+      {addressModalLocation ? (
         <LocationDrawer
-          key={selected.id}
+          key={addressModalLocation.id}
           layout="stack"
           embedInModal
-          location={selected}
-          buildingOutlineLoading={footprintLoadingIds.has(selected.id)}
-          buildingOutlineFailed={footprintFailedIds.has(selected.id)}
-          canEdit={canEditLocation(data, actorId, selected)}
-          canDelete={canDeleteLocation(data, actorId, selected)}
+          location={addressModalLocation}
+          buildingOutlineLoading={footprintLoadingIds.has(addressModalLocation.id)}
+          buildingOutlineFailed={footprintFailedIds.has(addressModalLocation.id)}
+          canEdit={canEditLocation(data, actorId, addressModalLocation)}
+          canDelete={canDeleteLocation(data, actorId, addressModalLocation)}
           onClose={() => setAddressMapModalOpen(false)}
           onUpdate={(patch) => {
             if (patch.status != null && patch.status !== 'probativeFootage') {
               setProbativeFlow(null)
             }
-            void updateLocation(actorId, selected.id, patch)
+            const targetId = addressModalLocation.id
+            void updateLocation(actorId, targetId, patch).then(() => {
+              if (patch.status != null) {
+                popCanvassResultIfFrontExistingId(targetId)
+              }
+            })
           }}
           onProbativeRequest={() => {
             setAddressMapModalOpen(false)
-            setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: selected.id } })
+            setProbativeFlow({
+              step: 'accuracy',
+              target: { kind: 'existing', locationId: addressModalLocation.id },
+            })
           }}
           onDelete={() => {
-            void deleteLocation(actorId, selected.id)
+            void removeCaseLocation(addressModalLocation.id)
+            popCanvassResultIfFrontExistingId(addressModalLocation.id)
             setSelectedId(null)
             setLocationDetailOpen(false)
             setAddressMapModalOpen(false)
@@ -5579,7 +5626,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           onClose={() => setTrackMapModalOpen(false)}
           onUpdate={(patch) => void updateTrackPoint(actorId, selectedTrackPoint.id, patch)}
           onDelete={() => {
-            void deleteTrackPoint(actorId, selectedTrackPoint.id)
+            void removeCaseTrackPoint(selectedTrackPoint.id)
             setSelectedTrackPointId(null)
             setTrackStepUndoTargetId(null)
             setTrackMapModalOpen(false)
@@ -5882,66 +5929,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         onCreateTrack={handleTrackImportCreateTrack}
         onImportPoints={handleTrackImportPoints}
       />
-    </Modal>
-
-    <Modal
-      title={trackClusterModal ? `Track cluster (${trackClusterModal.pointCount} points)` : 'Track cluster'}
-      open={trackClusterModal != null}
-      onClose={() => setTrackClusterModal(null)}
-    >
-      {trackClusterModal ? (
-        <div style={{ display: 'grid', gap: 10, maxHeight: 'min(60vh, 420px)', overflowY: 'auto' }}>
-          <div style={{ fontSize: 12, color: '#64748b' }}>
-            {trackClusterModal.center.lat.toFixed(5)}, {trackClusterModal.center.lon.toFixed(5)}
-            {trackClusterModal.members.length > 0 && trackClusterModal.members.length < trackClusterModal.pointCount
-              ? ` — showing first ${trackClusterModal.members.length} of ${trackClusterModal.pointCount}`
-              : null}
-            {caseTab === 'tracking' &&
-            trackClusterModalVisibleMembers.length < trackClusterModal.members.length ? (
-              <span>
-                {' '}
-                · Subject tracking: {trackClusterModalVisibleMembers.length} map-placed step
-                {trackClusterModalVisibleMembers.length === 1 ? '' : 's'} (imported coordinates are hidden here)
-              </span>
-            ) : null}
-          </div>
-          {trackClusterModal.members.length === 0 ? (
-            <div style={{ fontSize: 12, color: '#64748b' }}>
-              Could not load the point list. Zoom in on the cluster or try again.
-            </div>
-          ) : null}
-          {caseTab === 'tracking' && trackClusterModal.members.length > 0 && trackClusterModalVisibleMembers.length === 0 ? (
-            <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.45 }}>
-              This cluster only has imported coordinates. Open <strong>Import coordinates</strong> in the map tools to work
-              with those points; Subject tracking lists map-placed steps only.
-            </div>
-          ) : null}
-          {trackClusterModalVisibleMembers.map((m) => {
-            const tr = caseTracks.find((t) => t.id === m.trackId)
-            const trackName = tr?.label || 'Track'
-            return (
-              <button
-                key={m.pointId}
-                type="button"
-                style={{ ...listRowMainBtn, textAlign: 'left' }}
-                onClick={() => {
-                  onSelectTrackPointMap(m.pointId)
-                  setTrackClusterModal(null)
-                }}
-              >
-                <div style={{ fontWeight: 700 }}>{trackName}</div>
-                <div style={{ fontSize: 12, color: '#475569' }}>
-                  Step {m.stepNum}
-                  {m.label ? ` — ${m.label}` : ''}
-                </div>
-              </button>
-            )
-          })}
-          <button type="button" style={btnPrimary} onClick={() => setTrackClusterModal(null)}>
-            Dismiss
-          </button>
-        </div>
-      ) : null}
     </Modal>
 
     <Modal

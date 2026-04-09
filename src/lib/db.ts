@@ -4,7 +4,6 @@ import {
   DEFAULT_DATA,
   type AppData,
   type CaseCollaborator,
-  type Location,
   type TrackPoint,
 } from './types'
 import { relationalBackendEnabled } from './backendMode'
@@ -13,6 +12,15 @@ import { setSyncStatus } from './syncStatus'
 
 /** Merge rules, polling, and Realtime overview: `docs/SYNC_CONTRACT.md`. */
 const STORE_KEY = 'videocanvass:data:v1'
+
+function formatDbErrorForSync(e: unknown): string {
+  if (e && typeof e === 'object' && 'message' in e) {
+    const m = (e as { message: unknown }).message
+    if (typeof m === 'string' && m.trim()) return m.trim()
+  }
+  if (e instanceof Error && e.message.trim()) return e.message.trim()
+  return 'unknown error'
+}
 
 /** Fallback pull when Realtime is slow or missed (mobile WebViews / background tabs often throttle WS). */
 export const REMOTE_SYNC_POLL_MS = 8_000
@@ -94,120 +102,6 @@ function migrateCreatedByUserIds(data: AppData): AppData {
   return { ...data, locations, tracks, trackPoints, caseAttachments }
 }
 
-/** Geocode jitter / double-click: same doorway should be one Location row for sync. */
-const SAME_PLACE_MAX_METERS = 12
-/** Same normalized address string but coords differ slightly (providers, clicks). */
-const SAME_LABEL_MAX_METERS = 95
-
-function normalizeAddressKey(text: string): string {
-  return text.trim().toLowerCase().replace(/\s+/g, ' ')
-}
-
-function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6_371_000
-  const toRad = (d: number) => (d * Math.PI) / 180
-  const dLat = toRad(lat2 - lat1)
-  const dLon = toRad(lon2 - lon1)
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return R * c
-}
-
-type PlaceLike = { addressText: string; lat: number; lon: number }
-
-function locationsAreSamePlace(a: Location | PlaceLike, b: Location | PlaceLike, caseIdA: string, caseIdB: string): boolean {
-  if (caseIdA !== caseIdB) return false
-  const d = haversineMeters(a.lat, a.lon, b.lat, b.lon)
-  if (d <= SAME_PLACE_MAX_METERS) return true
-  const ka = normalizeAddressKey(a.addressText)
-  const kb = normalizeAddressKey(b.addressText)
-  if (ka.length > 0 && ka === kb && d <= SAME_LABEL_MAX_METERS) return true
-  return false
-}
-
-function locationPickWinnerLoser(a: Location, b: Location): [Location, Location] {
-  const ta = a.updatedAt ?? a.createdAt
-  const tb = b.updatedAt ?? b.createdAt
-  if (ta !== tb) return ta >= tb ? [a, b] : [b, a]
-  const ca = a.createdAt
-  const cb = b.createdAt
-  if (ca !== cb) return ca <= cb ? [a, b] : [b, a]
-  return a.id.localeCompare(b.id) <= 0 ? [a, b] : [b, a]
-}
-
-function mergeLocationAbsorbLoser(winner: Location, loser: Location): Location {
-  let m: Location = { ...winner }
-  if (!m.notes.trim() && loser.notes.trim()) m = { ...m, notes: loser.notes }
-  if (!m.bounds && loser.bounds) m = { ...m, bounds: loser.bounds }
-  if (!(m.footprint?.length ?? 0) && (loser.footprint?.length ?? 0)) m = { ...m, footprint: loser.footprint }
-  const tw = m.addressText.trim()
-  const tl = loser.addressText.trim()
-  if (tl.length > tw.length) m = { ...m, addressText: tl }
-  const mv = m.lastVisitedAt
-  const lv = loser.lastVisitedAt
-  if (lv != null && (mv == null || lv > mv)) m = { ...m, lastVisitedAt: lv }
-  const u = Math.max(m.updatedAt ?? m.createdAt, loser.updatedAt ?? loser.createdAt, m.createdAt, loser.createdAt)
-  m = { ...m, updatedAt: u }
-  return m
-}
-
-function pushTombstoneDedupe(ids: string[], id: string): string[] {
-  return ids.includes(id) ? ids : [...ids, id]
-}
-
-/**
- * Collapses concurrent duplicate locations (same case, same place, different row IDs) so merge-by-id
- * cannot leave overlapping pins. Repoints track step locationId references.
- */
-function dedupeNearbyCaseLocations(data: AppData): AppData {
-  let locations = data.locations.slice()
-  let trackPoints = data.trackPoints.slice()
-  let deletedLocationIds = data.deletedLocationIds.slice()
-  let anyChange = false
-
-  let changed = true
-  while (changed) {
-    changed = false
-    outer: for (let i = 0; i < locations.length; i++) {
-      for (let j = i + 1; j < locations.length; j++) {
-        const a = locations[i]!
-        const b = locations[j]!
-        if (!locationsAreSamePlace(a, b, a.caseId, b.caseId)) continue
-        const [winnerBase, loser] = locationPickWinnerLoser(a, b)
-        const merged = mergeLocationAbsorbLoser(winnerBase, loser)
-        locations = locations.map((l) => (l.id === winnerBase.id ? merged : l)).filter((l) => l.id !== loser.id)
-        deletedLocationIds = pushTombstoneDedupe(deletedLocationIds, loser.id)
-        trackPoints = trackPoints.map((p) => (p.locationId === loser.id ? { ...p, locationId: winnerBase.id } : p))
-        anyChange = true
-        changed = true
-        break outer
-      }
-    }
-  }
-
-  if (!anyChange) return data
-  return { ...data, locations, trackPoints, deletedLocationIds }
-}
-
-/** First matching row in the same case (for create-before-save dedupe). */
-export function findDuplicateLocationForCase(
-  locations: Location[],
-  caseId: string,
-  addressText: string,
-  lat: number,
-  lon: number,
-): Location | null {
-  const t = addressText.trim()
-  const stub: PlaceLike = { addressText: t, lat, lon }
-  for (const loc of locations) {
-    if (loc.caseId !== caseId) continue
-    if (locationsAreSamePlace(loc, stub, loc.caseId, caseId)) return loc
-  }
-  return null
-}
-
 function migrateCaseOrgAndAttachments(data: AppData): AppData {
   return {
     ...data,
@@ -228,11 +122,9 @@ function migrateCaseOrgAndAttachments(data: AppData): AppData {
 }
 
 export function normalizeAppData(data: AppData): AppData {
-  return dedupeNearbyCaseLocations(
-    migrateCreatedByUserIds(
-      normalizeTrackPointSequences(
-        migrateTrackPointUpdatedAt(migrateTrackUpdatedAt(migrateCaseOrgAndAttachments(data))),
-      ),
+  return migrateCreatedByUserIds(
+    normalizeTrackPointSequences(
+      migrateTrackPointUpdatedAt(migrateTrackUpdatedAt(migrateCaseOrgAndAttachments(data))),
     ),
   )
 }
@@ -494,7 +386,9 @@ export async function saveData(data: AppData): Promise<AppData> {
     } catch (e) {
       console.warn('Relational save failed:', e)
       await localforage.setItem(STORE_KEY, payloadToSave)
-      setSyncStatus({ mode: 'local_fallback', message: 'Database save failed; keeping local copy' })
+      const detail = formatDbErrorForSync(e)
+      const clipped = detail.length > 200 ? `${detail.slice(0, 197)}…` : detail
+      setSyncStatus({ mode: 'local_fallback', message: `Database save failed: ${clipped}` })
       return payloadToSave
     }
   }

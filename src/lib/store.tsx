@@ -2,7 +2,6 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import {
   caseCollaboratorTombstoneKey,
   fetchRemotePayloadUpdatedAt,
-  findDuplicateLocationForCase,
   loadData,
   mergeAppData,
   normalizeAppData,
@@ -17,6 +16,7 @@ import { adjustPendingRemoteSaves } from './syncStatus'
 import { useSupabaseAppDataSync } from './storeSupabaseSync'
 import { newId } from './id'
 import { pickRouteColorForNewTrack } from './trackColors'
+import { findDuplicateLocationInCaseByAddressText } from '../app/casePageHelpers'
 import {
   assertPermission,
   canAddCaseContent,
@@ -81,6 +81,11 @@ type StoreState = {
     notes?: string
   }) => Promise<string>
   deleteLocation: (actorUserId: string, locationId: string) => Promise<void>
+  restoreDeletedLocation: (
+    actorUserId: string,
+    snapshot: { location: Location; trackPoints: TrackPoint[] },
+  ) => Promise<void>
+  restoreDeletedTrackPoint: (actorUserId: string, point: TrackPoint) => Promise<void>
   createTrack: (input: { caseId: string; createdByUserId: string; label: string; kind: Track['kind'] }) => Promise<string>
   updateTrack: (actorUserId: string, trackId: string, patch: Partial<Pick<Track, 'label' | 'kind' | 'routeColor'>>) => Promise<void>
   deleteTrack: (actorUserId: string, trackId: string) => Promise<void>
@@ -535,37 +540,34 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       const now = Date.now()
       const current = dataRef.current
       assertPermission(canAddCaseContent(current, input.caseId, input.createdByUserId.trim()))
-      const dup = findDuplicateLocationForCase(
-        current.locations,
-        input.caseId,
-        input.addressText.trim(),
-        input.lat,
-        input.lon,
-      )
+      const trimmedAddr = input.addressText.trim()
+      const dup = findDuplicateLocationInCaseByAddressText(current.locations, input.caseId, trimmedAddr)
       if (dup) {
-        const inNotes = (input.notes ?? '').trim()
-        const mergedLoc: Location = {
-          ...dup,
-          status: input.status,
-          notes: inNotes || dup.notes,
-          bounds: dup.bounds ?? input.bounds ?? null,
-          addressText:
-            input.addressText.trim().length > dup.addressText.trim().length ? input.addressText.trim() : dup.addressText,
-          updatedAt: now,
+        if (canEditLocation(current, input.createdByUserId.trim(), dup)) {
+          const inNotes = (input.notes ?? '').trim()
+          const merged: Location = {
+            ...dup,
+            status: input.status,
+            notes: inNotes || dup.notes,
+            bounds: dup.bounds ?? input.bounds ?? null,
+            addressText:
+              trimmedAddr.length > dup.addressText.trim().length ? trimmedAddr : dup.addressText,
+            updatedAt: now,
+          }
+          const next: AppData = {
+            ...current,
+            locations: current.locations.map((l) => (l.id === dup.id ? merged : l)),
+            cases: current.cases.map((c) => (c.id === input.caseId ? { ...c, updatedAt: now } : c)),
+          }
+          persist(next)
         }
-        const next: AppData = {
-          ...current,
-          locations: current.locations.map((l) => (l.id === dup.id ? mergedLoc : l)),
-          cases: current.cases.map((c) => (c.id === input.caseId ? { ...c, updatedAt: now } : c)),
-        }
-        persist(next)
         return dup.id
       }
       const id = newId('loc')
       const loc: Location = {
         id,
         caseId: input.caseId,
-        addressText: input.addressText.trim(),
+        addressText: trimmedAddr,
         lat: input.lat,
         lon: input.lon,
         bounds: input.bounds ?? null,
@@ -603,6 +605,51 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         cases: loc ? current.cases.map((c) => (c.id === loc.caseId ? { ...c, updatedAt: now } : c)) : current.cases,
       }
       await persist(next)
+    },
+    [persist],
+  )
+
+  const restoreDeletedLocation = useCallback(
+    async (actorUserId: string, snapshot: { location: Location; trackPoints: TrackPoint[] }) => {
+      const current = dataRef.current
+      const loc = snapshot.location
+      const actor = actorUserId.trim()
+      assertPermission(canAddCaseContent(current, loc.caseId, actor))
+      if (current.locations.some((l) => l.id === loc.id)) return
+      const now = Date.now()
+      const tpIds = new Set(snapshot.trackPoints.map((p) => p.id))
+      const next: AppData = {
+        ...current,
+        deletedLocationIds: current.deletedLocationIds.filter((id) => id !== loc.id),
+        deletedTrackPointIds: current.deletedTrackPointIds.filter((id) => id !== loc.id && !tpIds.has(id)),
+        locations: [{ ...loc, updatedAt: now }, ...current.locations],
+        trackPoints: [...snapshot.trackPoints.map((p) => ({ ...p, updatedAt: now })), ...current.trackPoints],
+        cases: current.cases.map((c) => (c.id === loc.caseId ? { ...c, updatedAt: now } : c)),
+      }
+      persist(next)
+    },
+    [persist],
+  )
+
+  const restoreDeletedTrackPoint = useCallback(
+    async (actorUserId: string, pt: TrackPoint) => {
+      const current = dataRef.current
+      assertPermission(canEditTrackPoint(current, actorUserId.trim(), pt))
+      if (current.trackPoints.some((p) => p.id === pt.id)) return
+      const now = Date.now()
+      const tid = pt.trackId
+      const insSeq = pt.sequence
+      const bumped = current.trackPoints.map((p) => {
+        if (p.trackId !== tid || p.sequence < insSeq) return p
+        return { ...p, sequence: p.sequence + 1, updatedAt: now }
+      })
+      const next: AppData = {
+        ...current,
+        deletedTrackPointIds: current.deletedTrackPointIds.filter((id) => id !== pt.id),
+        trackPoints: [{ ...pt, updatedAt: now }, ...bumped],
+        cases: current.cases.map((c) => (c.id === pt.caseId ? { ...c, updatedAt: now } : c)),
+      }
+      persist(next)
     },
     [persist],
   )
@@ -1009,6 +1056,8 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       removeCaseCollaborator,
       createLocation,
       deleteLocation,
+      restoreDeletedLocation,
+      restoreDeletedTrackPoint,
       createTrack,
       updateTrack,
       deleteTrack,
@@ -1032,6 +1081,8 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       removeCaseCollaborator,
       createLocation,
       deleteLocation,
+      restoreDeletedLocation,
+      restoreDeletedTrackPoint,
       createTrack,
       updateTrack,
       deleteTrack,

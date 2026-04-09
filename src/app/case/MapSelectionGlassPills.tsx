@@ -1,4 +1,4 @@
-import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react'
+import { useRef, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
 import type { CanvassStatus } from '../../lib/types'
 import { statusColor, statusLabel } from '../../lib/types'
 import { formatAddressLineForMapList } from '../casePageHelpers'
@@ -137,11 +137,15 @@ function stopActivate(e: MouseEvent | KeyboardEvent) {
   e.stopPropagation()
 }
 
+const ADDR_PILL_DBL_MS = 340
+const ADDR_PILL_DBL_DIST_PX = 40
+
 export function MapAddressSelectionPill(props: {
   addressText: string
   status: CanvassStatus
   canDelete: boolean
-  onOpenDetail: () => void
+  /** Double-click the address block, or Enter/Space when focused — opens notes / detail modal. */
+  onOpenNotes: () => void
   onRemove: () => void
   onDismissSelection: () => void
   /** `webDock` matches wide web left map tools pill; `hud` matches narrow map HUD. */
@@ -151,21 +155,40 @@ export function MapAddressSelectionPill(props: {
 }) {
   const line = formatAddressLineForMapList(props.addressText)
   const sc = statusColor(props.status)
-  const onMainActivate = () => props.onOpenDetail()
+  const dblTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
   const layout = props.pillLayout ?? 'fill'
   const shell = mapSelectionPillShell(props.pillChrome ?? 'hud', layout)
   const mainFlex = layout === 'hug' ? ({ flex: '0 1 auto' } as const) : ({ flex: 1 } as const)
+
+  const onMainClick = (e: MouseEvent) => {
+    const now = Date.now()
+    const cx = e.clientX
+    const cy = e.clientY
+    const prev = dblTapRef.current
+    if (
+      prev &&
+      now - prev.t < ADDR_PILL_DBL_MS &&
+      (cx - prev.x) ** 2 + (cy - prev.y) ** 2 < ADDR_PILL_DBL_DIST_PX ** 2
+    ) {
+      dblTapRef.current = null
+      props.onOpenNotes()
+      return
+    }
+    dblTapRef.current = { t: now, x: cx, y: cy }
+  }
 
   return (
     <div style={shell}>
       <div
         role="button"
         tabIndex={0}
-        onClick={onMainActivate}
+        title="Double-click for address notes"
+        onClick={onMainClick}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            onMainActivate()
+            dblTapRef.current = null
+            props.onOpenNotes()
           }
         }}
         style={{

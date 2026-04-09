@@ -14,6 +14,7 @@ function tp(
   lat: number,
   lon: number,
   visitedAt: number | null = null,
+  placementSource: TrackPoint['placementSource'] = 'map',
 ): TrackPoint {
   const createdAt = 1_700_000_000_000
   return {
@@ -31,7 +32,7 @@ function tp(
     displayTimeOnMap: false,
     mapTimeLabelOffsetX: 0,
     mapTimeLabelOffsetY: 0,
-    placementSource: 'map',
+    placementSource,
     createdByUserId: 'u',
     createdAt,
     updatedAt: createdAt,
@@ -95,5 +96,19 @@ describe('filterTrackPointsForMapDisplay', () => {
     const points = [tp('p1', 'tr1', 0, 40, -74), tp('q1', 'tr2', 0, 41, -75)]
     const out = filterTrackPointsForMapDisplay(points, [t1, { id: 'tr2' }], { tr1: true, tr2: false }, 'moderate', null)
     expect(out.every((p) => p.trackId === 'tr1')).toBe(true)
+  })
+
+  it('keeps every map-placed step even when simplify preset would decimate nearby points', () => {
+    const points = Array.from({ length: 10 }, (_, i) => tp(`p${i}`, 'tr1', i, 40.0 + i * 1e-5, -74.0))
+    const out = filterTrackPointsForMapDisplay(points, [t1], { tr1: true }, 'aggressive', null)
+    expect(out).toHaveLength(10)
+  })
+
+  it('still decimates dense import-coordinate runs under aggressive preset', () => {
+    const points = Array.from({ length: 8 }, (_, i) =>
+      tp(`i${i}`, 'tr1', i, 40.0 + i * 1e-5, -74.0, null, 'import'),
+    )
+    const out = filterTrackPointsForMapDisplay(points, [t1], { tr1: true }, 'aggressive', null)
+    expect(out.length).toBeLessThan(points.length)
   })
 })

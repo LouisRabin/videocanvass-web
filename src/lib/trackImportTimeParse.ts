@@ -13,7 +13,8 @@ export function excelSerialToUtcMs(serial: number): number {
 /**
  * @param defaultIanaZone reserved for future wall-time parsing without offset; currently unused for `Date.parse` paths.
  */
-export function parseImportInstantCell(raw: string, _defaultIanaZone: string): number | null {
+export function parseImportInstantCell(raw: string, defaultIanaZone: string): number | null {
+  void defaultIanaZone
   const s = raw.trim().replace(/^\uFEFF/, '')
   if (!s) return null
 
