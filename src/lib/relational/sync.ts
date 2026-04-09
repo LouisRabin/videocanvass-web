@@ -21,6 +21,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
+/** Compare auth user ids / FK uuids case-insensitively (JWT + IndexedDB may differ in casing). */
+function normUuid(s: string): string {
+  return s.trim().toLowerCase()
+}
+
 /** Include table name in the message so the sync bar / console show where push failed. */
 function relationalPushError(table: string, err: PostgrestError): Error {
   const parts = [err.message, err.details, err.hint].filter((x) => typeof x === 'string' && x.trim())
@@ -405,21 +410,52 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
 export async function pushAppDataToRelational(data: AppData): Promise<void> {
   if (!supabase) throw new Error('Supabase client missing')
   const sb = supabase
-  const {
-    data: { session },
-  } = await sb.auth.getSession()
-  const uid = session?.user?.id?.trim().toLowerCase()
-  if (!uid) throw new Error('Not signed in')
+  const gu = await sb.auth.getUser()
+  let uidRaw = gu.data.user?.id?.trim()
+  if (!uidRaw) {
+    const {
+      data: { session },
+    } = await sb.auth.getSession()
+    uidRaw = session?.user?.id?.trim()
+  }
+  if (!uidRaw) throw new Error('Not signed in')
+  const uidKey = normUuid(uidRaw)
 
   const { normalizeAppData } = await import('../db')
   const d = normalizeAppData(data)
 
   // RLS: only the case owner may insert/update vc_cases. Pushing every case (e.g. collaborator copies
   // or stale IndexedDB rows with a different owner_user_id) causes "new row violates row-level security".
-  const casesOwnedBySession = d.cases.filter((c) => c.ownerUserId.trim().toLowerCase() === uid)
-  // Always write the session's canonical id as owner so WITH CHECK (owner_user_id = auth.uid()) passes
-  // even if local merge/import left different casing or stray whitespace on ownerUserId.
-  for (const batch of chunk(casesOwnedBySession.map((c) => caseToRow(c, uid)), 80)) {
+  const casesOwnedBySession = d.cases.filter((c) => normUuid(c.ownerUserId) === uidKey)
+
+  // Upsert hits UPDATE on id conflict. If the server row belongs to someone else, UPDATE USING fails
+  // (and PostgREST often reports it as a WITH CHECK / "new row" style RLS error). Skip those ids.
+  const ownedIds = casesOwnedBySession.map((c) => c.id)
+  const remoteOwnerById = new Map<string, string>()
+  for (const idBatch of chunk(ownedIds, 100)) {
+    if (!idBatch.length) continue
+    const { data: existingRows, error: preErr } = await sb.from('vc_cases').select('id, owner_user_id').in('id', idBatch)
+    if (preErr) throw relationalPushError('vc_cases(preselect)', preErr)
+    for (const r of existingRows ?? []) {
+      const row = r as { id: string; owner_user_id: string }
+      remoteOwnerById.set(row.id, row.owner_user_id)
+    }
+  }
+
+  const casesSafeForVcCasesUpsert = casesOwnedBySession.filter((c) => {
+    const remoteOwner = remoteOwnerById.get(c.id)
+    if (remoteOwner == null) return true
+    return normUuid(remoteOwner) === uidKey
+  })
+  const skippedCaseRows = casesOwnedBySession.length - casesSafeForVcCasesUpsert.length
+  if (skippedCaseRows > 0) {
+    console.warn(
+      `[sync] Skipping ${skippedCaseRows} vc_cases upsert(s): case id already exists on the server under another owner (fix local owner or remove the duplicate case).`,
+    )
+  }
+
+  // Use the session id exactly as Supabase exposes it so it matches auth.uid() in Postgres.
+  for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => caseToRow(c, uidRaw)), 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').upsert(batch, { onConflict: 'id' })
     if (error) throw relationalPushError('vc_cases', error)
@@ -473,7 +509,7 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
 
   for (const batch of chunk(d.deletedCaseIds, 50)) {
     if (!batch.length) continue
-    const { data: ownIds, error: selErr } = await sb.from('vc_cases').select('id').in('id', batch).eq('owner_user_id', uid)
+    const { data: ownIds, error: selErr } = await sb.from('vc_cases').select('id').in('id', batch).eq('owner_user_id', uidRaw)
     if (selErr) throw relationalPushError('vc_cases(delete:select)', selErr)
     const ids = (ownIds ?? []).map((r) => (r as { id: string }).id)
     if (!ids.length) continue
