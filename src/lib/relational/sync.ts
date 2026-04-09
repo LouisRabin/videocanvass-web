@@ -1,3 +1,4 @@
+import type { PostgrestError } from '@supabase/supabase-js'
 import { supabase } from '../supabase'
 import type {
   AppData,
@@ -18,6 +19,12 @@ function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
   return out
+}
+
+/** Include table name in the message so the sync bar / console show where push failed. */
+function relationalPushError(table: string, err: PostgrestError): Error {
+  const parts = [err.message, err.details, err.hint].filter((x) => typeof x === 'string' && x.trim())
+  return new Error(`${table}: ${parts.join(' — ')}`)
 }
 
 /** Tombstone keys are `${caseId}::${userId}`; split on first `::` only (ids must not contain `::`). */
@@ -404,13 +411,13 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
   for (const batch of chunk(d.cases.map(caseToRow), 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').upsert(batch, { onConflict: 'id' })
-    if (error) throw error
+    if (error) throw relationalPushError('vc_cases', error)
   }
 
   for (const batch of chunk(d.caseCollaborators.map(collabToRow), 120)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_case_collaborators').upsert(batch, { onConflict: 'case_id,user_id' })
-    if (error) throw error
+    if (error) throw relationalPushError('vc_case_collaborators', error)
   }
 
   for (const batch of chunk(d.deletedCaseCollaboratorKeys, 40)) {
@@ -425,56 +432,56 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
       ),
     )
     for (const { error } of results) {
-      if (error) throw error
+      if (error) throw relationalPushError('vc_case_collaborators(delete)', error)
     }
   }
 
   for (const batch of chunk(d.locations.map(locationToRow), 120)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_locations').upsert(batch, { onConflict: 'id' })
-    if (error) throw error
+    if (error) throw relationalPushError('vc_locations', error)
   }
 
   for (const batch of chunk(d.tracks.map(trackToRow), 120)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_tracks').upsert(batch, { onConflict: 'id' })
-    if (error) throw error
+    if (error) throw relationalPushError('vc_tracks', error)
   }
 
   for (const batch of chunk(d.trackPoints.map(trackPointToRow), 120)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_track_points').upsert(batch, { onConflict: 'id' })
-    if (error) throw error
+    if (error) throw relationalPushError('vc_track_points', error)
   }
 
   for (const batch of chunk(d.caseAttachments.map(attachmentToRow), 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_case_attachments').upsert(batch, { onConflict: 'id' })
-    if (error) throw error
+    if (error) throw relationalPushError('vc_case_attachments', error)
   }
 
   for (const batch of chunk(d.deletedCaseIds, 50)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').delete().in('id', batch)
-    if (error) throw error
+    if (error) throw relationalPushError('vc_cases(delete)', error)
   }
 
   for (const batch of chunk(d.deletedLocationIds, 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_locations').delete().in('id', batch)
-    if (error) throw error
+    if (error) throw relationalPushError('vc_locations(delete)', error)
   }
 
   for (const batch of chunk(d.deletedTrackIds, 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_tracks').delete().in('id', batch)
-    if (error) throw error
+    if (error) throw relationalPushError('vc_tracks(delete)', error)
   }
 
   for (const batch of chunk(d.deletedTrackPointIds, 80)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_track_points').delete().in('id', batch)
-    if (error) throw error
+    if (error) throw relationalPushError('vc_track_points(delete)', error)
   }
 
   const attsToDelete = d.deletedCaseAttachmentIds
@@ -485,6 +492,6 @@ export async function pushAppDataToRelational(data: AppData): Promise<void> {
       if (path) await deleteCaseAttachmentFromStorage(sb, path)
     }
     const { error } = await sb.from('vc_case_attachments').delete().in('id', attsToDelete)
-    if (error) throw error
+    if (error) throw relationalPushError('vc_case_attachments(delete)', error)
   }
 }

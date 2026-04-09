@@ -27,6 +27,7 @@ README-DESKTOP-NC1PT5R.md
 xCodeToken.txt
 .env
 .env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
