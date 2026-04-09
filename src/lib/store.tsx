@@ -12,7 +12,7 @@ import { relationalBackendEnabled } from './backendMode'
 import { hasSupabaseConfig, supabase } from './supabase'
 import { logVcAudit } from './relational/auditLog'
 import { deleteCaseAttachmentFromStorage, uploadCaseAttachmentFromDataUrl } from './relational/storageAttachment'
-import { adjustPendingRemoteSaves } from './syncStatus'
+import { adjustPendingRemoteSaves, setSyncStatus } from './syncStatus'
 import { useSupabaseAppDataSync } from './storeSupabaseSync'
 import { newId } from './id'
 import { pickRouteColorForNewTrack } from './trackColors'
@@ -51,6 +51,25 @@ import type {
 
 /** Avoid indefinite "Loading…" if IndexedDB or Supabase never settles (e.g. throttled network). */
 const STORE_BOOTSTRAP_TIMEOUT_MS = 25_000
+
+/** Per-save ceiling so the UI cannot stick on "Saving N…" if PostgREST never responds. */
+const REMOTE_COMMIT_TIMEOUT_MS = 90_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    promise.then(
+      (v) => {
+        clearTimeout(t)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(t)
+        reject(e)
+      },
+    )
+  })
+}
 
 type StoreState = {
   ready: boolean
@@ -240,6 +259,10 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           const fallback = normalizeAppData(DEFAULT_DATA)
           dataRef.current = fallback
           setData(fallback)
+          setSyncStatus({
+            mode: 'local_fallback',
+            message: 'Could not load saved data; starting empty (local only)',
+          })
         }
       } finally {
         if (alive) setReady(true)
@@ -294,9 +317,25 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       void writeLocalDataCache(optimistic)
       adjustPendingRemoteSaves(1)
       remoteCommitChainRef.current = remoteCommitChainRef.current
-        .then(() => commitOptimisticToRemote(optimistic))
+        .then(() =>
+          withTimeout(
+            commitOptimisticToRemote(optimistic),
+            REMOTE_COMMIT_TIMEOUT_MS,
+            'Cloud save',
+          ),
+        )
         .catch((e) => {
           console.warn('Remote commit chain failed:', e)
+          if (
+            relationalBackendEnabled() &&
+            e instanceof Error &&
+            e.message.includes('timed out')
+          ) {
+            setSyncStatus({
+              mode: 'local_fallback',
+              message: 'Cloud save timed out; working locally. Retry when online.',
+            })
+          }
         })
         .finally(() => {
           adjustPendingRemoteSaves(-1)
