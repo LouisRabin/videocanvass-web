@@ -460,6 +460,17 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
   uidRaw = aligned.userId
   const uidKey = assertAuthUuidForVcCases(uidRaw)
 
+  const { data: jwtUser, error: jwtErr } = await sb.auth.getUser()
+  if (jwtErr?.message) {
+    console.warn('[sync] getUser before relational push:', jwtErr.message)
+  }
+  const jwtSub = jwtUser?.user?.id?.trim()
+  if (!jwtSub || normUuid(jwtSub) !== uidKey) {
+    throw new Error(
+      'Cannot save to database: signed-in user (JWT) does not match the session used for sync. Sign out, hard refresh, and sign in again.',
+    )
+  }
+
   const { normalizeAppData } = await import('../db')
   const d = normalizeAppData(data)
 
