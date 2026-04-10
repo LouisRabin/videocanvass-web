@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
 import { relationalBackendEnabled } from './lib/backendMode'
+import { debugSessionLog } from './lib/debugSessionLog'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
 import { useTargetMode } from './lib/targetMode'
@@ -132,6 +133,15 @@ function SessionGate() {
   useEffect(() => {
     if (!relationalBackendEnabled() || !supabase) return
     void supabase.auth.getSession().then(({ data: { session } }) => {
+      debugSessionLog({
+        location: 'App.tsx:getSession',
+        message: 'initial_session',
+        hypothesisId: 'C',
+        data: {
+          hasSession: Boolean(session?.user),
+          userIdLen: session?.user?.id?.length ?? 0,
+        },
+      })
       applySession(session)
       void syncMfaGate()
     })
@@ -163,6 +173,40 @@ function SessionGate() {
     () => (mockUserId ? (data.users.find((u) => u.id === mockUserId) ?? null) : null),
     [data.users, mockUserId],
   )
+
+  useEffect(() => {
+    if (!ready) return
+    const rel = relationalBackendEnabled()
+    let phase: string
+    if (!rel) {
+      phase = mockUserId ? 'mock_app' : 'mock_login'
+    } else if (!sessionUserId) {
+      phase = 'relational_login'
+    } else if (mfaGate === 'checking') {
+      phase = 'mfa_checking'
+    } else if (mfaGate === 'totp') {
+      phase = 'mfa_totp'
+    } else if (mfaGate === 'unsupported') {
+      phase = 'mfa_unsupported'
+    } else if (!relationalUser) {
+      phase = 'relational_loading_profile'
+    } else {
+      phase = 'relational_app'
+    }
+    debugSessionLog({
+      location: 'App.tsx:SessionGate',
+      message: 'ui_phase',
+      hypothesisId: 'A-C-E',
+      data: {
+        phase,
+        relationalEnabled: rel,
+        sessionUserIdSet: Boolean(sessionUserId),
+        mockUserIdSet: Boolean(mockUserId),
+        mfaGate,
+        relationalUserResolved: Boolean(relationalUser),
+      },
+    })
+  }, [ready, relationalUser, mockUserId, sessionUserId, mfaGate, mockUser])
 
   if (!ready) {
     return (

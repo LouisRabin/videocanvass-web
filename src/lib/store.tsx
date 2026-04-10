@@ -12,6 +12,7 @@ import { relationalBackendEnabled } from './backendMode'
 import { hasSupabaseConfig, supabase } from './supabase'
 import { logVcAudit } from './relational/auditLog'
 import { deleteCaseAttachmentFromStorage, uploadCaseAttachmentFromDataUrl } from './relational/storageAttachment'
+import { debugSessionLog } from './debugSessionLog'
 import { adjustPendingRemoteSaves, setSyncStatus } from './syncStatus'
 import { useSupabaseAppDataSync } from './storeSupabaseSync'
 import { newId } from './id'
@@ -222,6 +223,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
+      let bootstrapOutcome: 'ok' | 'catch' | 'unknown' = 'unknown'
       try {
         const loaded = await new Promise<AppData>((resolve, reject) => {
           const t = setTimeout(() => {
@@ -254,8 +256,10 @@ export function StoreProvider(props: { children: React.ReactNode }) {
             console.warn('Initial POC seed save failed:', e)
           }
         }
+        bootstrapOutcome = 'ok'
       } catch (e) {
         console.warn('Store bootstrap failed:', e)
+        bootstrapOutcome = 'catch'
         if (alive) {
           const fallback = normalizeAppData(DEFAULT_DATA)
           dataRef.current = fallback
@@ -266,7 +270,15 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           })
         }
       } finally {
-        if (alive) setReady(true)
+        if (alive) {
+          debugSessionLog({
+            location: 'store.tsx:bootstrap',
+            message: 'store_ready',
+            hypothesisId: 'E',
+            data: { bootstrapOutcome },
+          })
+          setReady(true)
+        }
       }
     })()
     return () => {
