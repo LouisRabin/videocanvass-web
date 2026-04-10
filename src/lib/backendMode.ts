@@ -1,8 +1,4 @@
-import { debugSessionLog } from './debugSessionLog'
 import { hasSupabaseConfig } from './supabase'
-
-/** Debug mode: log relational gate once (avoid spam — this function is hot). */
-let _vcRelationalGateDebugLogged = false
 
 function parseTruthyEnv(raw: string | undefined): boolean {
   if (raw == null) return false
@@ -36,48 +32,11 @@ export function relationalBackendFlagParsed(): boolean {
  * - **Development** (`npm run dev`): unset/blank still means relational OFF unless you set the flag to a truthy value.
  */
 export function relationalBackendEnabled(): boolean {
-  if (!hasSupabaseConfig) {
-    if (!_vcRelationalGateDebugLogged) {
-      _vcRelationalGateDebugLogged = true
-      debugSessionLog({
-        location: 'backendMode.ts:relationalBackendEnabled',
-        message: 'relational_gate',
-        hypothesisId: 'B',
-        data: {
-          result: false,
-          reason: 'no_supabase_config',
-          urlSet: Boolean((import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim()),
-          keySet: Boolean((import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim()),
-          viteProd: import.meta.env.PROD,
-        },
-      })
-    }
-    return false
-  }
+  if (!hasSupabaseConfig) return false
   const raw = import.meta.env.VITE_VC_RELATIONAL_BACKEND as string | undefined
   const trimmed = typeof raw === 'string' ? raw.trim() : ''
-  const result = trimmed !== '' ? parseTruthyEnv(raw) : import.meta.env.PROD
-  if (!_vcRelationalGateDebugLogged) {
-    _vcRelationalGateDebugLogged = true
-    const explicitTruthy = trimmed !== '' ? parseTruthyEnv(raw) : null
-    let supabaseUrlHostOk = false
-    try {
-      supabaseUrlHostOk = Boolean(new URL(String(import.meta.env.VITE_SUPABASE_URL).trim()).host)
-    } catch {
-      supabaseUrlHostOk = false
-    }
-    debugSessionLog({
-      location: 'backendMode.ts:relationalBackendEnabled',
-      message: 'relational_gate',
-      hypothesisId: 'A-D',
-      data: {
-        result,
-        flagEmpty: trimmed === '',
-        flagExplicitTruthy: explicitTruthy,
-        viteProd: import.meta.env.PROD,
-        supabaseUrlHostOk,
-      },
-    })
+  if (trimmed !== '') {
+    return parseTruthyEnv(raw)
   }
-  return result
+  return import.meta.env.PROD
 }
