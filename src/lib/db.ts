@@ -10,8 +10,9 @@ import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
 import {
   ensureRelationalClientSession,
-  getRelationalAuthUserId,
+  getRelationalAuthUserIdWithTimeout,
   getUsableSessionOrSignOut,
+  RELATIONAL_AUTH_USER_ID_TIMEOUT_MS,
 } from './supabaseAuthSession'
 import { setSyncStatus } from './syncStatus'
 
@@ -367,37 +368,50 @@ export async function loadData(): Promise<AppData> {
       return local ?? DEFAULT_DATA
     }
 
-    const uid = await getRelationalAuthUserId(sb)
-    if (uid) {
-      const { loadAppDataFromRelational } = await import('./relational/sync')
-      type RaceOk = { tag: 'ok'; value: Awaited<ReturnType<typeof loadAppDataFromRelational>> }
-      type RaceTo = { tag: 'timeout' }
-      const remoteRaced = await Promise.race([
-        loadAppDataFromRelational().then((value): RaceOk => ({ tag: 'ok', value })),
-        new Promise<RaceTo>((resolve) => {
-          setTimeout(() => resolve({ tag: 'timeout' }), RELATIONAL_BOOTSTRAP_REMOTE_MS)
-        }),
-      ])
-      const remote = remoteRaced.tag === 'ok' ? remoteRaced.value : null
-      if (remoteRaced.tag === 'timeout') {
-        console.warn(`Relational bootstrap timed out after ${RELATIONAL_BOOTSTRAP_REMOTE_MS}ms`)
-        setSyncStatus({
-          mode: 'local_fallback',
-          message: 'Database load timed out; you can use local data or retry after sign-in.',
-        })
-        const local = await loadLocalData()
-        return local ?? DEFAULT_DATA
-      }
-      if (remote) {
-        await localforage.setItem(STORE_KEY, remote)
-        setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
-        return remote
-      }
-      setSyncStatus({ mode: 'local_fallback', message: 'Database load failed or empty' })
+    const auth = await getRelationalAuthUserIdWithTimeout(sb, RELATIONAL_AUTH_USER_ID_TIMEOUT_MS)
+    if (auth.timedOut) {
+      setSyncStatus({
+        mode: 'local_fallback',
+        message: 'Auth check timed out; using local data or retry. Your session may still work for sync.',
+      })
+    }
+
+    const { loadAppDataFromRelational } = await import('./relational/sync')
+    type RaceOk = { tag: 'ok'; value: Awaited<ReturnType<typeof loadAppDataFromRelational>> }
+    type RaceTo = { tag: 'timeout' }
+    const remoteRaced = await Promise.race([
+      loadAppDataFromRelational({
+        emptyCaseUserId: auth.timedOut ? null : auth.uid,
+      }).then((value): RaceOk => ({ tag: 'ok', value })),
+      new Promise<RaceTo>((resolve) => {
+        setTimeout(() => resolve({ tag: 'timeout' }), RELATIONAL_BOOTSTRAP_REMOTE_MS)
+      }),
+    ])
+    const remote = remoteRaced.tag === 'ok' ? remoteRaced.value : null
+    if (remoteRaced.tag === 'timeout') {
+      console.warn(`Relational bootstrap timed out after ${RELATIONAL_BOOTSTRAP_REMOTE_MS}ms`)
+      setSyncStatus({
+        mode: 'local_fallback',
+        message: 'Database load timed out; you can use local data or retry after sign-in.',
+      })
       const local = await loadLocalData()
       return local ?? DEFAULT_DATA
     }
-    setSyncStatus({ mode: 'local_fallback', message: 'Sign in to load cloud data' })
+    if (remote) {
+      try {
+        await Promise.race([
+          localforage.setItem(STORE_KEY, remote),
+          new Promise<never>((_, rej) => {
+            setTimeout(() => rej(new Error('IndexedDB setItem timed out')), 12_000)
+          }),
+        ])
+      } catch (e) {
+        console.warn('Local cache write failed or timed out:', e)
+      }
+      setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
+      return remote
+    }
+    setSyncStatus({ mode: 'local_fallback', message: 'Database load failed or empty' })
     const local = await loadLocalData()
     return local ?? DEFAULT_DATA
   }
@@ -515,10 +529,12 @@ export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | n
   if (relationalBackendEnabled() && supabase) {
     const quick = await getUsableSessionOrSignOut(supabase)
     if (!quick?.user) return null
-    const uid = await getRelationalAuthUserId(supabase)
-    if (!uid) return null
+    const auth = await getRelationalAuthUserIdWithTimeout(supabase, RELATIONAL_AUTH_USER_ID_TIMEOUT_MS)
+    if (!auth.uid && !auth.timedOut) return null
     const { loadAppDataFromRelational } = await import('./relational/sync')
-    const remote = await loadAppDataFromRelational()
+    const remote = await loadAppDataFromRelational({
+      emptyCaseUserId: auth.timedOut ? null : auth.uid,
+    })
     if (!remote) return null
     return mergeAppData(local, remote)
   }

@@ -129,3 +129,25 @@ export async function getRelationalAuthUserId(sb: SupabaseClient): Promise<strin
   } = await sb.auth.getSession()
   return readUserId(session?.user) || null
 }
+
+/** `getRelationalAuthUserId` hits the Auth API; without a cap, bootstrap can hang until the store 60s timeout. */
+export const RELATIONAL_AUTH_USER_ID_TIMEOUT_MS = 14_000
+
+export async function getRelationalAuthUserIdWithTimeout(
+  sb: SupabaseClient,
+  ms: number = RELATIONAL_AUTH_USER_ID_TIMEOUT_MS,
+): Promise<{ uid: string | null; timedOut: boolean }> {
+  type Ok = { tag: 'ok'; uid: string | null }
+  type To = { tag: 'to' }
+  const r = await Promise.race([
+    getRelationalAuthUserId(sb).then((uid): Ok => ({ tag: 'ok', uid })),
+    new Promise<To>((resolve) => {
+      setTimeout(() => resolve({ tag: 'to' }), ms)
+    }),
+  ])
+  if (r.tag === 'to') {
+    console.warn(`[auth] getRelationalAuthUserId timed out after ${ms}ms`)
+    return { uid: null, timedOut: true }
+  }
+  return { uid: r.uid, timedOut: false }
+}

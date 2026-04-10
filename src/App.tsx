@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
-import { relationalBackendEnabled, relationalBackendFlagParsed } from './lib/backendMode'
+import { relationalBackendEnabled } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
 import { useTargetMode } from './lib/targetMode'
@@ -266,9 +266,7 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
     color: vcGlassFgDarkReadable,
   }
 
-  const prodDemoMisconfig =
-    import.meta.env.PROD &&
-    (!hasSupabaseConfig || !relationalBackendFlagParsed())
+  const prodDemoMisconfig = import.meta.env.PROD && !relationalBackendEnabled()
 
   return (
     <Layout title="VideoCanvass POC" subtitle="Mock sign-in (demo only)">
@@ -298,8 +296,9 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
               </p>
             ) : (
               <p style={{ margin: 0 }}>
-                Supabase URL/key are present, but <code style={{ fontSize: 13 }}>VITE_VC_RELATIONAL_BACKEND</code> is not truthy in this build.
-                Set it to <code style={{ fontSize: 13 }}>true</code> (or <code style={{ fontSize: 13 }}>1</code>) for <strong>Production</strong> and redeploy.
+                Supabase URL/key are in this build, but relational mode is off (<code style={{ fontSize: 13 }}>VITE_VC_RELATIONAL_BACKEND</code>{' '}
+                is false/off). You get demo sign-in and legacy blob sync, not email login or <code style={{ fontSize: 13 }}>vc_*</code>. Set the flag to{' '}
+                <code style={{ fontSize: 13 }}>true</code> and redeploy, or remove that variable in Vercel so production defaults to relational when URL+key are set.
               </p>
             )}
           </div>

@@ -355,7 +355,10 @@ function attachmentToRow(a: CaseAttachment): Record<string, unknown> {
   }
 }
 
-export async function loadAppDataFromRelational(): Promise<AppData | null> {
+export async function loadAppDataFromRelational(opts?: {
+  /** When set (including `null`), empty-case path skips `getRelationalAuthUserId` (avoids a second hung Auth round-trip). */
+  emptyCaseUserId?: string | null
+}): Promise<AppData | null> {
   if (!supabase) return null
   const { normalizeAppData } = await import('../db')
 
@@ -367,7 +370,10 @@ export async function loadAppDataFromRelational(): Promise<AppData | null> {
   const cases = (casesRows as CaseRow[]).map(rowToCase)
   const caseIds = cases.map((c) => c.id)
   if (caseIds.length === 0) {
-    const uid = await getRelationalAuthUserId(supabase)
+    const uid =
+      opts && Object.prototype.hasOwnProperty.call(opts, 'emptyCaseUserId')
+        ? (opts.emptyCaseUserId ?? null)
+        : await getRelationalAuthUserId(supabase)
     const { data: selfRow } = uid
       ? await supabase.from('vc_profiles').select('*').eq('id', uid).maybeSingle()
       : { data: null as ProfileRow | null }
