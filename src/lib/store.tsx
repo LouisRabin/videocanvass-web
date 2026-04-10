@@ -277,9 +277,8 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   /** Auth session changes reload the dataset (relational backend only). */
   useEffect(() => {
     if (!relationalBackendEnabled() || !supabase) return
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async () => {
+    let debounceT: ReturnType<typeof setTimeout> | undefined
+    const reload = async () => {
       try {
         const d = await loadData()
         const next = ensurePocUsers(d)
@@ -289,8 +288,26 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       } catch (e) {
         console.warn('Auth state data reload failed:', e)
       }
+    }
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT' || (event as string) === 'USER_DELETED') {
+        if (debounceT) clearTimeout(debounceT)
+        debounceT = undefined
+        void reload()
+        return
+      }
+      if (debounceT) clearTimeout(debounceT)
+      debounceT = setTimeout(() => {
+        debounceT = undefined
+        void reload()
+      }, 250)
     })
-    return () => subscription.unsubscribe()
+    return () => {
+      subscription.unsubscribe()
+      if (debounceT) clearTimeout(debounceT)
+    }
   }, [])
 
   /**

@@ -113,45 +113,55 @@ export function LoginPage() {
     <Layout title="VideoCanvass" subtitle="Sign in to your workspace">
       <div style={vcAuthMainCenterWrap}>
         <div style={card}>
-          <div style={{ fontWeight: 900, fontSize: 18, color: vcGlassFgDarkReadable }}>
-            {mode === 'sign_in' ? 'Sign in' : 'Create account'}
-          </div>
-          {mode === 'sign_up' ? (
-            <>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Display name</span>
-                <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={field} autoComplete="name" />
-              </label>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Tax / ID number</span>
-                <input value={taxNumber} onChange={(e) => setTaxNumber(e.target.value)} style={field} autoComplete="off" />
-              </label>
-            </>
-          ) : null}
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Email</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={field}
-              autoComplete="email"
-            />
-          </label>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={field}
-              autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
-            />
-          </label>
-          {message ? <div style={{ color: message.includes('Check your email') ? '#047857' : '#b91c1c', fontSize: 14 }}>{message}</div> : null}
-          <button type="button" style={{ ...btnPrimary, opacity: busy ? 0.7 : 1 }} disabled={busy} onClick={() => void submit()}>
-            {busy ? 'Please wait…' : mode === 'sign_in' ? 'Sign in' : 'Create account'}
-          </button>
+          <form
+            style={{ display: 'grid', gap: 14 }}
+            onSubmit={(e) => {
+              e.preventDefault()
+              void submit()
+            }}
+          >
+            <div style={{ fontWeight: 900, fontSize: 18, color: vcGlassFgDarkReadable }}>
+              {mode === 'sign_in' ? 'Sign in' : 'Create account'}
+            </div>
+            {mode === 'sign_up' ? (
+              <>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Display name</span>
+                  <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={field} autoComplete="name" />
+                </label>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Tax / ID number</span>
+                  <input value={taxNumber} onChange={(e) => setTaxNumber(e.target.value)} style={field} autoComplete="off" />
+                </label>
+              </>
+            ) : null}
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Email</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                style={field}
+                autoComplete="email"
+              />
+            </label>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Password</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={field}
+                autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
+              />
+            </label>
+            {message ? (
+              <div style={{ color: message.includes('Check your email') ? '#047857' : '#b91c1c', fontSize: 14 }}>{message}</div>
+            ) : null}
+            <button type="submit" style={{ ...btnPrimary, opacity: busy ? 0.7 : 1 }} disabled={busy}>
+              {busy ? 'Please wait…' : mode === 'sign_in' ? 'Sign in' : 'Create account'}
+            </button>
+          </form>
           <button
             type="button"
             style={btnGhost}

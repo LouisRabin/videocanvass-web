@@ -9,11 +9,17 @@ function normUuid(s: string): string {
 }
 
 /**
+ * Concurrent `getSession()` calls contend on GoTrue's per-storage auth lock; parallel App + store + db paths
+ * caused orphaned-lock warnings, 10–12s timeouts, and cascading `signOut()` (see console: lock not released, steal).
+ */
+let usableSessionReadInFlight: Promise<Session | null> | null = null
+
+/**
  * Session we can treat as "signed in" for app bootstrap. Clears broken state:
  * no access token, or access token already expired (common after switching Supabase projects / env).
  * Without this, `getSession()` still has `user` while relational load blocks on dead JWT + slow `getUser()`.
  */
-export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Session | null> {
+async function readUsableSessionOnce(sb: SupabaseClient): Promise<Session | null> {
   const {
     data: { session },
   } = await sb.auth.getSession()
@@ -31,11 +37,51 @@ export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Ses
   return session
 }
 
+export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Session | null> {
+  if (usableSessionReadInFlight) {
+    return usableSessionReadInFlight
+  }
+  const p = readUsableSessionOnce(sb).finally(() => {
+    if (usableSessionReadInFlight === p) {
+      usableSessionReadInFlight = null
+    }
+  })
+  usableSessionReadInFlight = p
+  return p
+}
+
 /**
  * Same as {@link getUsableSessionOrSignOut} but bounded: `getSession()` can hang in some browsers / storage
  * states, which left SessionGate on “Loading…” forever with no route to {@link LoginPage}.
  */
 export const USABLE_SESSION_TIMEOUT_MS = 10_000
+
+/**
+ * Same rules as {@link getUsableSessionOrSignOut} but **without** calling `getSession()`.
+ * Use the session object from `onAuthStateChange` so a post-`SIGNED_IN` hang in `getSession()` does not trip
+ * {@link getUsableSessionOrSignOutWithTimeout}'s race and spuriously `signOut()` (login screen bounce).
+ */
+export function sessionLooksUsableLocally(session: Session | null | undefined): session is Session {
+  if (!session) return false
+  if (!readUserId(session.user)) return false
+  if (!session.access_token) return false
+  const now = Math.floor(Date.now() / 1000)
+  const exp = session.expires_at
+  if (typeof exp === 'number' && exp <= now) return false
+  return true
+}
+
+/** Prefer validating `hint` from `onAuthStateChange` before touching `getSession()`. */
+export async function resolveUsableSessionWithTimeout(
+  sb: SupabaseClient,
+  hint: Session | null | undefined,
+  ms: number = USABLE_SESSION_TIMEOUT_MS,
+): Promise<Session | null> {
+  if (sessionLooksUsableLocally(hint)) {
+    return hint
+  }
+  return getUsableSessionOrSignOutWithTimeout(sb, ms)
+}
 
 export async function getUsableSessionOrSignOutWithTimeout(
   sb: SupabaseClient,

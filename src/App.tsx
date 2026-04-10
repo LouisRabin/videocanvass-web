@@ -4,7 +4,12 @@ import { hasCaseAccess } from './lib/casePermissions'
 import { relationalBackendEnabled, relationalBackendEnvRaw } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
-import { getUsableSessionOrSignOutWithTimeout } from './lib/supabaseAuthSession'
+import type { Session } from '@supabase/supabase-js'
+import {
+  getUsableSessionOrSignOutWithTimeout,
+  resolveUsableSessionWithTimeout,
+  sessionLooksUsableLocally,
+} from './lib/supabaseAuthSession'
 import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
@@ -108,12 +113,15 @@ function SessionGate() {
     [],
   )
 
-  const syncMfaGate = useCallback(async () => {
+  const syncMfaGate = useCallback(async (trustedSession?: Session | null) => {
     if (!relationalBackendEnabled() || !supabase) {
       setMfaGate('off')
       return
     }
-    const session = await getUsableSessionOrSignOutWithTimeout(supabase)
+    const session =
+      trustedSession && sessionLooksUsableLocally(trustedSession)
+        ? trustedSession
+        : await getUsableSessionOrSignOutWithTimeout(supabase)
     if (!session?.user) {
       setMfaGate('off')
       return
@@ -198,7 +206,7 @@ function SessionGate() {
         if (cancelled) return
         applySession(session)
         setAuthResolved(true)
-        void syncMfaGate()
+        void syncMfaGate(session)
         // #region agent log
         fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
           method: 'POST',
@@ -238,16 +246,38 @@ function SessionGate() {
 
     const {
       data: { subscription },
-    } = sb.auth.onAuthStateChange((_event, session) => {
+    } = sb.auth.onAuthStateChange((event, session) => {
       void (async () => {
         if (!session?.user) {
           applySession(null)
           setMfaGate('off')
           return
         }
-        const usable = await getUsableSessionOrSignOutWithTimeout(sb)
+        const usable = await resolveUsableSessionWithTimeout(sb, session)
+        // #region agent log
+        fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
+          body: JSON.stringify({
+            sessionId: 'abc55e',
+            location: 'App.tsx:SessionGate:onAuthStateChange',
+            message: 'auth state',
+            data: {
+              event,
+              usedHint: sessionLooksUsableLocally(session),
+              hasUsable: Boolean(usable?.user),
+            },
+            timestamp: Date.now(),
+            hypothesisId: 'H-bounce',
+          }),
+        }).catch(() => {})
+        // #endregion
         applySession(usable)
-        void syncMfaGate()
+        if (!usable?.user) {
+          setMfaGate('off')
+          return
+        }
+        void syncMfaGate(usable)
       })()
     })
     return () => {
