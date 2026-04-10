@@ -224,6 +224,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     let alive = true
     ;(async () => {
       let bootstrapOutcome: 'ok' | 'catch' | 'unknown' = 'unknown'
+      let bootstrapError: string | undefined
       try {
         const loaded = await new Promise<AppData>((resolve, reject) => {
           const t = setTimeout(() => {
@@ -260,6 +261,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       } catch (e) {
         console.warn('Store bootstrap failed:', e)
         bootstrapOutcome = 'catch'
+        bootstrapError = e instanceof Error ? e.message : String(e)
         if (alive) {
           const fallback = normalizeAppData(DEFAULT_DATA)
           dataRef.current = fallback
@@ -275,7 +277,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
             location: 'store.tsx:bootstrap',
             message: 'store_ready',
             hypothesisId: 'E',
-            data: { bootstrapOutcome },
+            data: { bootstrapOutcome, ...(bootstrapError ? { bootstrapError } : {}) },
           })
           setReady(true)
         }

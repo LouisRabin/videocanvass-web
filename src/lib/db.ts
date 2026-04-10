@@ -21,6 +21,10 @@ const STORE_KEY = 'videocanvass:data:v1'
 
 /** Cap how long first relational pull can block store bootstrap (slow network / hung PostgREST). */
 const RELATIONAL_BOOTSTRAP_REMOTE_MS = 22_000
+/** `getSession()` / usable-session cleanup can stall in some browsers; must finish before store's 60s outer timeout. */
+const RELATIONAL_SESSION_READY_MS = 12_000
+/** Dynamic import of sync chunk can stall on slow CDN; unbounded await caused 60s store bootstrap failures. */
+const RELATIONAL_SYNC_IMPORT_MS = 20_000
 /** Cap legacy `vc_app_state` fetch so SPA reaches UI when row is missing or API stalls. */
 const SHARED_TABLE_BOOTSTRAP_MS = 14_000
 
@@ -361,10 +365,25 @@ export async function loadData(): Promise<AppData> {
   if (relationalBackendEnabled() && supabase) {
     const sb = supabase
     // Drop expired / tokenless sessions so we do not treat them as "logged in" (blocks login + remote load).
-    const quickSession = await getUsableSessionOrSignOut(sb)
+    const sessionOrTimeout = await Promise.race([
+      getUsableSessionOrSignOut(sb).then((s) => ({ tag: 'ok' as const, s })),
+      new Promise<{ tag: 'timeout' }>((resolve) => {
+        setTimeout(() => resolve({ tag: 'timeout' }), RELATIONAL_SESSION_READY_MS)
+      }),
+    ])
+    if (sessionOrTimeout.tag === 'timeout') {
+      console.warn(`[db] getUsableSessionOrSignOut exceeded ${RELATIONAL_SESSION_READY_MS}ms`)
+      setSyncStatus({
+        mode: 'local_fallback',
+        message: 'Session check timed out; using local cache. Refresh if data looks wrong.',
+      })
+      const local = await loadLocalDataBounded(8_000)
+      return local ?? DEFAULT_DATA
+    }
+    const quickSession = sessionOrTimeout.s
     if (!quickSession?.user) {
       setSyncStatus({ mode: 'local_fallback', message: 'Sign in to load cloud data' })
-      const local = await loadLocalData()
+      const local = await loadLocalDataBounded(8_000)
       return local ?? DEFAULT_DATA
     }
 
@@ -376,7 +395,24 @@ export async function loadData(): Promise<AppData> {
       })
     }
 
-    const { loadAppDataFromRelational } = await import('./relational/sync')
+    let loadAppDataFromRelational: typeof import('./relational/sync').loadAppDataFromRelational
+    try {
+      const mod = await Promise.race([
+        import('./relational/sync'),
+        new Promise<never>((_, rej) => {
+          setTimeout(() => rej(new Error(`relational/sync import timed out after ${RELATIONAL_SYNC_IMPORT_MS}ms`)), RELATIONAL_SYNC_IMPORT_MS)
+        }),
+      ])
+      loadAppDataFromRelational = mod.loadAppDataFromRelational
+    } catch (e) {
+      console.warn('Relational sync module load failed:', e)
+      setSyncStatus({
+        mode: 'local_fallback',
+        message: 'Could not load database sync; using local data. Check network and refresh.',
+      })
+      const local = await loadLocalDataBounded(8_000)
+      return local ?? DEFAULT_DATA
+    }
     type RaceOk = { tag: 'ok'; value: Awaited<ReturnType<typeof loadAppDataFromRelational>> }
     type RaceTo = { tag: 'timeout' }
     const remoteRaced = await Promise.race([
@@ -394,7 +430,7 @@ export async function loadData(): Promise<AppData> {
         mode: 'local_fallback',
         message: 'Database load timed out; you can use local data or retry after sign-in.',
       })
-      const local = await loadLocalData()
+      const local = await loadLocalDataBounded(8_000)
       return local ?? DEFAULT_DATA
     }
     if (remote) {
@@ -412,7 +448,7 @@ export async function loadData(): Promise<AppData> {
       return remote
     }
     setSyncStatus({ mode: 'local_fallback', message: 'Database load failed or empty' })
-    const local = await loadLocalData()
+    const local = await loadLocalDataBounded(8_000)
     return local ?? DEFAULT_DATA
   }
 
@@ -497,6 +533,20 @@ async function loadLocalData(): Promise<AppData | null> {
     return normalizeAppData(parsed.data)
   } catch (err) {
     console.warn('Local storage load failed:', err)
+    return null
+  }
+}
+
+/** Avoid bootstrap hangs when IndexedDB never settles (mirrors setItem timeout pattern). */
+async function loadLocalDataBounded(ms: number): Promise<AppData | null> {
+  try {
+    return await Promise.race([
+      loadLocalData(),
+      new Promise<AppData | null>((resolve) => {
+        setTimeout(() => resolve(null), ms)
+      }),
+    ])
+  } catch {
     return null
   }
 }
