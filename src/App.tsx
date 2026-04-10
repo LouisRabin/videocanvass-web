@@ -36,6 +36,10 @@ const GlobalCanvassAdminPage = lazy(async () => {
   return { default: m.GlobalCanvassAdminPage }
 })
 
+function sessionUserIdMatchesStoreUser(sessionId: string, storeUserId: string): boolean {
+  return sessionId.trim().toLowerCase() === storeUserId.trim().toLowerCase()
+}
+
 const routeSuspenseFallback = (
   <div
     style={{
@@ -146,15 +150,26 @@ function SessionGate() {
 
   const relationalUser = useMemo((): AppUser | null => {
     if (!sessionUserId) return null
-    const fromStore = data.users.find((u) => u.id === sessionUserId)
+    const fromStore =
+      data.users.find((u) => u.id === sessionUserId) ??
+      data.users.find((u) => sessionUserIdMatchesStoreUser(sessionUserId, u.id))
     if (fromStore) return fromStore
-    if (!sessionMeta) return null
+    if (sessionMeta) {
+      return {
+        id: sessionUserId,
+        displayName: sessionMeta.displayName,
+        email: sessionMeta.email,
+        taxNumber: sessionMeta.taxNumber,
+        /** Placeholder until `vc_profiles` row is merged from the store. */
+        createdAt: 0,
+      }
+    }
+    // Avoid indefinite "Loading profile…" if auth metadata is late or Strict Mode reordered state.
     return {
       id: sessionUserId,
-      displayName: sessionMeta.displayName,
-      email: sessionMeta.email,
-      taxNumber: sessionMeta.taxNumber,
-      /** Placeholder until `vc_profiles` row is merged from the store. */
+      displayName: 'User',
+      email: '',
+      taxNumber: '',
       createdAt: 0,
     }
   }, [data.users, sessionMeta, sessionUserId])

@@ -492,12 +492,32 @@ export async function saveData(data: AppData): Promise<AppData> {
       setSyncStatus({ mode: 'supabase_ok', message: 'Saved to database' })
       return payloadToSave
     } catch (e) {
-      console.warn('Relational save failed:', e)
+      let err: unknown = e
+      const detail = formatDbErrorForSync(err)
+      const looksLikeRls = /row-level security|\brls\b/i.test(detail)
+      if (looksLikeRls) {
+        const { data: refData, error: refErr } = await supabase.auth.refreshSession()
+        if (!refErr && refData.session) {
+          const retryAuth = await ensureRelationalClientSession(supabase)
+          if (retryAuth) {
+            try {
+              const { pushAppDataToRelational } = await import('./relational/sync')
+              await pushAppDataToRelational(payloadToSave, retryAuth.userId)
+              await localforage.setItem(STORE_KEY, payloadToSave)
+              setSyncStatus({ mode: 'supabase_ok', message: 'Saved to database' })
+              return payloadToSave
+            } catch (e2) {
+              err = e2
+            }
+          }
+        }
+      }
+      console.warn('Relational save failed:', err)
       await localforage.setItem(STORE_KEY, payloadToSave)
-      const detail = formatDbErrorForSync(e)
-      const clipped = detail.length > 200 ? `${detail.slice(0, 197)}…` : detail
+      const finalDetail = formatDbErrorForSync(err)
+      const clipped = finalDetail.length > 200 ? `${finalDetail.slice(0, 197)}…` : finalDetail
       const rlsHint =
-        /row-level security|\brls\b/i.test(detail) ? ' Try refreshing the page or signing in again.' : ''
+        /row-level security|\brls\b/i.test(finalDetail) ? ' Try refreshing the page or signing in again.' : ''
       setSyncStatus({ mode: 'local_fallback', message: `Database save failed: ${clipped}${rlsHint}` })
       return payloadToSave
     }
