@@ -31,6 +31,40 @@ export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Ses
   return session
 }
 
+/**
+ * Same as {@link getUsableSessionOrSignOut} but bounded: `getSession()` can hang in some browsers / storage
+ * states, which left SessionGate on “Loading…” forever with no route to {@link LoginPage}.
+ */
+export const USABLE_SESSION_TIMEOUT_MS = 10_000
+
+export async function getUsableSessionOrSignOutWithTimeout(
+  sb: SupabaseClient,
+  ms: number = USABLE_SESSION_TIMEOUT_MS,
+): Promise<Session | null> {
+  type Ok = { t: 'ok'; s: Session | null }
+  type To = { t: 'to' }
+  const r = await Promise.race([
+    getUsableSessionOrSignOut(sb).then((s): Ok => ({ t: 'ok', s })),
+    new Promise<To>((resolve) => {
+      setTimeout(() => resolve({ t: 'to' }), ms)
+    }),
+  ])
+  if (r.t === 'to') {
+    console.warn(`[auth] getUsableSessionOrSignOut timed out after ${ms}ms — clearing local auth`)
+    try {
+      await sb.auth.signOut({ scope: 'local' })
+    } catch {
+      try {
+        await sb.auth.signOut()
+      } catch {
+        /* ignore */
+      }
+    }
+    return null
+  }
+  return r.s
+}
+
 /** Seconds before access-token expiry when we proactively refresh (PostgREST uses JWT `sub` as `auth.uid()`). */
 const WRITE_AUTH_REFRESH_BUFFER_SEC = 120
 
