@@ -1,9 +1,16 @@
 /**
  * Case access and edit rules for owners vs team members (collaborators).
  *
- * Owner: full control. Team member: add addresses; edit locations they created OR in "Needs Follow up";
- * delete only locations they created; add tracks/points; edit/delete tracks and points they created;
- * cannot rename/delete case or manage collaborators. Legacy rows with empty createdByUserId count as the case owner.
+ * **Read access** (`hasCaseAccess`): owner, any collaborator (viewer or editor), or **unit member** when the case
+ * has `unitId` and the user’s `myUnitIds` (from `vc_user_unit_members`) contains that unit — matches `vc_case_visible`.
+ *
+ * **Mutations** (`canMutateCaseContent`): owner or collaborator with role **editor** only — matches Postgres
+ * `vc_case_editor` / RLS on `vc_locations`, `vc_tracks`, etc. **Viewers** may open the case but cannot
+ * create or edit content (avoids UI allowing actions that the database rejects).
+ *
+ * Per-entity rules for editors: edit/delete locations they created (or "Needs follow up" for locations),
+ * tracks/points/attachments they created; cannot rename/delete case or manage collaborators (owner only).
+ * Legacy rows with empty `createdByUserId` count as the case owner for creator checks.
  */
 
 import type { AppData, CaseAttachment, CaseFile, Location, Track, TrackPoint } from './types'
@@ -32,11 +39,36 @@ function isCaseCollaborator(data: AppData, caseId: string, userId: string): bool
   return data.caseCollaborators.some((cc) => cc.caseId === caseId && cc.userId === userId)
 }
 
+function normId(s: string): string {
+  return s.trim().toLowerCase()
+}
+
+/** Case is assigned to a unit and the signed-in user’s merged `myUnitIds` includes it. */
+function isCaseVisibleViaUnit(data: AppData, c: CaseFile): boolean {
+  const uid = (c.unitId ?? '').trim()
+  if (!uid) return false
+  const key = normId(uid)
+  return data.myUnitIds.some((x) => normId(x) === key)
+}
+
 export function hasCaseAccess(data: AppData, caseId: string, userId: string): boolean {
   const c = findCase(data, caseId)
   if (!c) return false
   if (isCaseOwner(c, userId)) return true
-  return isCaseCollaborator(data, caseId, userId)
+  if (isCaseCollaborator(data, caseId, userId)) return true
+  return isCaseVisibleViaUnit(data, c)
+}
+
+/**
+ * True if this user may INSERT/UPDATE/DELETE case content (locations, tracks, points, attachments).
+ * Aligns with `public.vc_case_editor` in Supabase RLS: owner or collaborator with `role === 'editor'`.
+ */
+export function canMutateCaseContent(data: AppData, caseId: string, actorUserId: string): boolean {
+  const c = findCase(data, caseId)
+  if (!c) return false
+  if (isCaseOwner(c, actorUserId)) return true
+  const row = data.caseCollaborators.find((cc) => cc.caseId === caseId && cc.userId === actorUserId)
+  return row?.role === 'editor'
 }
 
 function effectiveLocationCreatorId(loc: Location, caseOwnerId: string): string {
@@ -62,14 +94,14 @@ export function canDeleteCase(data: AppData, caseId: string, actorUserId: string
 
 /** Create locations, tracks, track points (and similar). */
 export function canAddCaseContent(data: AppData, caseId: string, actorUserId: string): boolean {
-  return hasCaseAccess(data, caseId, actorUserId)
+  return canMutateCaseContent(data, caseId, actorUserId)
 }
 
 export function canEditLocation(data: AppData, actorUserId: string, loc: Location): boolean {
   const c = findCase(data, loc.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!hasCaseAccess(data, loc.caseId, actorUserId)) return false
+  if (!canMutateCaseContent(data, loc.caseId, actorUserId)) return false
   const ownerId = c.ownerUserId
   if (effectiveLocationCreatorId(loc, ownerId) === actorUserId) return true
   if (loc.status === 'camerasNoAnswer') return true
@@ -80,7 +112,7 @@ export function canDeleteLocation(data: AppData, actorUserId: string, loc: Locat
   const c = findCase(data, loc.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!hasCaseAccess(data, loc.caseId, actorUserId)) return false
+  if (!canMutateCaseContent(data, loc.caseId, actorUserId)) return false
   return effectiveLocationCreatorId(loc, c.ownerUserId) === actorUserId
 }
 
@@ -88,7 +120,7 @@ export function canEditTrack(data: AppData, actorUserId: string, track: Track): 
   const c = findCase(data, track.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!hasCaseAccess(data, track.caseId, actorUserId)) return false
+  if (!canMutateCaseContent(data, track.caseId, actorUserId)) return false
   return effectiveTrackCreatorId(track, c.ownerUserId) === actorUserId
 }
 
@@ -104,7 +136,7 @@ export function canEditTrackPoint(data: AppData, actorUserId: string, pt: TrackP
   const c = findCase(data, pt.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!hasCaseAccess(data, pt.caseId, actorUserId)) return false
+  if (!canMutateCaseContent(data, pt.caseId, actorUserId)) return false
   return effectiveTrackPointCreatorId(pt, c.ownerUserId) === actorUserId
 }
 
@@ -124,7 +156,7 @@ export function canEditCaseAttachment(data: AppData, actorUserId: string, att: C
   const c = findCase(data, att.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!hasCaseAccess(data, att.caseId, actorUserId)) return false
+  if (!canMutateCaseContent(data, att.caseId, actorUserId)) return false
   return effectiveCaseAttachmentCreatorId(att, c.ownerUserId) === actorUserId
 }
 

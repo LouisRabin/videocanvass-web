@@ -23,6 +23,12 @@ This document summarizes how the web client merges **local IndexedDB / localfora
 - Entity ids are client-generated (`newId`) where applicable; repeats should upsert or no-op server-side.
 - Tombstone / deleted-id lists in `AppData` must stay consistent with relational deletes so merges do not resurrect rows.
 
+## Relational pull scope (known behavior)
+
+- `loadAppDataFromRelational` loads **all** cases (and children) visible under RLS for the signed-in user, not a single case id. That matches Postgres visibility in one round trip; narrowing by case would require new RPCs or filtered queries.
+- `myUnitIds` is filled from `vc_user_unit_members` for the session user so the SPA can mirror `vc_case_visible` (unit-assigned cases) in routing and lists.
+- Background **footprint / bounds** updates use normal `updateLocation` after a location already exists; they are intentional persistence of geometry, not a second “save” button.
+
 ## Adding backend features
 
 1. Prefer extending `relational/sync.ts` row mappers and RLS-aligned queries rather than scattering fetch logic in components.

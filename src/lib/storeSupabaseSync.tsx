@@ -82,6 +82,7 @@ export function useSupabaseAppDataSync(params: {
         'vc_case_collaborators',
         'vc_case_attachments',
         'vc_profiles',
+        'vc_user_unit_members',
       ] as const
       const channel = sb.channel('vc_relational_changes')
       for (const table of tables) {

@@ -147,10 +147,13 @@ export function CasesPage(props: {
 
   const teamMemberCases = useMemo(() => {
     const uid = props.currentUser.id
-    return data.cases.filter((c) =>
-      data.caseCollaborators.some((cc) => cc.caseId === c.id && cc.userId === uid),
-    )
-  }, [data.cases, data.caseCollaborators, props.currentUser.id])
+    return data.cases.filter((c) => {
+      if (data.caseCollaborators.some((cc) => cc.caseId === c.id && cc.userId === uid)) return true
+      const u = (c.unitId ?? '').trim().toLowerCase()
+      if (!u) return false
+      return data.myUnitIds.some((x) => x.trim().toLowerCase() === u)
+    })
+  }, [data.cases, data.caseCollaborators, data.myUnitIds, props.currentUser.id])
 
   const [lifecycleFilter, setLifecycleFilter] = useState<'open' | 'closed'>('open')
 

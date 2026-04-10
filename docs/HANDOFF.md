@@ -1,6 +1,12 @@
 # VideoCanvass Web — engineering handoff
 
-Last updated: 2026-04-09 (session handoff).
+Last updated: 2026-04-10 (case roadmap + unit access handoff).
+
+## Recent session (case feature roadmap)
+
+- **Case page splits:** `CaseAddressesListPanel` ([`src/app/case/CaseListTab.tsx`](../src/app/case/CaseListTab.tsx)), `CaseWorkspaceModeTabs` ([`CaseMapTab.tsx`](../src/app/case/CaseMapTab.tsx)), `CaseMapTrackFloatingOverlays` ([`CaseTrackingTab.tsx`](../src/app/case/CaseTrackingTab.tsx)), track import in [`useCaseTrackImport.ts`](../src/app/case/hooks/useCaseTrackImport.ts). [`CasePage.tsx`](../src/app/CasePage.tsx) has a file-top **section map** comment.
+- **Unit visibility:** `AppData.myUnitIds` from `vc_user_unit_members`; [`hasCaseAccess`](../src/lib/casePermissions.ts) matches `vc_case_visible` for read; mutations still follow `vc_case_editor`. Team case list includes unit-assigned cases. See root [`HANDOFF.md`](../HANDOFF.md) for tables and gotchas.
+- **Sync:** [`SYNC_CONTRACT.md`](SYNC_CONTRACT.md) expanded (full relational pull, `myUnitIds`, footprint writes); Realtime watches `vc_user_unit_members` in [`storeSupabaseSync.tsx`](../src/lib/storeSupabaseSync.tsx).
 
 ## What this app is
 
@@ -86,7 +92,9 @@ Constants: `RELATIONAL_AUTH_USER_ID_TIMEOUT_MS`, `RELATIONAL_BOOTSTRAP_REMOTE_MS
 | Store / bootstrap | `src/lib/store.tsx`, `src/lib/storeSupabaseSync.tsx` |
 | Routing / session UI | `src/App.tsx` (`SessionGate`, mock vs login) |
 | Deploy / DB ops doc | `docs/DEPLOY_SUPABASE_VERCEL.md` |
-| High-level sync rules | `docs/SYNC_CONTRACT.md` (if present) |
+| High-level sync rules | `docs/SYNC_CONTRACT.md` |
+| Case list / map tab extractions | `src/app/case/CaseListTab.tsx`, `CaseMapTab.tsx`, `CaseTrackingTab.tsx` |
+| Case access (incl. unit) | `src/lib/casePermissions.ts` |
 
 ## API routes (Vercel)
 

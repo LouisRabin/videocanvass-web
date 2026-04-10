@@ -194,6 +194,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     deletedTrackPointIds: [],
     deletedCaseAttachmentIds: [],
     deletedCaseCollaboratorKeys: [],
+    myUnitIds: [],
   })
   const dataRef = useRef<AppData>({
     version: 1,
@@ -210,6 +211,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     deletedTrackPointIds: [],
     deletedCaseAttachmentIds: [],
     deletedCaseCollaboratorKeys: [],
+    myUnitIds: [],
   })
   /** Last seen Supabase `vc_app_state.updated_at` to skip redundant full pulls. */
   const lastRemoteUpdatedAtRef = useRef<string | null>(null)

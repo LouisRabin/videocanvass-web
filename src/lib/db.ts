@@ -120,6 +120,7 @@ function migrateCreatedByUserIds(data: AppData): AppData {
 function migrateCaseOrgAndAttachments(data: AppData): AppData {
   return {
     ...data,
+    myUnitIds: data.myUnitIds ?? [],
     deletedCaseCollaboratorKeys: data.deletedCaseCollaboratorKeys ?? [],
     cases: data.cases.map((c) => ({
       ...c,
@@ -293,6 +294,7 @@ export function appDataSyncFingerprint(d: AppData): string {
 
   return JSON.stringify({
     v: d.version,
+    mu: sortStrs(d.myUnitIds),
     dc: sortStrs(d.deletedCaseIds),
     dl: sortStrs(d.deletedLocationIds),
     dt: sortStrs(d.deletedTrackIds),
@@ -358,6 +360,8 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
     users: mergeById(local.users, remote.users, (x) => x.id, (x) => x.createdAt),
     caseCollaborators: mergeCollaborators(locCollab, remCollab),
     caseAttachments: mergeById(locAtt, remAtt, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
+    // Populated from relational pull (`vc_user_unit_members`); treat remote as source of truth when merging.
+    myUnitIds: remote.myUnitIds ?? local.myUnitIds,
   })
 }
 
@@ -594,7 +598,10 @@ export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
   }
 }
 
-/** Merge latest remote JSON blob into the current in-memory dataset (per-entity LWW). */
+/**
+ * Merge latest remote workspace into the current in-memory dataset (per-entity LWW).
+ * Relational mode: full pull of RLS-visible rows via `loadAppDataFromRelational` (see SYNC_CONTRACT).
+ */
 export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | null> {
   if (relationalBackendEnabled() && supabase) {
     const quick = await getUsableSessionOrSignOut(supabase)

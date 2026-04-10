@@ -161,6 +161,11 @@ export const AppDataSchema = z.object({
   deletedCaseAttachmentIds: z.array(z.string()).default([]),
   /** `${caseId}::${userId}` — removed collaborators so merge/push cannot resurrect rows (case/user ids must not contain `::`). */
   deletedCaseCollaboratorKeys: z.array(z.string()).default([]),
+  /**
+   * Relational: unit ids the signed-in user belongs to (`vc_user_unit_members`), lowercased UUID strings.
+   * Used with `CaseFile.unitId` so app routing matches `vc_case_visible` (unit-wide case access).
+   */
+  myUnitIds: z.array(z.string()).default([]),
 })
 export type AppData = z.infer<typeof AppDataSchema>
 
@@ -179,6 +184,7 @@ export const DEFAULT_DATA: AppData = {
   deletedTrackPointIds: [],
   deletedCaseAttachmentIds: [],
   deletedCaseCollaboratorKeys: [],
+  myUnitIds: [],
 }
 
 export function caseAttachmentKindLabel(k: CaseAttachmentKind): string {

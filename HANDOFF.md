@@ -4,6 +4,36 @@ Consolidated notes for whoever picks up **Case page**, **geocoding**, **sync**, 
 
 ---
 
+## Case page — structure refactor + access (2026-04)
+
+Implemented the **case feature roadmap** (extract modules, sync notes, unit visibility parity). Do not confuse with the old single-file-only mental model.
+
+### File map (`CasePage.tsx`)
+
+A **file-top comment** lists seven regions: props/store, workspace mode, map/geocode, locations, tracks, chrome/layout, modals/sync. `CasePage.tsx` is still large; new UI lives under `src/app/case/` where noted below.
+
+### Extracted modules (`src/app/case/`)
+
+| Piece | File / export | Role |
+|--------|----------------|------|
+| Locations list (bottom sheet, map column) | [`CaseListTab.tsx`](src/app/case/CaseListTab.tsx) — `CaseAddressesListPanel` | Filters, rows, status actions, dock scrim when tools open |
+| Video vs Subject tabs | [`CaseMapTab.tsx`](src/app/case/CaseMapTab.tsx) — `CaseWorkspaceModeTabs` | Primary workspace mode switcher |
+| Track selection on map | [`CaseTrackingTab.tsx`](src/app/case/CaseTrackingTab.tsx) — `CaseMapTrackFloatingOverlays` | `variant="web"` \| `"narrow"` for floating track pills |
+| Coordinate import modal wiring | [`hooks/useCaseTrackImport.ts`](src/app/case/hooks/useCaseTrackImport.ts) | Modal open state + create track / bulk import points |
+
+### Unit-wide case access (app ↔ Postgres)
+
+- **`AppData.myUnitIds`:** UUID strings for the signed-in user from `vc_user_unit_members` (relational load in [`sync.ts`](src/lib/relational/sync.ts); merged in [`db.ts`](src/lib/db.ts); fingerprint includes them).
+- **`hasCaseAccess`** ([`casePermissions.ts`](src/lib/casePermissions.ts)): owner, collaborator, **or** case has `unitId` and user’s `myUnitIds` contains it — aligns read routing with `vc_case_visible`. **Mutations** still require owner or **editor** collaborator (`vc_case_editor`); unit-only users are view-only.
+- **Cases list — Team tab** ([`CasesPage.tsx`](src/app/CasesPage.tsx)): includes cases visible via unit assignment, not only explicit collaborator rows.
+- **Realtime:** [`storeSupabaseSync.tsx`](src/lib/storeSupabaseSync.tsx) subscribes to `vc_user_unit_members` (poll still runs every 8s if WS is throttled).
+
+### Sync contract
+
+[`docs/SYNC_CONTRACT.md`](docs/SYNC_CONTRACT.md) documents full relational pull scope, `myUnitIds`, and background footprint/geometry `updateLocation` writes.
+
+---
+
 ## Case page — web toolbar (wide) and list
 
 ### Accordion sections
@@ -58,8 +88,9 @@ Consolidated notes for whoever picks up **Case page**, **geocoding**, **sync**, 
 | Avoid `JSON.stringify` of full `AppData` after pulls | [`src/lib/db.ts`](src/lib/db.ts) — `appDataSyncFingerprint()` |
 | Serialize concurrent pull/merge | [`src/lib/store.tsx`](src/lib/store.tsx) — `syncPullInFlightRef` |
 | Poll interval | [`src/lib/db.ts`](src/lib/db.ts) — `REMOTE_SYNC_POLL_MS` (8s) |
+| Unit membership in `AppData` | [`src/lib/types.ts`](src/lib/types.ts) — `myUnitIds`; loaded in [`relational/sync.ts`](src/lib/relational/sync.ts) |
 
-Relational and JSON-blob merge paths both use the fingerprint for “no change → skip `setState` / IndexedDB”.
+Relational and JSON-blob merge paths both use the fingerprint for “no change → skip `setState` / IndexedDB”. Fingerprint includes sorted `myUnitIds`.
 
 ---
 
@@ -68,12 +99,17 @@ Relational and JSON-blob merge paths both use the fingerprint for “no change �
 | Area | File |
 |------|------|
 | Case shell, toolbar, list reveal, map column, DVR panel, seam flags | [`src/app/CasePage.tsx`](src/app/CasePage.tsx) |
+| Addresses list panel (sheet), workspace tab bar, track map overlays | [`src/app/case/CaseListTab.tsx`](src/app/case/CaseListTab.tsx), [`CaseMapTab.tsx`](src/app/case/CaseMapTab.tsx), [`CaseTrackingTab.tsx`](src/app/case/CaseTrackingTab.tsx) |
+| Track import modal hook | [`src/app/case/hooks/useCaseTrackImport.ts`](src/app/case/hooks/useCaseTrackImport.ts) |
+| Read vs mutate / unit access | [`src/lib/casePermissions.ts`](src/lib/casePermissions.ts) |
 | Drawers, pills, map chrome | [`src/app/case/CasePageChrome.tsx`](src/app/case/CasePageChrome.tsx) |
 | Geocode hook | [`src/app/case/hooks/useCaseGeocodeSearch.ts`](src/app/case/hooks/useCaseGeocodeSearch.ts) |
 | Map ref / `getCenter` | [`src/app/AddressesMapLibre.tsx`](src/app/AddressesMapLibre.tsx) |
 | DVR calculator step + modals | [`src/app/ProbativeDvrFlow.tsx`](src/app/ProbativeDvrFlow.tsx) |
 | Store + sync effects | [`src/lib/store.tsx`](src/lib/store.tsx) |
-| Persist / fingerprint | [`src/lib/db.ts`](src/lib/db.ts) |
+| Relational pull/push + `myUnitIds` load | [`src/lib/relational/sync.ts`](src/lib/relational/sync.ts) |
+| Realtime + poll subscriptions | [`src/lib/storeSupabaseSync.tsx`](src/lib/storeSupabaseSync.tsx) |
+| Persist / fingerprint / merge | [`src/lib/db.ts`](src/lib/db.ts) |
 | Outside-dismiss | [`src/app/case/hooks/useMapPaneOutsideDismiss.ts`](src/app/case/hooks/useMapPaneOutsideDismiss.ts) |
 
 ---
@@ -102,4 +138,4 @@ Relational and JSON-blob merge paths both use the fingerprint for “no change �
 
 ---
 
-*Last updated: handoff pass (Case toolbar, list reveal, geocode US + map bias, sync fingerprint, DVR toolbar). Adjust from git history as needed.*
+*Last updated: 2026-04-10 — case module extractions (`CaseListTab` / `CaseMapTab` / `CaseTrackingTab`, `useCaseTrackImport`), `myUnitIds` + `hasCaseAccess` unit parity, `SYNC_CONTRACT` + relational/realtime notes. Prior: Case toolbar, list reveal, geocode US + map bias, sync fingerprint, DVR toolbar.*

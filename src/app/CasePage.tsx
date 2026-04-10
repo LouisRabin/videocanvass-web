@@ -25,14 +25,15 @@ import {
   canEditLocation,
   canEditTrack,
   canEditTrackPoint,
+  hasCaseAccess,
 } from '../lib/casePermissions'
 import { processCaseImageFile } from '../lib/caseImageUpload'
 import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track, TrackPoint } from '../lib/types'
-import { caseAttachmentKindLabel, statusColor, statusLabel } from '../lib/types'
+import { caseAttachmentKindLabel, statusColor } from '../lib/types'
 import { GEOCODE_SCOPE, reverseGeocodeAddressText, type PlaceSuggestion } from '../lib/geocode'
 import { fetchBuildingFootprint } from '../lib/building'
 import { buildResolvedTrackColorMap, TRACK_DEFAULT_COLORS_FIRST_FOUR } from '../lib/trackColors'
-import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../lib/timeFormat'
+import { parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../lib/timeFormat'
 import { DvrCalculatorStep, DvrSingleDateTimePicker, ProbativeDvrFlowModals } from './ProbativeDvrFlow'
 import { CASE_DESCRIPTION_MAX_CHARS, clampCaseDescription } from '../lib/caseMeta'
 import {
@@ -45,7 +46,19 @@ import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/ge
 import { useTargetMode } from '../lib/targetMode'
 import { COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 
-// See docs/CODEMAP.md; geocode/footprint policy in HANDOFF.md.
+/**
+ * Case workspace (single case): high-level map of this file for maintainers.
+ *
+ * 1. **Props / store** — `useStore` CRUD, permission memos (`canAddCaseContentHere`, …).
+ * 2. **Workspace mode** — `caseTab` (addresses vs tracking), `viewMode` (map vs list); see `CaseWorkspaceModeTabs`.
+ * 3. **Map + geocode** — `AddressesMapLibre`, address search, footprint queue, `mapRef` interactions.
+ * 4. **Locations** — list filters, selection, canvass result queue, DVR / probative flows.
+ * 5. **Tracks** — visibility, import (`useCaseTrackImport`), playback, dock panels (`mapToolsDock*`).
+ * 6. **Chrome / layout** — wide vs narrow shells, `WebCaseWorkspace`, glass toolbars, basemap cycle.
+ * 7. **Modals & sync** — attachments, notes, import wizard, `CaseInlineSyncBar`, undo snackbar.
+ *
+ * Geocode / footprint policy: HANDOFF.md. Module index: docs/CODEMAP.md.
+ */
 
 import {
   appendToNotes,
@@ -78,7 +91,6 @@ import {
   LegendChip,
   LocationDrawer,
   TrackPointDrawer,
-  RowStatusButton,
   btn,
   btnDanger,
   btnPrimary,
@@ -89,11 +101,7 @@ import {
   caseMetaInlineNameEdit,
   field,
   label,
-  listHeaderRow,
-  listRow,
-  listRowMainBtn,
   select,
-  statusBadge,
   suggestionBtn,
   viewModeBtn,
 } from './case/CasePageChrome'
@@ -103,14 +111,9 @@ import {
   VcCaseMapBasemapSatelliteGlyph,
   VcCaseMapLayersGlyph,
 } from './case/casePageMapUi'
-import {
-  MapAddressSelectionPill,
-  MapTrackQuickPickChip,
-  MapTrackSelectionPill,
-} from './case/MapSelectionGlassPills'
+import { MapAddressSelectionPill, MapTrackQuickPickChip } from './case/MapSelectionGlassPills'
 import { MapDockTrackRows } from './case/MapDockTrackRows'
 import { TrackImportPanel } from './case/TrackImportPanel'
-import type { LatLonPoint } from '../lib/trackLatLonImport'
 import {
   computeContiguousDwellSegments,
   dwellEpsilonMeters,
@@ -131,7 +134,11 @@ import {
   trackBelongsInTracksMapTab,
 } from '../lib/trackPointPlacement'
 import { useCaseGeocodeSearch } from './case/hooks/useCaseGeocodeSearch'
+import { useCaseTrackImport } from './case/hooks/useCaseTrackImport'
 import { useMapPaneOutsideDismiss } from './case/hooks/useMapPaneOutsideDismiss'
+import { CaseAddressesListPanel } from './case/CaseListTab'
+import { CaseWorkspaceModeTabs } from './case/CaseMapTab'
+import { CaseMapTrackFloatingOverlays } from './case/CaseTrackingTab'
 import { WebCaseWorkspace } from './case/web/WebCaseWorkspace'
 import { CaseAttachmentImage } from './CaseAttachmentImage'
 import { useTour } from './tour/TourContext'
@@ -140,13 +147,10 @@ import { VC_TOUR } from './tour/tourSteps'
 import {
   vcGlassFieldFloatingMapSearch,
   vcGlassFieldOnPanel,
-  vcGlassFgDarkReadable,
   vcGlassFgMutedOnPanel,
-  vcGlassFgOnPanel,
   vcGlassHeaderBtn,
   vcGlassHeaderBtnPrimary,
   vcGlassSuggestionRow,
-  vcLiquidGlassInnerSurface,
   vcLiquidGlassPanel,
   vcLiquidGlassPanelDense,
 } from '../lib/vcLiquidGlass'
@@ -275,6 +279,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     () => canAddCaseContent(data, props.caseId, actorId),
     [data, props.caseId, actorId],
   )
+  /** Tooltips when add/import is disabled: distinguish view-only collaborator from no access. */
+  const contentMutateBlockedTitle = useMemo(() => {
+    if (canAddCaseContentHere) return undefined
+    return hasCaseAccess(data, props.caseId, actorId)
+      ? 'View-only access — editor role required to add or change canvass data'
+      : 'No access to change this case'
+  }, [canAddCaseContentHere, data, props.caseId, actorId])
   const canDeleteAllTracksHere = useMemo(
     () => canDeleteAllTracksForCase(data, props.caseId, actorId),
     [data, props.caseId, actorId],
@@ -317,7 +328,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   type MapToolsDockSection = 'filters' | 'views' | 'photos' | 'tracks' | 'importCoords' | 'dvr'
   type MapToolsDockRailSection = MapToolsDockSection
   const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
-  const [trackImportModalOpen, setTrackImportModalOpen] = useState(false)
   /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
   const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
   /** Addresses list panel: status filter chips collapsed until user taps Filters. */
@@ -946,44 +956,23 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     [setWorkspaceCaseTab],
   )
 
-  const handleTrackImportCreateTrack = useCallback(
-    async (label: string) => {
-      if (!canAddCaseContentHere) return null
-      try {
-        const id = await createTrack({
-          caseId: props.caseId,
-          createdByUserId: actorId,
-          label: label.trim() || `Track ${caseTracks.length + 1}`,
-          kind: 'person',
-        })
-        setAutoContinuationTrackId(id)
-        setVisibleTrackIds((prev) => ({ ...prev, [id]: true }))
-        return id
-      } catch {
-        return null
-      }
-    },
-    [canAddCaseContentHere, createTrack, props.caseId, actorId, caseTracks.length],
-  )
-
-  const handleTrackImportPoints = useCallback(
-    async (trackId: string, points: LatLonPoint[]) => {
-      if (!canAddCaseContentHere || !points.length) return
-      await createTrackPointsBulk({
-        caseId: props.caseId,
-        createdByUserId: actorId,
-        trackId,
-        points: points.map((p) => {
-          const row: { lat: number; lon: number; visitedAt?: number | null } = { lat: p.lat, lon: p.lon }
-          if (p.visitedAt != null && Number.isFinite(p.visitedAt)) row.visitedAt = p.visitedAt
-          return row
-        }),
-      })
-      setWorkspaceCaseTab('tracking')
-      mapRef.current?.fitToCoordinates(points)
-    },
-    [canAddCaseContentHere, createTrackPointsBulk, props.caseId, actorId, setWorkspaceCaseTab],
-  )
+  const {
+    trackImportModalOpen,
+    setTrackImportModalOpen,
+    handleTrackImportCreateTrack,
+    handleTrackImportPoints,
+  } = useCaseTrackImport({
+    caseId: props.caseId,
+    actorId,
+    canAddCaseContent: canAddCaseContentHere,
+    caseTracksLength: caseTracks.length,
+    createTrack,
+    createTrackPointsBulk,
+    mapRef,
+    setAutoContinuationTrackId,
+    setVisibleTrackIds,
+    setWorkspaceCaseTab,
+  })
 
   useEffect(() => {
     if (!autoContinuationTrackId) return
@@ -3489,7 +3478,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               type="button"
               style={{ ...btnPrimary, width: '100%', boxSizing: 'border-box', fontSize: 12 }}
               disabled={!canAddCaseContentHere}
-              title={!canAddCaseContentHere ? 'No access to add tracks' : undefined}
+              title={contentMutateBlockedTitle}
               onClick={() => {
                 if (!canAddCaseContentHere) return
                 setWorkspaceCaseTab('tracking')
@@ -3597,7 +3586,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               type="button"
               style={{ ...btnPrimary, width: '100%', boxSizing: 'border-box', fontSize: 12 }}
               disabled={!canAddCaseContentHere}
-              title={!canAddCaseContentHere ? 'No access to import' : undefined}
+              title={contentMutateBlockedTitle}
               onClick={() => setTrackImportModalOpen(true)}
             >
               Import coordinates…
@@ -3819,517 +3808,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   /** Map stays in the main pane for both map and list on addresses (list is a panel, not a replacement). */
   const showMapInMapColumn = caseTab === 'tracking' || caseTab === 'addresses'
 
-  const renderAddressesListContent = (placement: 'mapColumn' | 'controlColumn') => {
-    const sheetGlass = placement === 'mapColumn'
-    const listRowPad = placement === 'controlColumn' ? '6px 8px' : isNarrow ? '8px 10px' : '6px 10px'
-    const listBadgeCompact: CSSProperties = {
-      ...statusBadge,
-      padding: '2px 7px',
-      fontSize: 10,
-      lineHeight: 1.2,
-    }
-    const outerStyle: CSSProperties =
-      placement === 'controlColumn'
-        ? {
-            flex: 1,
-            minHeight: 0,
-            minWidth: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            borderTop: '1px solid rgba(148, 163, 184, 0.45)',
-            marginTop: 0,
-            paddingTop: 8,
-            ...vcLiquidGlassInnerSurface,
-            borderRadius: 0,
-            borderLeft: 'none',
-            borderRight: 'none',
-            borderBottom: 'none',
-            boxShadow: 'none',
-          }
-        : {
-            display: 'flex',
-            flexDirection: 'column',
-            flex: 1,
-            minHeight: 0,
-            minWidth: 0,
-            overflow: 'hidden',
-            position: 'relative',
-          }
-
-    const listCloseIconBtn: CSSProperties = {
-      ...vcLiquidGlassPanelDense,
-      width: 36,
-      minWidth: 36,
-      height: 36,
-      padding: 0,
-      margin: 0,
-      borderRadius: 10,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      color: vcGlassFgOnPanel,
-      cursor: 'pointer',
-      flexShrink: 0,
-      WebkitTapHighlightColor: 'transparent',
-    }
-
-    const listFiltersToggleBtn: CSSProperties = sheetGlass
-      ? {
-          ...vcLiquidGlassPanelDense,
-          height: 36,
-          minHeight: 36,
-          padding: '0 12px',
-          borderRadius: 10,
-          border: 'none',
-          fontSize: 12,
-          fontWeight: 800,
-          cursor: 'pointer',
-          flexShrink: 0,
-          WebkitTapHighlightColor: 'transparent',
-          background: addressesListFiltersOpen ? 'rgba(226, 232, 240, 0.9)' : 'rgba(255,255,255,0.14)',
-          color: addressesListFiltersOpen ? vcGlassFgDarkReadable : vcGlassFgOnPanel,
-        }
-      : {
-          ...btn,
-          fontSize: 12,
-          fontWeight: 800,
-          padding: '6px 12px',
-          flexShrink: 0,
-        }
-
-    return (
-      <div style={outerStyle}>
-        <div
-          style={{
-            ...listHeaderRow,
-            flexShrink: 0,
-            borderBottom: sheetGlass ? '1px solid rgba(255,255,255,0.14)' : '1px solid rgba(148, 163, 184, 0.4)',
-            flexDirection: 'column',
-            alignItems: 'stretch',
-            gap: 8,
-            padding: '8px 10px',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: 8,
-              alignItems: 'center',
-              width: '100%',
-              minWidth: 0,
-            }}
-          >
-            <div
-              style={{
-                fontWeight: 900,
-                fontSize: 13,
-                color: sheetGlass ? vcGlassFgOnPanel : vcGlassFgDarkReadable,
-                minWidth: 0,
-                flex: placement === 'mapColumn' ? '1 1 auto' : undefined,
-              }}
-            >
-              Locations ({filtered.length})
-            </div>
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                gap: 8,
-                marginLeft: placement === 'controlColumn' ? 'auto' : undefined,
-                flexShrink: 0,
-              }}
-            >
-              <button
-                type="button"
-                aria-expanded={addressesListFiltersOpen}
-                aria-controls="vc-addresses-list-status-filters"
-                style={listFiltersToggleBtn}
-                onClick={() => setAddressesListFiltersOpen((v) => !v)}
-              >
-                Filters
-              </button>
-              {placement === 'mapColumn' ? (
-                <button
-                  type="button"
-                  aria-label="Close list view"
-                  title="Close"
-                  style={listCloseIconBtn}
-                  onClick={() => closeAddressesListViewFromOverlay()}
-                >
-                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" aria-hidden>
-                    <path
-                      d="M18 6L6 18M6 6l12 12"
-                      stroke="currentColor"
-                      strokeWidth={2.2}
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
-              ) : null}
-            </div>
-          </div>
-          {addressesListFiltersOpen ? (
-            <div
-              id="vc-addresses-list-status-filters"
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                gap: 6,
-                width: '100%',
-                minWidth: 0,
-              }}
-              role="group"
-              aria-label="Filter locations by result"
-            >
-              <LegendChip
-                dense
-                dockCompact
-                allowMultiline
-                label={`No cameras (${counts.noCameras})`}
-                color={statusColor('noCameras')}
-                on={filters.noCameras}
-                onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
-              />
-              <LegendChip
-                dense
-                dockCompact
-                allowMultiline
-                label={`Needs Follow up (${counts.camerasNoAnswer})`}
-                color={statusColor('camerasNoAnswer')}
-                on={filters.camerasNoAnswer}
-                onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
-              />
-              <LegendChip
-                dense
-                dockCompact
-                allowMultiline
-                label={`Not probative (${counts.notProbativeFootage})`}
-                color={statusColor('notProbativeFootage')}
-                on={filters.notProbativeFootage}
-                onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
-              />
-              <LegendChip
-                dense
-                dockCompact
-                allowMultiline
-                label={`Probative (${counts.probativeFootage})`}
-                color={statusColor('probativeFootage')}
-                on={filters.probativeFootage}
-                onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
-              />
-            </div>
-          ) : null}
-        </div>
-        {filtered.length > 0 ? (
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: 'auto',
-              display: 'grid',
-              alignContent: 'start',
-              WebkitOverflowScrolling: 'touch',
-            }}
-          >
-            {locationsForListView.map((l) => {
-              const isListSelected = selectedId === l.id
-              const isListExpanded = listRowExpandedId === l.id
-              const dimListRow = selectedId != null && !isListSelected
-              const canEditL = canEditLocation(data, actorId, l)
-              const canDelL = canDeleteLocation(data, actorId, l)
-              const listLineLabel = formatAddressLineForMapList(l.addressText)
-              return (
-                <div
-                  key={l.id}
-                  style={{
-                    ...listRow,
-                    display: 'flex',
-                    flexDirection: 'row',
-                    flexWrap: 'wrap',
-                    alignItems: 'flex-start',
-                    gap: 6,
-                    padding: listRowPad,
-                    borderBottom: sheetGlass ? '1px solid rgba(255,255,255,0.1)' : listRow.borderBottom,
-                    background: sheetGlass
-                      ? isListSelected
-                        ? 'rgba(226, 232, 240, 0.28)'
-                        : dimListRow
-                          ? 'rgba(15, 23, 42, 0.28)'
-                          : 'rgba(255,255,255, 0.1)'
-                      : isListSelected
-                        ? 'rgba(241, 245, 249, 0.95)'
-                        : dimListRow
-                          ? 'rgba(203, 213, 225, 0.55)'
-                          : 'rgba(226, 232, 240, 0.42)',
-                    opacity: dimListRow ? 0.72 : 1,
-                    boxShadow: isListSelected
-                      ? sheetGlass
-                        ? 'inset 3px 0 0 rgba(248, 250, 252, 0.85)'
-                        : 'inset 3px 0 0 #111827'
-                      : undefined,
-                    transition: 'background 0.15s ease, opacity 0.15s ease',
-                  }}
-                >
-                  <button
-                    type="button"
-                    aria-expanded={isListExpanded}
-                    style={{
-                      ...listRowMainBtn,
-                      flex: 1,
-                      minWidth: 0,
-                      boxSizing: 'border-box',
-                    }}
-                    onClick={() => {
-                      setLocationDetailOpen(false)
-                      if (isListExpanded) {
-                        setListRowExpandedId(null)
-                        setSelectedId(null)
-                        popCanvassResultIfFrontExistingId(l.id)
-                      } else {
-                        setListRowExpandedId(l.id)
-                        setSelectedId(l.id)
-                      }
-                    }}
-                    onDoubleClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      setLocationDetailOpen(false)
-                      setListRowExpandedId(l.id)
-                      setSelectedId(l.id)
-                      setListAddressNotesForId(l.id)
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontWeight: 800,
-                        textAlign: 'left',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'anywhere',
-                        lineHeight: 1.25,
-                        fontSize: 13,
-                        color: sheetGlass ? vcGlassFgOnPanel : undefined,
-                      }}
-                    >
-                      {listLineLabel}
-                    </div>
-                    <div
-                      style={{
-                        marginTop: 4,
-                        display: 'flex',
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        alignItems: 'center',
-                        gap: 6,
-                        rowGap: 4,
-                      }}
-                    >
-                      <span
-                        style={{
-                          ...listBadgeCompact,
-                          background: `${statusColor(l.status)}35`,
-                          color: statusColor(l.status),
-                        }}
-                      >
-                        {statusLabel(l.status)}
-                      </span>
-                      <span
-                        style={{
-                          color: sheetGlass ? vcGlassFgMutedOnPanel : '#6b7280',
-                          fontSize: 10,
-                          fontWeight: 600,
-                          lineHeight: 1.2,
-                        }}
-                      >
-                        Updated {formatAppDateTime(l.updatedAt)}
-                      </span>
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${listLineLabel} from case`}
-                    title={
-                      canDelL ? 'Remove this address from the case' : 'You do not have permission to remove this address'
-                    }
-                    style={{
-                      flexShrink: 0,
-                      width: 32,
-                      height: 32,
-                      marginTop: 0,
-                      padding: 0,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: 8,
-                      border: '1px solid #fca5a5',
-                      background: '#fef2f2',
-                      color: '#b91c1c',
-                      fontSize: 18,
-                      fontWeight: 900,
-                      lineHeight: 1,
-                      cursor: canDelL ? 'pointer' : 'not-allowed',
-                      boxSizing: 'border-box',
-                      opacity: canDelL ? 1 : 0.35,
-                    }}
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      if (!canDelL) {
-                        window.alert('You do not have permission to remove this address.')
-                        return
-                      }
-                      if (!window.confirm('Delete this address? You can undo for a few seconds.')) return
-                      void removeCaseLocation(l.id)
-                      popCanvassResultIfFrontExistingId(l.id)
-                      setSelectedId((id) => (id === l.id ? null : id))
-                      setListRowExpandedId((exp) => (exp === l.id ? null : exp))
-                      setListAddressNotesForId((n) => (n === l.id ? null : n))
-                    }}
-                  >
-                    ✕
-                  </button>
-                  {isListExpanded ? (
-                    <>
-                      <div
-                        style={{
-                          display: 'flex',
-                          flexWrap: 'wrap',
-                          gap: 6,
-                          alignItems: 'center',
-                          width: '100%',
-                          flexBasis: '100%',
-                        }}
-                      >
-                        <button
-                          type="button"
-                          style={{ ...btn, fontSize: 11, padding: '5px 8px', flex: '1 1 88px', minWidth: 0 }}
-                          onClick={() => focusLocationOnMap(l)}
-                        >
-                          Show on map
-                        </button>
-                        <button
-                          type="button"
-                          style={{ ...btn, fontSize: 11, padding: '5px 8px', flex: '1 1 88px', minWidth: 0 }}
-                          onClick={() => setListAddressNotesForId(l.id)}
-                        >
-                          Notes
-                        </button>
-                      </div>
-                      <div
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                          gap: 5,
-                          minWidth: 0,
-                          justifyItems: 'stretch',
-                          width: '100%',
-                          flexBasis: '100%',
-                        }}
-                      >
-                        <RowStatusButton
-                          label="No cameras"
-                          color={statusColor('noCameras')}
-                          active={l.status === 'noCameras'}
-                          disabled={!canEditL}
-                          stretch
-                          onClick={() => {
-                            setProbativeFlow(null)
-                            void updateLocation(actorId, l.id, { status: 'noCameras' }).then(() => {
-                              popCanvassResultIfFrontExistingId(l.id)
-                            })
-                          }}
-                        />
-                        <RowStatusButton
-                          label="Needs Follow up"
-                          color={statusColor('camerasNoAnswer')}
-                          active={l.status === 'camerasNoAnswer'}
-                          disabled={!canEditL}
-                          stretch
-                          onClick={() => {
-                            setProbativeFlow(null)
-                            void updateLocation(actorId, l.id, { status: 'camerasNoAnswer' }).then(() => {
-                              popCanvassResultIfFrontExistingId(l.id)
-                            })
-                          }}
-                        />
-                        <RowStatusButton
-                          label="Not probative"
-                          color={statusColor('notProbativeFootage')}
-                          active={l.status === 'notProbativeFootage'}
-                          disabled={!canEditL}
-                          stretch
-                          onClick={() => {
-                            setProbativeFlow(null)
-                            void updateLocation(actorId, l.id, { status: 'notProbativeFootage' }).then(() => {
-                              popCanvassResultIfFrontExistingId(l.id)
-                            })
-                          }}
-                        />
-                        <RowStatusButton
-                          label="Probative"
-                          color={statusColor('probativeFootage')}
-                          active={l.status === 'probativeFootage'}
-                          disabled={!canEditL}
-                          stretch
-                          onClick={() => {
-                            if (l.status !== 'probativeFootage') {
-                              setLocationDetailOpen(false)
-                              setSelectedId(l.id)
-                              setListRowExpandedId(l.id)
-                              setProbativeFlow({ step: 'accuracy', target: { kind: 'existing', locationId: l.id } })
-                              return
-                            }
-                            void updateLocation(actorId, l.id, { status: 'probativeFootage' }).then(() => {
-                              popCanvassResultIfFrontExistingId(l.id)
-                            })
-                          }}
-                        />
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <div
-            style={{
-              padding: 12,
-              color: sheetGlass ? vcGlassFgMutedOnPanel : '#374151',
-              flex: placement === 'mapColumn' ? 1 : undefined,
-              fontSize: 13,
-              fontWeight: 600,
-            }}
-          >
-            No locations in the selected filters.
-          </div>
-        )}
-        {placement === 'mapColumn' && mapLeftToolDockOpen ? (
-          <div
-            role="presentation"
-            aria-hidden
-            style={{
-              position: 'absolute',
-              inset: 0,
-              zIndex: 24,
-              background: 'rgba(17,24,39,0.14)',
-              touchAction: 'none',
-            }}
-            onPointerDown={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              mapRef.current?.clearPendingMapTap()
-              closeMapToolsDock({ suppressMapFollowupMs: MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS })
-            }}
-          />
-        ) : null}
-      </div>
-    )
-  }
-
   const narrowMapTopShowsFloatingAddress = caseTab === 'tracking' || caseTab === 'addresses'
 
   const viewModeBtnGlass = (active: boolean, comfortableTouch?: boolean): CSSProperties => ({
@@ -4363,63 +3841,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     wordBreak: 'break-word',
     overflowWrap: 'break-word',
   })
-
-  const renderCaseModeToggleBarGlass = (
-    comfortableTouch: boolean,
-    opts?: { narrowMapBottom?: boolean },
-  ) => {
-    const narrowBottom = opts?.narrowMapBottom === true
-    const modeBtn = narrowBottom
-      ? viewModeBtnGlassNarrowMapBottom
-      : (active: boolean) => viewModeBtnGlass(active, comfortableTouch)
-    return (
-      <div
-        data-vc-tour={VC_TOUR.caseWorkspaceTabs}
-        style={
-          narrowBottom
-            ? {
-                display: 'flex',
-                flexDirection: 'row',
-                flexWrap: 'nowrap',
-                alignItems: 'stretch',
-                gap: 8,
-                width: '100%',
-                minWidth: 0,
-                boxSizing: 'border-box',
-                pointerEvents: 'auto',
-              }
-            : {
-                display: 'grid',
-                gridTemplateColumns: 'max-content max-content',
-                gap: 6,
-                flexShrink: 0,
-                pointerEvents: 'auto',
-              }
-        }
-      >
-        <button
-          type="button"
-          style={{
-            ...modeBtn(caseTab === 'addresses'),
-            ...(narrowBottom ? { flex: '1 1 0', minWidth: 0 } : {}),
-          }}
-          onClick={() => setWorkspaceCaseTab('addresses')}
-        >
-          Video canvassing
-        </button>
-        <button
-          type="button"
-          style={{
-            ...modeBtn(caseTab === 'tracking'),
-            ...(narrowBottom ? { flex: '1 1 0', minWidth: 0 } : {}),
-          }}
-          onClick={() => setWorkspaceCaseTab('tracking')}
-        >
-          Subject tracking
-        </button>
-      </div>
-    )
-  }
 
   useLayoutEffect(() => {
     if (!isNarrow || !showMapInMapColumn || probativePlacementSession || !narrowMapTopShowsFloatingAddress) return
@@ -4503,7 +3924,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   /** Wide without floating address search: mode toggles only in the blue glass slab. */
   const mapTopModeOnlyGlassPanel = (
     <div style={mapTopModeAndSearchGlassStyle}>
-      <div style={{ alignSelf: 'center', flexShrink: 0 }}>{renderCaseModeToggleBarGlass(false)}</div>
+      <div style={{ alignSelf: 'center', flexShrink: 0 }}>
+        <CaseWorkspaceModeTabs
+          caseTab={caseTab}
+          onSetCaseTab={setWorkspaceCaseTab}
+          modeBtn={(a) => viewModeBtnGlass(a, false)}
+          modeBtnNarrowBottom={viewModeBtnGlassNarrowMapBottom}
+        />
+      </div>
     </div>
   )
 
@@ -4566,7 +3994,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               }}
             >
               <div style={{ ...mapTopModeAndSearchGlassStyle, position: 'relative', zIndex: 3 }}>
-                <div style={{ alignSelf: 'center', flexShrink: 0 }}>{renderCaseModeToggleBarGlass(false)}</div>
+                <div style={{ alignSelf: 'center', flexShrink: 0 }}>
+                  <CaseWorkspaceModeTabs
+                    caseTab={caseTab}
+                    onSetCaseTab={setWorkspaceCaseTab}
+                    modeBtn={(a) => viewModeBtnGlass(a, false)}
+                    modeBtnNarrowBottom={viewModeBtnGlassNarrowMapBottom}
+                  />
+                </div>
                 <div
                   ref={wideMapSearchFieldRef}
                   style={{
@@ -4649,7 +4084,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               boxSizing: 'border-box',
             }}
           >
-            {renderCaseModeToggleBarGlass(true, { narrowMapBottom: true })}
+            <CaseWorkspaceModeTabs
+              caseTab={caseTab}
+              onSetCaseTab={setWorkspaceCaseTab}
+              narrowMapBottom
+              modeBtn={(a) => viewModeBtnGlass(a, true)}
+              modeBtnNarrowBottom={viewModeBtnGlassNarrowMapBottom}
+            />
           </div>
         </div>
       </div>
@@ -5339,43 +4780,30 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         />
                       </div>
                     </div>
-                  ) : !isNarrow &&
-                    viewMode === 'map' &&
-                    caseTab === 'tracking' &&
-                    selectedTrackPoint &&
-                    isMapPlacedTrackPoint(selectedTrackPoint) ? (
-                    <div style={mapSelectionPillWrapStyleWebInMapLayer}>
-                      <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyleWebInMapLayerInteractive}>
-                        <MapTrackSelectionPill
-                          pillChrome="webDock"
-                          trackLabel={selectedTrackLabel}
-                          stepIndex={selectedTrackPointStepIndex}
-                          trackColor={
-                            resolvedTrackColors.get(selectedTrackPoint.trackId) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
-                          }
-                          canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
-                          condensed={false}
-                          onOpenDetail={() => {
-                            setTrackMapModalOpen(true)
-                          }}
-                          onRemove={() => {
-                            void removeCaseTrackPoint(selectedTrackPoint.id)
-                            setSelectedTrackPointId(null)
-                            setTrackStepUndoTargetId(null)
-                            setTrackMapPillShowFull(false)
-                            setTrackMapModalOpen(false)
-                            setTrackMapTimeModalOpen(false)
-                          }}
-                          onDismissSelection={() => {
-                            setSelectedTrackPointId(null)
-                            setTrackMapPillShowFull(false)
-                            setTrackMapModalOpen(false)
-                            setTrackMapTimeModalOpen(false)
-                          }}
-                        />
-                      </div>
-                    </div>
                   ) : null}
+                  <CaseMapTrackFloatingOverlays
+                    variant="web"
+                    data={data}
+                    actorId={actorId}
+                    isNarrow={isNarrow}
+                    viewMode={viewMode}
+                    caseTab={caseTab}
+                    selectedTrackPoint={selectedTrackPoint}
+                    selectedTrackPointStepIndex={selectedTrackPointStepIndex}
+                    selectedTrackLabel={selectedTrackLabel}
+                    resolvedTrackColors={resolvedTrackColors}
+                    trackMapPillShowFull={trackMapPillShowFull}
+                    caseMapDetailOverlayRef={caseMapDetailOverlayRef}
+                    mapSelectionPillWrapStyle={mapSelectionPillWrapStyle}
+                    mapSelectionPillWrapStyleWebInMapLayer={mapSelectionPillWrapStyleWebInMapLayer}
+                    mapSelectionPillWrapStyleWebInMapLayerInteractive={mapSelectionPillWrapStyleWebInMapLayerInteractive}
+                    setTrackMapPillShowFull={setTrackMapPillShowFull}
+                    setTrackMapModalOpen={setTrackMapModalOpen}
+                    setTrackMapTimeModalOpen={setTrackMapTimeModalOpen}
+                    setSelectedTrackPointId={setSelectedTrackPointId}
+                    setTrackStepUndoTargetId={setTrackStepUndoTargetId}
+                    removeCaseTrackPoint={(id) => void removeCaseTrackPoint(id)}
+                  />
                 </div>
               ) : null}
 
@@ -5435,7 +4863,35 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                       onPointerDown={(e) => e.stopPropagation()}
                     >
-                      {renderAddressesListContent('mapColumn')}
+                      <CaseAddressesListPanel
+                        placement="mapColumn"
+                        isNarrow={isNarrow}
+                        data={data}
+                        actorId={actorId}
+                        filtered={filtered}
+                        locationsForListView={locationsForListView}
+                        counts={counts}
+                        filters={filters}
+                        setFilters={setFilters}
+                        selectedId={selectedId}
+                        setSelectedId={setSelectedId}
+                        listRowExpandedId={listRowExpandedId}
+                        setListRowExpandedId={setListRowExpandedId}
+                        addressesListFiltersOpen={addressesListFiltersOpen}
+                        setAddressesListFiltersOpen={setAddressesListFiltersOpen}
+                        setLocationDetailOpen={setLocationDetailOpen}
+                        setListAddressNotesForId={setListAddressNotesForId}
+                        setProbativeFlow={setProbativeFlow}
+                        popCanvassResultIfFrontExistingId={popCanvassResultIfFrontExistingId}
+                        focusLocationOnMap={focusLocationOnMap}
+                        removeCaseLocation={removeCaseLocation}
+                        updateLocation={updateLocation}
+                        closeAddressesListViewFromOverlay={closeAddressesListViewFromOverlay}
+                        mapLeftToolDockOpen={mapLeftToolDockOpen}
+                        mapRef={mapRef}
+                        closeMapToolsDock={closeMapToolsDock}
+                        mapDockOutsideDismissSuppressMs={MAP_DOCK_OUTSIDE_DISMISS_CLICK_SUPPRESS_MS}
+                      />
                     </div>
                   </div>
                 </>
@@ -5467,43 +4923,29 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   />
                 </div>
               ) : null}
-              {isNarrow &&
-              viewMode === 'map' &&
-              caseTab === 'tracking' &&
-              selectedTrackPoint &&
-              isMapPlacedTrackPoint(selectedTrackPoint) ? (
-                <div ref={caseMapDetailOverlayRef} style={mapSelectionPillWrapStyle}>
-                  <MapTrackSelectionPill
-                    pillLayout="hug"
-                    pillChrome="webDock"
-                    trackLabel={selectedTrackLabel}
-                    stepIndex={selectedTrackPointStepIndex}
-                    trackColor={
-                      resolvedTrackColors.get(selectedTrackPoint.trackId) ?? TRACK_DEFAULT_COLORS_FIRST_FOUR[0]
-                    }
-                    canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
-                    condensed={!trackMapPillShowFull}
-                    onOpenDetail={() => {
-                      setTrackMapPillShowFull(true)
-                      setTrackMapModalOpen(true)
-                    }}
-                    onRemove={() => {
-                      void removeCaseTrackPoint(selectedTrackPoint.id)
-                      setSelectedTrackPointId(null)
-                      setTrackStepUndoTargetId(null)
-                      setTrackMapPillShowFull(false)
-                      setTrackMapModalOpen(false)
-                      setTrackMapTimeModalOpen(false)
-                    }}
-                    onDismissSelection={() => {
-                      setSelectedTrackPointId(null)
-                      setTrackMapPillShowFull(false)
-                      setTrackMapModalOpen(false)
-                      setTrackMapTimeModalOpen(false)
-                    }}
-                  />
-                </div>
-              ) : null}
+              <CaseMapTrackFloatingOverlays
+                variant="narrow"
+                data={data}
+                actorId={actorId}
+                isNarrow={isNarrow}
+                viewMode={viewMode}
+                caseTab={caseTab}
+                selectedTrackPoint={selectedTrackPoint}
+                selectedTrackPointStepIndex={selectedTrackPointStepIndex}
+                selectedTrackLabel={selectedTrackLabel}
+                resolvedTrackColors={resolvedTrackColors}
+                trackMapPillShowFull={trackMapPillShowFull}
+                caseMapDetailOverlayRef={caseMapDetailOverlayRef}
+                mapSelectionPillWrapStyle={mapSelectionPillWrapStyle}
+                mapSelectionPillWrapStyleWebInMapLayer={mapSelectionPillWrapStyleWebInMapLayer}
+                mapSelectionPillWrapStyleWebInMapLayerInteractive={mapSelectionPillWrapStyleWebInMapLayerInteractive}
+                setTrackMapPillShowFull={setTrackMapPillShowFull}
+                setTrackMapModalOpen={setTrackMapModalOpen}
+                setTrackMapTimeModalOpen={setTrackMapTimeModalOpen}
+                setSelectedTrackPointId={setSelectedTrackPointId}
+                setTrackStepUndoTargetId={setTrackStepUndoTargetId}
+                removeCaseTrackPoint={(id) => void removeCaseTrackPoint(id)}
+              />
             </div>
           </div>
         </div>
@@ -6077,7 +5519,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           </div>
         ) : null}
         {!canAddCaseContentHere ? (
-          <div style={{ color: '#b45309', fontSize: 13, fontWeight: 700 }}>You don&apos;t have access to add locations here.</div>
+          <div style={{ color: '#b45309', fontSize: 13, fontWeight: 700 }}>
+            {hasCaseAccess(data, props.caseId, actorId)
+              ? 'View-only access — ask the case owner for editor access to add locations.'
+              : "You don't have access to add locations here."}
+          </div>
         ) : null}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <button type="button" style={btn} disabled={dvrLinkSaving} onClick={() => clearDvrLinkLocationUi()}>

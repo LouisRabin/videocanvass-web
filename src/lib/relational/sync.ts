@@ -312,6 +312,27 @@ function collabToRow(c: CaseCollaborator): Record<string, unknown> {
   }
 }
 
+async function loadMyUnitIdsForSession(
+  sb: NonNullable<typeof supabase>,
+  sessionUid: string | null,
+): Promise<string[]> {
+  const u = sessionUid?.trim()
+  if (!u) return []
+  const { data: rows, error } = await sb.from('vc_user_unit_members').select('unit_id').eq('user_id', u)
+  if (error) {
+    console.warn('loadAppDataFromRelational vc_user_unit_members:', error.message)
+    return []
+  }
+  const out = new Set<string>()
+  for (const r of rows ?? []) {
+    const id = String((r as { unit_id: string }).unit_id ?? '')
+      .trim()
+      .toLowerCase()
+    if (id) out.add(id)
+  }
+  return [...out]
+}
+
 type AttRow = {
   id: string
   case_id: string
@@ -360,9 +381,18 @@ export async function loadAppDataFromRelational(opts?: {
   emptyCaseUserId?: string | null
 }): Promise<AppData | null> {
   if (!supabase) return null
+  const sb = supabase
   const { normalizeAppData } = await import('../db')
 
-  const { data: casesRows, error: e1 } = await supabase.from('vc_cases').select('*')
+  const sessionUidPromise =
+    opts && Object.prototype.hasOwnProperty.call(opts, 'emptyCaseUserId')
+      ? Promise.resolve(opts.emptyCaseUserId ?? null)
+      : getRelationalAuthUserId(sb)
+
+  const [{ data: casesRows, error: e1 }, sessionUid] = await Promise.all([
+    sb.from('vc_cases').select('*'),
+    sessionUidPromise,
+  ])
   if (e1) {
     console.warn('loadAppDataFromRelational vc_cases:', e1.message)
     return null
@@ -370,22 +400,23 @@ export async function loadAppDataFromRelational(opts?: {
   const cases = (casesRows as CaseRow[]).map(rowToCase)
   const caseIds = cases.map((c) => c.id)
   if (caseIds.length === 0) {
-    const uid =
-      opts && Object.prototype.hasOwnProperty.call(opts, 'emptyCaseUserId')
-        ? (opts.emptyCaseUserId ?? null)
-        : await getRelationalAuthUserId(supabase)
-    const { data: selfRow } = uid
-      ? await supabase.from('vc_profiles').select('*').eq('id', uid).maybeSingle()
-      : { data: null as ProfileRow | null }
+    const uid = sessionUid
+    const [{ data: selfRow }, myUnitIds] = await Promise.all([
+      uid
+        ? sb.from('vc_profiles').select('*').eq('id', uid).maybeSingle()
+        : Promise.resolve({ data: null as ProfileRow | null }),
+      loadMyUnitIdsForSession(sb, uid),
+    ])
     const users: AppUser[] = selfRow ? [profileToUser(selfRow as ProfileRow)] : []
     const empty: AppData = {
       ...DEFAULT_DATA,
       users,
+      myUnitIds,
     }
     const parsedEmpty = AppDataSchema.safeParse(empty)
     if (!parsedEmpty.success) {
       console.warn('loadAppDataFromRelational empty state parse:', parsedEmpty.error)
-      return normalizeAppData({ ...DEFAULT_DATA, users: [] })
+      return normalizeAppData({ ...DEFAULT_DATA, users: [], myUnitIds })
     }
     return normalizeAppData(parsedEmpty.data)
   }
@@ -397,13 +428,15 @@ export async function loadAppDataFromRelational(opts?: {
     { data: collabRows, error: e5 },
     { data: attRows, error: e6 },
     { data: profRows, error: e7 },
+    myUnitIds,
   ] = await Promise.all([
-    supabase.from('vc_locations').select('*').in('case_id', caseIds),
-    supabase.from('vc_tracks').select('*').in('case_id', caseIds),
-    supabase.from('vc_track_points').select('*').in('case_id', caseIds),
-    supabase.from('vc_case_collaborators').select('*').in('case_id', caseIds),
-    supabase.from('vc_case_attachments').select('*').in('case_id', caseIds),
-    supabase.from('vc_profiles').select('*'),
+    sb.from('vc_locations').select('*').in('case_id', caseIds),
+    sb.from('vc_tracks').select('*').in('case_id', caseIds),
+    sb.from('vc_track_points').select('*').in('case_id', caseIds),
+    sb.from('vc_case_collaborators').select('*').in('case_id', caseIds),
+    sb.from('vc_case_attachments').select('*').in('case_id', caseIds),
+    sb.from('vc_profiles').select('*'),
+    loadMyUnitIdsForSession(sb, sessionUid),
   ])
 
   for (const [e, label] of [
@@ -428,6 +461,7 @@ export async function loadAppDataFromRelational(opts?: {
     caseCollaborators: ((collabRows ?? []) as CollabRow[]).map(rowToCollab),
     caseAttachments: ((attRows ?? []) as AttRow[]).map(rowToAttachment),
     users,
+    myUnitIds,
     deletedCaseIds: [],
     deletedLocationIds: [],
     deletedTrackIds: [],

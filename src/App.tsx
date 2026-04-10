@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
-import { relationalBackendEnabled, relationalBackendEnvRaw } from './lib/backendMode'
+import { relationalBackendEnabled } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
 import type { Session } from '@supabase/supabase-js'
@@ -143,25 +143,6 @@ function SessionGate() {
   }, [])
 
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
-      body: JSON.stringify({
-        sessionId: 'abc55e',
-        location: 'App.tsx:SessionGate:authEffect',
-        message: 'auth effect entry',
-        data: {
-          relational: relationalBackendEnabled(),
-          hasClient: Boolean(supabase),
-          isProd: import.meta.env.PROD,
-          relationalFlagRawLen: relationalBackendEnvRaw().length,
-        },
-        timestamp: Date.now(),
-        hypothesisId: 'H1',
-      }),
-    }).catch(() => {})
-    // #endregion
     if (!relationalBackendEnabled() || !supabase) {
       setAuthResolved(true)
       return
@@ -180,20 +161,6 @@ function SessionGate() {
           applySession(null)
           setAuthResolved(true)
           setMfaGate('off')
-          // #region agent log
-          fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
-            body: JSON.stringify({
-              sessionId: 'abc55e',
-              location: 'App.tsx:SessionGate:authEffect',
-              message: 'auth path',
-              data: { path: 'vc_signout' },
-              timestamp: Date.now(),
-              hypothesisId: 'H2',
-            }),
-          }).catch(() => {})
-          // #endregion
           return
         }
       } catch {
@@ -207,46 +174,18 @@ function SessionGate() {
         applySession(session)
         setAuthResolved(true)
         void syncMfaGate(session)
-        // #region agent log
-        fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
-          body: JSON.stringify({
-            sessionId: 'abc55e',
-            location: 'App.tsx:SessionGate:authEffect',
-            message: 'auth bootstrap done',
-            data: { path: 'session', hasUser: Boolean(session?.user) },
-            timestamp: Date.now(),
-            hypothesisId: 'H2,H3',
-          }),
-        }).catch(() => {})
-        // #endregion
       } catch (e) {
         console.warn('Session bootstrap failed:', e)
         if (cancelled) return
         applySession(null)
         setAuthResolved(true)
         setMfaGate('off')
-        // #region agent log
-        fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
-          body: JSON.stringify({
-            sessionId: 'abc55e',
-            location: 'App.tsx:SessionGate:authEffect',
-            message: 'auth bootstrap fail',
-            data: {},
-            timestamp: Date.now(),
-            hypothesisId: 'H2',
-          }),
-        }).catch(() => {})
-        // #endregion
       }
     })()
 
     const {
       data: { subscription },
-    } = sb.auth.onAuthStateChange((event, session) => {
+    } = sb.auth.onAuthStateChange((_event, session) => {
       void (async () => {
         if (!session?.user) {
           applySession(null)
@@ -254,24 +193,6 @@ function SessionGate() {
           return
         }
         const usable = await resolveUsableSessionWithTimeout(sb, session)
-        // #region agent log
-        fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
-          body: JSON.stringify({
-            sessionId: 'abc55e',
-            location: 'App.tsx:SessionGate:onAuthStateChange',
-            message: 'auth state',
-            data: {
-              event,
-              usedHint: sessionLooksUsableLocally(session),
-              hasUsable: Boolean(usable?.user),
-            },
-            timestamp: Date.now(),
-            hypothesisId: 'H-bounce',
-          }),
-        }).catch(() => {})
-        // #endregion
         applySession(usable)
         if (!usable?.user) {
           setMfaGate('off')
@@ -285,29 +206,6 @@ function SessionGate() {
       subscription.unsubscribe()
     }
   }, [applySession, syncMfaGate])
-
-  useEffect(() => {
-    if (!relationalBackendEnabled()) return
-    // #region agent log
-    fetch('http://127.0.0.1:7759/ingest/df6e8c6a-ef77-4700-b4ea-c4efb4253a82', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'abc55e' },
-      body: JSON.stringify({
-        sessionId: 'abc55e',
-        location: 'App.tsx:SessionGate:gateState',
-        message: 'relational gate state',
-        data: {
-          ready,
-          authResolved,
-          sessionPresent: Boolean(sessionUserId),
-          mfaGate,
-        },
-        timestamp: Date.now(),
-        hypothesisId: 'H4,H5',
-      }),
-    }).catch(() => {})
-    // #endregion
-  }, [ready, authResolved, sessionUserId, mfaGate])
 
   const relationalUser = useMemo((): AppUser | null => {
     if (!sessionUserId) return null
