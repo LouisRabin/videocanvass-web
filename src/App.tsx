@@ -4,6 +4,7 @@ import { hasCaseAccess } from './lib/casePermissions'
 import { relationalBackendEnabled } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
+import { getUsableSessionOrSignOut } from './lib/supabaseAuthSession'
 import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
@@ -86,6 +87,8 @@ function SessionGate() {
     taxNumber: string
   } | null>(null)
   const [mfaGate, setMfaGate] = useState<MfaGateState>('off')
+  /** False until first `getUsableSessionOrSignOut` finishes (avoids login-screen flash for valid sessions). */
+  const [authResolved, setAuthResolved] = useState(false)
 
   const applySession = useCallback(
     (session: import('@supabase/supabase-js').Session | null) => {
@@ -110,9 +113,7 @@ function SessionGate() {
       setMfaGate('off')
       return
     }
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+    const session = await getUsableSessionOrSignOut(supabase)
     if (!session?.user) {
       setMfaGate('off')
       return
@@ -134,18 +135,44 @@ function SessionGate() {
   }, [])
 
   useEffect(() => {
-    if (!relationalBackendEnabled() || !supabase) return
-    void supabase.auth.getSession().then(({ data: { session } }) => {
-      applySession(session)
-      void syncMfaGate()
-    })
+    if (!relationalBackendEnabled() || !supabase) {
+      setAuthResolved(true)
+      return
+    }
+    const sb = supabase
+    let cancelled = false
+    void getUsableSessionOrSignOut(sb)
+      .then((session) => {
+        if (cancelled) return
+        applySession(session)
+        setAuthResolved(true)
+        void syncMfaGate()
+      })
+      .catch((e) => {
+        console.warn('Session bootstrap failed:', e)
+        if (cancelled) return
+        applySession(null)
+        setAuthResolved(true)
+        setMfaGate('off')
+      })
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      applySession(session)
-      void syncMfaGate()
+    } = sb.auth.onAuthStateChange((_event, session) => {
+      void (async () => {
+        if (!session?.user) {
+          applySession(null)
+          setMfaGate('off')
+          return
+        }
+        const usable = await getUsableSessionOrSignOut(sb)
+        applySession(usable)
+        void syncMfaGate()
+      })()
     })
-    return () => subscription.unsubscribe()
+    return () => {
+      cancelled = true
+      subscription.unsubscribe()
+    }
   }, [applySession, syncMfaGate])
 
   const relationalUser = useMemo((): AppUser | null => {
@@ -188,6 +215,13 @@ function SessionGate() {
   }
 
   if (relationalBackendEnabled()) {
+    if (!authResolved) {
+      return (
+        <Layout title="VideoCanvass">
+          <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
+        </Layout>
+      )
+    }
     if (!sessionUserId) {
       return <LoginPage />
     }
