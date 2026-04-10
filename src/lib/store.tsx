@@ -5,6 +5,7 @@ import {
   loadData,
   mergeAppData,
   normalizeAppData,
+  pullAndMergeWithLocal,
   saveData,
   writeLocalDataCache,
 } from './db'
@@ -280,6 +281,19 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     let debounceT: ReturnType<typeof setTimeout> | undefined
     const reload = async () => {
       try {
+        // `loadData()` replaces state with server-only rows. After creating a case, TOKEN_REFRESHED /
+        // SIGNED_IN can fire before `vc_cases` upsert succeeds; a full reload drops the optimistic case
+        // and the router shows "This case may have been deleted." Merge like realtime sync instead.
+        if (relationalBackendEnabled() && supabase) {
+          const merged = await pullAndMergeWithLocal(dataRef.current)
+          if (merged) {
+            const next = ensurePocUsers(merged)
+            dataRef.current = next
+            setData(next)
+            await writeLocalDataCache(next)
+            return
+          }
+        }
         const d = await loadData()
         const next = ensurePocUsers(d)
         dataRef.current = next
