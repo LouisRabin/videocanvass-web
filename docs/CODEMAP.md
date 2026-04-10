@@ -27,7 +27,9 @@ Short orientation for humans and tooling. **Policy and tuning** for geocoding, f
 - [`src/lib/types.ts`](../src/lib/types.ts) — Shared domain types and small UI helpers (e.g. status labels/colors).
 - [`src/lib/supabase.ts`](../src/lib/supabase.ts) — Supabase client and remote sync.
 - [`src/lib/mfaAuth.ts`](../src/lib/mfaAuth.ts) — TOTP MFA helpers (`sessionNeedsTotpStep`, `verifyTotpChallenge`).
-- [`src/app/LoginPage.tsx`](../src/app/LoginPage.tsx) — Email/password sign-up and sign-in (relational mode).
+- [`src/app/LoginPage.tsx`](../src/app/LoginPage.tsx) — Email/password sign-up, sign-in, and forgot-password (relational mode).
+- [`src/app/PasswordRecoveryPage.tsx`](../src/app/PasswordRecoveryPage.tsx) — New password after opening the reset link (`PASSWORD_RECOVERY`).
+- [`src/lib/authPasswordReset.ts`](../src/lib/authPasswordReset.ts) — `redirectTo` URL and hash detection for Supabase reset flow.
 - [`src/app/MfaTotpChallengePanel.tsx`](../src/app/MfaTotpChallengePanel.tsx) / [`MfaEnrollmentModal.tsx`](../src/app/MfaEnrollmentModal.tsx) — TOTP challenge at sign-in; optional enrollment from Cases.
 
 ## Permissions

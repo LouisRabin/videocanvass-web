@@ -31,6 +31,15 @@ async function readUsableSessionOnce(sb: SupabaseClient): Promise<Session | null
   const now = Math.floor(Date.now() / 1000)
   const exp = session.expires_at
   if (typeof exp === 'number' && exp <= now) {
+    // Prefer refresh over sign-out: another tab/device may have rotated tokens; expiring here is normal.
+    const { data: refreshed, error } = await sb.auth.refreshSession()
+    if (!error && refreshed.session?.access_token) {
+      const s = refreshed.session
+      const expN = s.expires_at
+      if (typeof expN !== 'number' || expN > Math.floor(Date.now() / 1000)) {
+        return s
+      }
+    }
     await sb.auth.signOut()
     return null
   }
@@ -162,7 +171,18 @@ export async function ensureRelationalClientSession(
     if (normUuid(userId) !== need) {
       session = await refreshSessionAndReload(sb)
       userId = readUserId(session?.user)
-      if (!session?.access_token || normUuid(userId) !== need) return null
+      if (!session?.access_token || normUuid(userId) !== need) {
+        // Race with another signed-in tab writing fresh tokens to shared storage — one short retry.
+        await new Promise((r) => setTimeout(r, 120))
+        ;({
+          data: { session },
+        } = await sb.auth.getSession())
+        if (!sessionTokenFresh(session, Math.floor(Date.now() / 1000))) {
+          session = await refreshSessionAndReload(sb)
+        }
+        userId = readUserId(session?.user)
+        if (!session?.access_token || normUuid(userId) !== need) return null
+      }
     }
   }
 

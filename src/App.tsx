@@ -1,10 +1,20 @@
 import type { CSSProperties } from 'react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { hasCaseAccess } from './lib/casePermissions'
 import { relationalBackendEnabled } from './lib/backendMode'
 import { getNativeCapabilities } from './lib/nativeCapabilities'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
 import type { Session } from '@supabase/supabase-js'
+import { urlHashIndicatesPasswordRecovery } from './lib/authPasswordReset'
 import {
   getUsableSessionOrSignOutWithTimeout,
   resolveUsableSessionWithTimeout,
@@ -15,8 +25,10 @@ import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
 import { CasesPage } from './app/CasesPage'
 import { Layout } from './app/Layout'
+import { Modal } from './app/Modal'
 import { BuildDebugStrip } from './app/BuildDebugStrip'
 import { LoginPage } from './app/LoginPage'
+import { PasswordRecoveryPage } from './app/PasswordRecoveryPage'
 import { MfaTotpChallengePanel } from './app/MfaTotpChallengePanel'
 import { getPreferredTotpFactorId, sessionNeedsTotpStep } from './lib/mfaAuth'
 import type { AppUser } from './lib/types'
@@ -44,6 +56,40 @@ const GlobalCanvassAdminPage = lazy(async () => {
 
 function sessionUserIdMatchesStoreUser(sessionId: string, storeUserId: string): boolean {
   return sessionId.trim().toLowerCase() === storeUserId.trim().toLowerCase()
+}
+
+/** Restore case / admin route after mobile tab sleep, reload, or Router remount (in-memory route was always `cases` before). */
+const VC_NAV_ROUTE_STORAGE_PREFIX = 'vc:navRoute:'
+/** Wall-clock inactivity (no pointer/keys/touch/scroll) before sign-out. */
+const VC_SESSION_INACTIVITY_MS = 10 * 60 * 1000
+/** After this much idle time, show a countdown for the remaining time until sign-out. */
+const VC_SESSION_WARNING_MS = 5 * 60 * 1000
+
+function formatIdleCountdown(totalSeconds: number): string {
+  const sec = Math.max(0, Math.floor(totalSeconds))
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+type AppNavRoute = { name: 'cases' } | { name: 'case'; id: string } | { name: 'admin_global' }
+
+function navRouteStorageKey(userId: string): string {
+  return `${VC_NAV_ROUTE_STORAGE_PREFIX}${userId}`
+}
+
+function readNavRouteFromStorage(userId: string, allowAdminGlobal: boolean): AppNavRoute {
+  try {
+    const raw = sessionStorage.getItem(navRouteStorageKey(userId))
+    if (!raw) return { name: 'cases' }
+    const o = JSON.parse(raw) as { name?: string; id?: string }
+    if (o?.name === 'cases') return { name: 'cases' }
+    if (o?.name === 'admin_global') return allowAdminGlobal ? { name: 'admin_global' } : { name: 'cases' }
+    if (o?.name === 'case' && typeof o.id === 'string' && o.id.length > 0) return { name: 'case', id: o.id }
+  } catch {
+    /* ignore */
+  }
+  return { name: 'cases' }
 }
 
 const routeSuspenseFallback = (
@@ -94,6 +140,8 @@ function SessionGate() {
   const [mfaGate, setMfaGate] = useState<MfaGateState>('off')
   /** False until first `getUsableSessionOrSignOut` finishes (avoids login-screen flash for valid sessions). */
   const [authResolved, setAuthResolved] = useState(false)
+  /** User opened a password-reset email link and must set a new password before the normal app shell. */
+  const [awaitingPasswordReset, setAwaitingPasswordReset] = useState(false)
 
   const applySession = useCallback(
     (session: import('@supabase/supabase-js').Session | null) => {
@@ -142,6 +190,29 @@ function SessionGate() {
     setMfaGate(fid ? 'totp' : 'unsupported')
   }, [])
 
+  const completePasswordRecovery = useCallback(async () => {
+    setAwaitingPasswordReset(false)
+    try {
+      const u = new URL(window.location.href)
+      if (u.hash) {
+        window.history.replaceState({}, '', `${u.pathname}${u.search}`)
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!relationalBackendEnabled() || !supabase) return
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const usable = await resolveUsableSessionWithTimeout(supabase, session)
+    applySession(usable)
+    if (!usable?.user) {
+      setMfaGate('off')
+      return
+    }
+    void syncMfaGate(usable)
+  }, [applySession, syncMfaGate])
+
   useEffect(() => {
     if (!relationalBackendEnabled() || !supabase) {
       setAuthResolved(true)
@@ -159,6 +230,7 @@ function SessionGate() {
           await sb.auth.signOut()
           if (cancelled) return
           applySession(null)
+          setAwaitingPasswordReset(false)
           setAuthResolved(true)
           setMfaGate('off')
           return
@@ -172,12 +244,16 @@ function SessionGate() {
         const session = await getUsableSessionOrSignOutWithTimeout(sb)
         if (cancelled) return
         applySession(session)
+        if (session?.user && urlHashIndicatesPasswordRecovery()) {
+          setAwaitingPasswordReset(true)
+        }
         setAuthResolved(true)
         void syncMfaGate(session)
       } catch (e) {
         console.warn('Session bootstrap failed:', e)
         if (cancelled) return
         applySession(null)
+        setAwaitingPasswordReset(false)
         setAuthResolved(true)
         setMfaGate('off')
       }
@@ -185,9 +261,13 @@ function SessionGate() {
 
     const {
       data: { subscription },
-    } = sb.auth.onAuthStateChange((_event, session) => {
+    } = sb.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY' && session?.user) {
+        setAwaitingPasswordReset(true)
+      }
       void (async () => {
         if (!session?.user) {
+          setAwaitingPasswordReset(false)
           applySession(null)
           setMfaGate('off')
           return
@@ -195,6 +275,7 @@ function SessionGate() {
         const usable = await resolveUsableSessionWithTimeout(sb, session)
         applySession(usable)
         if (!usable?.user) {
+          setAwaitingPasswordReset(false)
           setMfaGate('off')
           return
         }
@@ -256,6 +337,19 @@ function SessionGate() {
     }
     if (!sessionUserId) {
       return <LoginPage />
+    }
+    if (awaitingPasswordReset) {
+      return (
+        <PasswordRecoveryPage
+          onComplete={() => void completePasswordRecovery()}
+          onSignOut={async () => {
+            if (supabase) await supabase.auth.signOut()
+            applySession(null)
+            setAwaitingPasswordReset(false)
+            setMfaGate('off')
+          }}
+        />
+      )
     }
     if (mfaGate === 'checking') {
       return (
@@ -467,10 +561,146 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
 }
 
 function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminGlobal: boolean }) {
-  const { data } = useStore()
-  const [route, setRoute] = useState<
-    { name: 'cases' } | { name: 'case'; id: string } | { name: 'admin_global' }
-  >({ name: 'cases' })
+  const { data, ready } = useStore()
+  const prevUserIdRef = useRef(props.currentUser.id)
+  const [route, setRoute] = useState<AppNavRoute>(() =>
+    readNavRouteFromStorage(props.currentUser.id, props.allowAdminGlobal),
+  )
+
+  useEffect(() => {
+    const prev = prevUserIdRef.current
+    if (prev === props.currentUser.id) return
+    prevUserIdRef.current = props.currentUser.id
+    setRoute(readNavRouteFromStorage(props.currentUser.id, props.allowAdminGlobal))
+  }, [props.allowAdminGlobal, props.currentUser.id])
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(navRouteStorageKey(props.currentUser.id), JSON.stringify(route))
+    } catch {
+      /* quota / private mode */
+    }
+  }, [props.currentUser.id, route])
+
+  useLayoutEffect(() => {
+    if (!ready || route.name !== 'case') return
+    const ok = data.cases.some(
+      (c) => c.id === route.id && hasCaseAccess(data, route.id, props.currentUser.id),
+    )
+    if (!ok) setRoute({ name: 'cases' })
+  }, [data, props.currentUser.id, ready, route])
+
+  const onLogoutRef = useRef(props.onLogout)
+  onLogoutRef.current = props.onLogout
+
+  const lastActivityRef = useRef(Date.now())
+  const logoutTriggeredRef = useRef(false)
+
+  const bumpActivity = useCallback((e?: Event) => {
+    const t = e?.target
+    if (t instanceof Element && t.closest('[data-vc-ignore-idle-bump="true"]')) return
+    lastActivityRef.current = Date.now()
+    logoutTriggeredRef.current = false
+  }, [])
+
+  const [idleTick, setIdleTick] = useState(0)
+  const extendSession = useCallback(() => {
+    bumpActivity()
+    setIdleTick((t) => t + 1)
+  }, [bumpActivity])
+
+  useEffect(() => {
+    const id = window.setInterval(() => setIdleTick((x) => x + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const opts: AddEventListenerOptions = { passive: true, capture: true }
+    const bumpFromEvent = (e: Event) => bumpActivity(e)
+    let scrollT: ReturnType<typeof setTimeout> | null = null
+    const scrollThrottled = () => {
+      if (scrollT) return
+      scrollT = window.setTimeout(() => {
+        scrollT = null
+        bumpActivity()
+      }, 1000)
+    }
+    for (const ev of ['pointerdown', 'keydown', 'touchstart'] as const) {
+      window.addEventListener(ev, bumpFromEvent, opts)
+    }
+    window.addEventListener('scroll', scrollThrottled, { passive: true, capture: true })
+    return () => {
+      for (const ev of ['pointerdown', 'keydown', 'touchstart'] as const) {
+        window.removeEventListener(ev, bumpFromEvent, opts)
+      }
+      window.removeEventListener('scroll', scrollThrottled, { capture: true })
+      if (scrollT) window.clearTimeout(scrollT)
+    }
+  }, [bumpActivity])
+
+  useEffect(() => {
+    const onVis = () => setIdleTick((x) => x + 1)
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (document.visibilityState !== 'visible') return
+    const idle = Date.now() - lastActivityRef.current
+    if (idle < VC_SESSION_INACTIVITY_MS) return
+    if (logoutTriggeredRef.current) return
+    logoutTriggeredRef.current = true
+    void onLogoutRef.current()
+  }, [idleTick])
+
+  const tabVisible = typeof document !== 'undefined' && document.visibilityState === 'visible'
+  const idleMs = Date.now() - lastActivityRef.current
+  const showIdleWarning =
+    tabVisible && idleMs >= VC_SESSION_WARNING_MS && idleMs < VC_SESSION_INACTIVITY_MS
+  const secondsUntilLogout = Math.max(
+    0,
+    Math.ceil((lastActivityRef.current + VC_SESSION_INACTIVITY_MS - Date.now()) / 1000),
+  )
+
+  const idleWarningModal = (
+    <Modal
+      open={showIdleWarning}
+      title="Signing out soon"
+      ariaLabel="Inactivity warning"
+      onClose={extendSession}
+      zBase={70000}
+    >
+      <div data-vc-ignore-idle-bump="true" style={{ display: 'grid', gap: 16 }}>
+        <p style={{ margin: 0, color: vcGlassFgDarkReadable, lineHeight: 1.5, fontSize: 15 }}>
+          You will be logged out in <strong>{formatIdleCountdown(secondsUntilLogout)}</strong> due to inactivity.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            onClick={() => {
+              void onLogoutRef.current()
+            }}
+            style={{
+              border: '1px solid rgba(185, 28, 28, 0.45)',
+              borderRadius: 10,
+              padding: '10px 16px',
+              background: 'rgba(254, 242, 242, 0.95)',
+              color: '#991b1b',
+              cursor: 'pointer',
+              fontWeight: 800,
+              fontSize: 14,
+            }}
+          >
+            Log out
+          </button>
+          <button type="button" onClick={extendSession} style={{ ...vcGlassBtnPrimary, fontSize: 14 }}>
+            Stay logged in
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
 
   const currentCase = useMemo(() => {
     if (route.name !== 'case') return null
@@ -479,42 +709,54 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
 
   if (route.name === 'admin_global') {
     return (
-      <Suspense fallback={routeSuspenseFallback}>
-        <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
-      </Suspense>
+      <>
+        {idleWarningModal}
+        <Suspense fallback={routeSuspenseFallback}>
+          <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
+        </Suspense>
+      </>
     )
   }
 
   if (route.name === 'cases') {
     return (
-      <CasesPage
-        onOpenCase={(id) => setRoute({ name: 'case', id })}
-        currentUser={props.currentUser}
-        onLogout={props.onLogout}
-        onOpenAdminGlobal={props.allowAdminGlobal ? () => setRoute({ name: 'admin_global' }) : undefined}
-      />
+      <>
+        {idleWarningModal}
+        <CasesPage
+          onOpenCase={(id) => setRoute({ name: 'case', id })}
+          currentUser={props.currentUser}
+          onLogout={props.onLogout}
+          onOpenAdminGlobal={props.allowAdminGlobal ? () => setRoute({ name: 'admin_global' }) : undefined}
+        />
+      </>
     )
   }
 
   if (!currentCase) {
     return (
-      <Layout
-        title="Case not found"
-        right={
-          <button type="button" onClick={() => setRoute({ name: 'cases' })} style={vcGlassHeaderBtn}>
-            Back
-          </button>
-        }
-      >
-        <div style={{ color: vcGlassFgMutedOnPanel }}>This case may have been deleted.</div>
-      </Layout>
+      <>
+        {idleWarningModal}
+        <Layout
+          title="Case not found"
+          right={
+            <button type="button" onClick={() => setRoute({ name: 'cases' })} style={vcGlassHeaderBtn}>
+              Back
+            </button>
+          }
+        >
+          <div style={{ color: vcGlassFgMutedOnPanel }}>This case may have been deleted.</div>
+        </Layout>
+      </>
     )
   }
 
   return (
-    <Suspense fallback={routeSuspenseFallback}>
-      <CasePage caseId={currentCase.id} currentUser={props.currentUser} onBack={() => setRoute({ name: 'cases' })} />
-    </Suspense>
+    <>
+      {idleWarningModal}
+      <Suspense fallback={routeSuspenseFallback}>
+        <CasePage caseId={currentCase.id} currentUser={props.currentUser} onBack={() => setRoute({ name: 'cases' })} />
+      </Suspense>
+    </>
   )
 }
 

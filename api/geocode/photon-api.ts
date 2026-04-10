@@ -18,5 +18,10 @@ export default async function handler(request: Request): Promise<Response> {
   })
   const body = await upstream.arrayBuffer()
   const ct = upstream.headers.get('Content-Type') ?? 'application/json'
-  return new Response(body, { status: upstream.status, headers: { 'Content-Type': ct } })
+  const headers = new Headers({ 'Content-Type': ct })
+  // Same query+bias repeats often while typing/backspacing; edge/CDN cache cuts duplicate round-trips to Komoot.
+  if (upstream.ok) {
+    headers.set('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=86400')
+  }
+  return new Response(body, { status: upstream.status, headers })
 }

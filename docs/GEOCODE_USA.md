@@ -9,12 +9,13 @@
 
 ## Current behavior (after US restriction)
 
-- Same **single Photon request** (no Nominatim forward search — avoids prior slow/fragile patterns).
+- Same **single Photon request** (no Nominatim forward search — avoids prior slow/fragile patterns). In the **browser**, the client calls **`https://photon.komoot.io/api/`** directly when CORS succeeds (skips the app’s edge proxy hop); otherwise it falls back to **`/api/geocode/photon-api`**.
 - **`countrycode`** (and optional **`country`**) on Photon features are parsed; results are **filtered** to the United States.
-- **Internal fetch limit** is higher than the UI cap (e.g. 18) so we still return up to 6 US rows after filtering.
+- **Internal fetch limit** is higher than the UI cap (about 10–24 rows, from `PHOTON_US_FETCH_MIN` / `PHOTON_US_FETCH_CAP`) so we still return up to 6 US rows after filtering.
+- **In-memory cache** stores empty results too (same 10m TTL), so repeated identical queries do not re-hit the network.
 - **`GEOCODE_SCOPE === 'us'`:** Photon also receives **`bbox`** = continental US (`US_PHOTON_BBOX`) to bias server-side candidates. Alaska/Hawaii still pass via `countrycode` / name / coordinate fallback.
 - **`GEOCODE_SCOPE === 'ny'`:** US filter only; **no** `bbox` (NY-specific tightening can be added later).
-- **Cache key** includes a `us` segment and a rounded `lat,lon` suffix when bias is set so panning does not reuse wrong suggestions.
+- **Cache key** includes a `us` segment and a **2-decimal** quantized `lat,lon` suffix when bias is set; the same quantization is sent to Photon so small map drift does not bust the client cache or duplicate requests.
 - **Map center bias:** [`useCaseGeocodeSearch`](src/app/case/hooks/useCaseGeocodeSearch.ts) passes Photon `lat`/`lon` from **Locate me** when set, otherwise reads **`mapRef.getCenter()`** when each debounced search runs. Photon also gets **`location_bias_scale=0.32`** whenever bias coordinates are sent.
 - **Coordinate fallback:** If Photon omits country fields, a hit is kept only when **lat/lon** falls in rough US boxes (continental + Alaska + Hawaii).
 

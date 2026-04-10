@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import { useState } from 'react'
 import { Layout } from './Layout'
+import { passwordRecoveryRedirectTo } from '../lib/authPasswordReset'
 import { supabase } from '../lib/supabase'
 import { relationalBackendEnabled } from '../lib/backendMode'
 import {
@@ -49,7 +50,7 @@ const btnGhost: CSSProperties = {
 }
 
 export function LoginPage() {
-  const [mode, setMode] = useState<'sign_in' | 'sign_up'>('sign_in')
+  const [mode, setMode] = useState<'sign_in' | 'sign_up' | 'forgot_password'>('sign_in')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -75,6 +76,35 @@ export function LoginPage() {
     setMessage(null)
     const em = email.trim()
     const pw = password
+    if (mode === 'forgot_password') {
+      if (!em) {
+        setMessage('Enter the email for your account.')
+        return
+      }
+      const client = supabase
+      if (!client) return
+      setBusy(true)
+      try {
+        const redirectTo = passwordRecoveryRedirectTo()
+        if (!redirectTo.startsWith('http://') && !redirectTo.startsWith('https://')) {
+          throw new Error(
+            'Cannot build a valid return URL. Set VITE_VC_SITE_URL to your site (e.g. https://your-app.vercel.app) and redeploy, or open the app from a normal https address.',
+          )
+        }
+        const { error } = await client.auth.resetPasswordForEmail(em, {
+          redirectTo,
+        })
+        if (error) throw error
+        setMessage(
+          'If an account exists for that email, we sent a reset link. Check your inbox and spam folder.',
+        )
+      } catch (e) {
+        setMessage(e instanceof Error ? e.message : 'Could not send reset email')
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     if (!em || !pw) {
       setMessage('Enter email and password.')
       return
@@ -110,7 +140,10 @@ export function LoginPage() {
   }
 
   return (
-    <Layout title="VideoCanvass" subtitle="Sign in to your workspace">
+    <Layout
+      title="VideoCanvass"
+      subtitle={mode === 'forgot_password' ? 'Reset your password' : 'Sign in to your workspace'}
+    >
       <div style={vcAuthMainCenterWrap}>
         <div style={card}>
           <form
@@ -121,7 +154,7 @@ export function LoginPage() {
             }}
           >
             <div style={{ fontWeight: 900, fontSize: 18, color: vcGlassFgDarkReadable }}>
-              {mode === 'sign_in' ? 'Sign in' : 'Create account'}
+              {mode === 'forgot_password' ? 'Forgot password' : mode === 'sign_in' ? 'Sign in' : 'Create account'}
             </div>
             {mode === 'sign_up' ? (
               <>
@@ -145,33 +178,100 @@ export function LoginPage() {
                 autoComplete="email"
               />
             </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Password</span>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                style={field}
-                autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
-              />
-            </label>
+            {mode === 'forgot_password' ? (
+              <p style={{ margin: 0, fontSize: 14, lineHeight: 1.5, color: '#475569' }}>
+                We will email you a link to choose a new password. It expires after a short time.
+              </p>
+            ) : (
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: vcGlassFgDarkReadable }}>Password</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  style={field}
+                  autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
+                />
+              </label>
+            )}
             {message ? (
-              <div style={{ color: message.includes('Check your email') ? '#047857' : '#b91c1c', fontSize: 14 }}>{message}</div>
+              <div
+                style={{
+                  color:
+                    message.includes('Check your email') || message.includes('If an account exists')
+                      ? '#047857'
+                      : '#b91c1c',
+                  fontSize: 14,
+                }}
+              >
+                {message}
+              </div>
             ) : null}
             <button type="submit" style={{ ...btnPrimary, opacity: busy ? 0.7 : 1 }} disabled={busy}>
-              {busy ? 'Please wait…' : mode === 'sign_in' ? 'Sign in' : 'Create account'}
+              {busy
+                ? 'Please wait…'
+                : mode === 'forgot_password'
+                  ? 'Send reset link'
+                  : mode === 'sign_in'
+                    ? 'Sign in'
+                    : 'Create account'}
             </button>
           </form>
-          <button
-            type="button"
-            style={btnGhost}
-            onClick={() => {
-              setMode(mode === 'sign_in' ? 'sign_up' : 'sign_in')
-              setMessage(null)
-            }}
-          >
-            {mode === 'sign_in' ? 'Need an account? Register' : 'Already have an account? Sign in'}
-          </button>
+          {mode === 'forgot_password' ? (
+            <button
+              type="button"
+              style={btnGhost}
+              onClick={() => {
+                setMode('sign_in')
+                setMessage(null)
+              }}
+            >
+              Back to sign in
+            </button>
+          ) : mode === 'sign_in' ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+              }}
+            >
+              <button
+                type="button"
+                style={btnGhost}
+                onClick={() => {
+                  setMode('sign_up')
+                  setMessage(null)
+                }}
+              >
+                Register
+              </button>
+              <button
+                type="button"
+                style={{ ...btnGhost, textAlign: 'right' }}
+                onClick={() => {
+                  setMode('forgot_password')
+                  setMessage(null)
+                }}
+              >
+                Forgot Password?
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              style={btnGhost}
+              onClick={() => {
+                setMode('sign_in')
+                setMessage(null)
+              }}
+            >
+              Already have an account? Sign in
+            </button>
+          )}
         </div>
       </div>
     </Layout>

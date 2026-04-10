@@ -13,6 +13,8 @@ import {
 } from '../lib/caseMeta'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 import { relationalBackendEnabled } from '../lib/backendMode'
+import { supabase } from '../lib/supabase'
+import { appUserFromVcProfileRow, type VcProfileRow } from '../lib/relational/sync'
 import { useTargetMode } from '../lib/targetMode'
 import { MfaEnrollmentModal } from './MfaEnrollmentModal'
 import { useTour } from './tour/TourContext'
@@ -39,20 +41,196 @@ function casesPageIdentitySubtitle(u: AppUser): string {
   return id ? `${rank} · ${u.displayName} · ${id}` : `${rank} · ${u.displayName}`
 }
 
+function TeamSearchPersonGlyph(props: { size?: number }) {
+  const s = props.size ?? 18
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden style={{ flexShrink: 0, color: '#64748b' }}>
+      <path
+        fill="currentColor"
+        d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"
+      />
+    </svg>
+  )
+}
+
+function TeamSearchUnitGlyph(props: { size?: number }) {
+  const s = props.size ?? 18
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden style={{ flexShrink: 0, color: '#0d9488' }}>
+      <path
+        fill="currentColor"
+        d="M4 21V9l8-4 8 4v12h-5v-7H9v7H4zm9 0v-6h2v6h-2z"
+      />
+    </svg>
+  )
+}
+
+type UnitSearchRow = { id: string; name: string; code: string }
+
 function TeamMembersModalBody(props: {
   caseId: string
   data: AppData
-  teamPickUserId: string
-  setTeamPickUserId: (v: string) => void
-  onAdd: () => void
+  onAdd: (input: { collaboratorUserId: string; collaboratorProfile: AppUser }) => Promise<void> | void
+  onAddMany: (items: { collaboratorUserId: string; collaboratorProfile: AppUser }[]) => Promise<void> | void
   onRemove: (collaboratorUserId: string) => void
 }) {
+  const [searchQuery, setSearchQuery] = useState('')
+  const [profileResults, setProfileResults] = useState<VcProfileRow[]>([])
+  const [unitResults, setUnitResults] = useState<UnitSearchRow[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [pickedProfile, setPickedProfile] = useState<AppUser | null>(null)
+  const [expandedUnit, setExpandedUnit] = useState<UnitSearchRow | null>(null)
+  const [unitMembers, setUnitMembers] = useState<VcProfileRow[]>([])
+  const [unitMembersLoading, setUnitMembersLoading] = useState(false)
+  const [unitMembersError, setUnitMembersError] = useState<string | null>(null)
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([])
+
   const c = props.data.cases.find((x) => x.id === props.caseId)
+  const members = c ? props.data.caseCollaborators.filter((cc) => cc.caseId === props.caseId) : []
+
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (q.length < 2) {
+      setProfileResults([])
+      setUnitResults([])
+      setSearchError(null)
+      setSearchLoading(false)
+      return
+    }
+    const caseRow = props.data.cases.find((x) => x.id === props.caseId)
+    const memberIds = caseRow
+      ? props.data.caseCollaborators.filter((cc) => cc.caseId === props.caseId).map((m) => m.userId)
+      : []
+    const eligibleLocal = caseRow
+      ? props.data.users.filter((u) => u.id !== caseRow.ownerUserId && !memberIds.includes(u.id))
+      : []
+
+    let cancelled = false
+    const t = window.setTimeout(() => {
+      void (async () => {
+        setSearchLoading(true)
+        setSearchError(null)
+        try {
+          if (relationalBackendEnabled() && supabase) {
+            const [profRes, unitRes] = await Promise.all([
+              supabase.rpc('vc_search_profiles_for_case_team', {
+                p_case_id: props.caseId,
+                p_query: q,
+              }),
+              supabase.rpc('vc_search_units_for_case_team', {
+                p_case_id: props.caseId,
+                p_query: q,
+              }),
+            ])
+            if (cancelled) return
+            if (profRes.error) throw profRes.error
+            if (unitRes.error) throw unitRes.error
+            const rows = (profRes.data ?? []) as VcProfileRow[]
+            setProfileResults(rows.map((r) => ({ ...r, id: String(r.id) })))
+            const urows = (unitRes.data ?? []) as { id: string; name: string; code: string }[]
+            setUnitResults(urows.map((r) => ({ ...r, id: String(r.id) })))
+          } else {
+            const ql = q.toLowerCase()
+            const filtered = eligibleLocal
+              .filter(
+                (u) =>
+                  u.email.toLowerCase().includes(ql) ||
+                  (u.taxNumber && u.taxNumber.toLowerCase().includes(ql)),
+              )
+              .slice(0, 20)
+            if (cancelled) return
+            setProfileResults(
+              filtered.map((u) => ({
+                id: u.id,
+                display_name: u.displayName,
+                email: u.email,
+                tax_number: u.taxNumber,
+                created_at: new Date(u.createdAt).toISOString(),
+              })),
+            )
+            setUnitResults([])
+          }
+        } catch (e) {
+          if (!cancelled) setSearchError(e instanceof Error ? e.message : 'Search failed')
+        } finally {
+          if (!cancelled) setSearchLoading(false)
+        }
+      })()
+    }, 280)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [searchQuery, props.caseId, props.data])
+
+  useEffect(() => {
+    if (!expandedUnit) {
+      setUnitMembers([])
+      setUnitMembersLoading(false)
+      setUnitMembersError(null)
+      return
+    }
+    if (!relationalBackendEnabled() || !supabase) {
+      setUnitMembers([])
+      setUnitMembersLoading(false)
+      setUnitMembersError(null)
+      return
+    }
+    let cancelled = false
+    setUnitMembersLoading(true)
+    setUnitMembersError(null)
+    void (async () => {
+      try {
+        const { data, error } = await supabase.rpc('vc_unit_member_profiles_for_case_team', {
+          p_case_id: props.caseId,
+          p_unit_id: expandedUnit.id,
+        })
+        if (cancelled) return
+        if (error) throw error
+        const rows = (data ?? []) as VcProfileRow[]
+        setUnitMembers(rows.map((r) => ({ ...r, id: String(r.id) })))
+      } catch (e) {
+        if (!cancelled) setUnitMembersError(e instanceof Error ? e.message : 'Failed to load unit members')
+      } finally {
+        if (!cancelled) setUnitMembersLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [expandedUnit, props.caseId])
+
+  const clearSearchAfterAdd = () => {
+    setPickedProfile(null)
+    setSearchQuery('')
+    setProfileResults([])
+    setUnitResults([])
+    setExpandedUnit(null)
+    setUnitMembers([])
+    setSelectedMemberIds([])
+  }
+
+  const toggleMemberSelect = (id: string) => {
+    setSelectedMemberIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  const addManyFromRows = (rows: VcProfileRow[]) => {
+    const items = rows.map((row) => ({
+      collaboratorUserId: row.id,
+      collaboratorProfile: appUserFromVcProfileRow(row),
+    }))
+    return Promise.resolve(props.onAddMany(items)).then(() => {
+      const added = new Set(items.map((i) => i.collaboratorUserId))
+      setUnitMembers((prev) => prev.filter((m) => !added.has(m.id)))
+      setSelectedMemberIds((prev) => prev.filter((id) => !added.has(id)))
+    })
+  }
+
   if (!c) return <div style={{ color: vcGlassFgSecondaryOnContent }}>Case not found.</div>
-  const members = props.data.caseCollaborators.filter((cc) => cc.caseId === props.caseId)
-  const eligible = props.data.users.filter(
-    (u) => u.id !== c.ownerUserId && !members.some((m) => m.userId === u.id),
-  )
+
+  const hasHits = unitResults.length > 0 || profileResults.length > 0
+
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <p style={{ margin: 0, fontSize: 13, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
@@ -82,15 +260,250 @@ function TeamMembersModalBody(props: {
       )}
       <div style={{ display: 'grid', gap: 6 }}>
         <span style={{ fontWeight: 800, fontSize: 13 }}>Add member</span>
-        <select value={props.teamPickUserId} onChange={(e) => props.setTeamPickUserId(e.target.value)} style={field}>
-          <option value="">Choose user…</option>
-          {eligible.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.displayName} ({u.taxNumber})
-            </option>
-          ))}
-        </select>
-        <button type="button" style={btnPrimary} onClick={props.onAdd} disabled={!props.teamPickUserId.trim()}>
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(e) => {
+            setSearchQuery(e.target.value)
+            setPickedProfile(null)
+            setExpandedUnit(null)
+            setSelectedMemberIds([])
+          }}
+          placeholder="Search by email, tax number, or unit code…"
+          style={field}
+          autoComplete="off"
+        />
+        {searchLoading ? (
+          <div style={{ fontSize: 12, color: vcGlassFgMetaOnContent }}>Searching…</div>
+        ) : null}
+        {searchError ? (
+          <div style={{ fontSize: 12, color: '#b91c1c' }}>{searchError}</div>
+        ) : null}
+        {!searchLoading && searchQuery.trim().length >= 2 && !hasHits && !searchError ? (
+          <div style={{ fontSize: 12, color: vcGlassFgSecondaryOnContent }}>No matches.</div>
+        ) : null}
+        {hasHits ? (
+          <div
+            role="listbox"
+            aria-label="Search results"
+            style={{
+              maxHeight: 220,
+              overflowY: 'auto',
+              border: '1px solid rgba(148, 163, 184, 0.45)',
+              borderRadius: 10,
+              padding: 4,
+              display: 'grid',
+              gap: 4,
+            }}
+          >
+            {unitResults.map((unit) => {
+              const expanded = expandedUnit?.id === unit.id
+              const codeT = (unit.code ?? '').trim()
+              const line = codeT ? `${codeT} · ${unit.name}` : unit.name
+              return (
+                <button
+                  key={`unit-${unit.id}`}
+                  type="button"
+                  role="option"
+                  aria-expanded={expanded}
+                  onClick={() => {
+                    setPickedProfile(null)
+                    setExpandedUnit((prev) => (prev?.id === unit.id ? null : unit))
+                    setSelectedMemberIds([])
+                  }}
+                  style={{
+                    ...btn,
+                    textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    background: expanded ? 'rgba(13, 148, 136, 0.1)' : undefined,
+                    borderColor: expanded ? 'rgba(13, 148, 136, 0.45)' : undefined,
+                    minWidth: 0,
+                  }}
+                >
+                  <TeamSearchUnitGlyph />
+                  <span
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 700,
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {line}
+                  </span>
+                </button>
+              )
+            })}
+            {profileResults.map((row) => {
+              const user = appUserFromVcProfileRow(row)
+              const selected = pickedProfile?.id === user.id
+              const name = row.display_name?.trim() || user.displayName
+              const emailFull = (row.email ?? '').trim() || '—'
+              const taxFull = (row.tax_number ?? '').trim() || '—'
+              const line = `${name} · ${emailFull} · ${taxFull}`
+              return (
+                <button
+                  key={`person-${row.id}`}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    setExpandedUnit(null)
+                    setSelectedMemberIds([])
+                    setPickedProfile(user)
+                  }}
+                  style={{
+                    ...btn,
+                    textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    background: selected ? 'rgba(59, 130, 246, 0.12)' : undefined,
+                    borderColor: selected ? 'rgba(59, 130, 246, 0.45)' : undefined,
+                    minWidth: 0,
+                  }}
+                >
+                  <TeamSearchPersonGlyph />
+                  <span
+                    style={{
+                      fontSize: 13,
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {line}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+        {expandedUnit ? (
+          <div
+            style={{
+              border: '1px solid rgba(13, 148, 136, 0.35)',
+              borderRadius: 10,
+              padding: 10,
+              display: 'grid',
+              gap: 8,
+              background: 'rgba(13, 148, 136, 0.06)',
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 13 }}>
+              People in unit {(expandedUnit.code ?? '').trim() || expandedUnit.name}
+            </div>
+            {unitMembersLoading ? (
+              <div style={{ fontSize: 12, color: vcGlassFgMetaOnContent }}>Loading members…</div>
+            ) : null}
+            {unitMembersError ? (
+              <div style={{ fontSize: 12, color: '#b91c1c' }}>{unitMembersError}</div>
+            ) : null}
+            {!unitMembersLoading && !unitMembersError && unitMembers.length === 0 ? (
+              <div style={{ fontSize: 12, color: vcGlassFgSecondaryOnContent }}>
+                No one to add (everyone may already be on the case, or the unit is empty).
+              </div>
+            ) : null}
+            {unitMembers.length > 0 ? (
+              <div
+                style={{
+                  maxHeight: 200,
+                  overflowY: 'auto',
+                  display: 'grid',
+                  gap: 4,
+                }}
+              >
+                {unitMembers.map((row) => {
+                  const u = appUserFromVcProfileRow(row)
+                  const name = row.display_name?.trim() || u.displayName
+                  const emailFull = (row.email ?? '').trim() || '—'
+                  const taxFull = (row.tax_number ?? '').trim() || '—'
+                  const line = `${name} · ${emailFull} · ${taxFull}`
+                  const checked = selectedMemberIds.includes(row.id)
+                  return (
+                    <label
+                      key={row.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        fontSize: 13,
+                        cursor: 'pointer',
+                        minWidth: 0,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleMemberSelect(row.id)}
+                        style={{ flexShrink: 0 }}
+                      />
+                      <span
+                        style={{
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {line}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : null}
+            {unitMembers.length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <button
+                  type="button"
+                  style={btnPrimary}
+                  disabled={selectedMemberIds.length === 0}
+                  onClick={() => {
+                    const rows = unitMembers.filter((m) => selectedMemberIds.includes(m.id))
+                    if (rows.length === 0) return
+                    void addManyFromRows(rows)
+                  }}
+                >
+                  Add selected
+                </button>
+                <button
+                  type="button"
+                  style={btn}
+                  onClick={() => void addManyFromRows(unitMembers)}
+                >
+                  Add all
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          style={btnPrimary}
+          disabled={!pickedProfile}
+          onClick={() => {
+            if (!pickedProfile) return
+            void Promise.resolve(
+              props.onAdd({ collaboratorUserId: pickedProfile.id, collaboratorProfile: pickedProfile }),
+            ).then(clearSearchAfterAdd)
+          }}
+        >
           Add to case
         </button>
       </div>
@@ -125,6 +538,7 @@ export function CasesPage(props: {
     deleteCase,
     updateCase,
     addCaseCollaborator,
+    addCaseCollaborators,
     removeCaseCollaborator,
   } = useStore()
   const [listTab, setListTab] = useState<ListTab>('mine')
@@ -137,7 +551,6 @@ export function CasesPage(props: {
   const [newCaseName, setNewCaseName] = useState('')
   const [newCaseDescription, setNewCaseDescription] = useState('')
   const [teamModalCaseId, setTeamModalCaseId] = useState<string | null>(null)
-  const [teamPickUserId, setTeamPickUserId] = useState('')
   const isNarrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
 
   const mineCases = useMemo(
@@ -523,24 +936,22 @@ export function CasesPage(props: {
           <Modal
             title="Team members"
             open={teamModalCaseId != null}
-            onClose={() => {
-              setTeamModalCaseId(null)
-              setTeamPickUserId('')
-            }}
+            onClose={() => setTeamModalCaseId(null)}
           >
             {teamModalCaseId ? (
               <TeamMembersModalBody
                 caseId={teamModalCaseId}
                 data={data}
-                teamPickUserId={teamPickUserId}
-                setTeamPickUserId={setTeamPickUserId}
-                onAdd={() => {
-                  if (!teamPickUserId.trim()) return
-                  void addCaseCollaborator(props.currentUser.id, {
+                onAdd={(input) =>
+                  addCaseCollaborator(props.currentUser.id, {
                     caseId: teamModalCaseId,
-                    collaboratorUserId: teamPickUserId.trim(),
-                  }).then(() => setTeamPickUserId(''))
-                }}
+                    collaboratorUserId: input.collaboratorUserId,
+                    collaboratorProfile: input.collaboratorProfile,
+                  })
+                }
+                onAddMany={(items) =>
+                  addCaseCollaborators(props.currentUser.id, { caseId: teamModalCaseId, items })
+                }
                 onRemove={(collaboratorUserId: string) =>
                   void removeCaseCollaborator(props.currentUser.id, { caseId: teamModalCaseId, collaboratorUserId })
                 }

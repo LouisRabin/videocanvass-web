@@ -93,7 +93,14 @@ type StoreState = {
     patch: Partial<Pick<CaseAttachment, 'kind' | 'caption'>>,
   ) => Promise<void>
   deleteCaseAttachment: (actorUserId: string, attachmentId: string) => Promise<void>
-  addCaseCollaborator: (actorUserId: string, input: { caseId: string; collaboratorUserId: string }) => Promise<void>
+  addCaseCollaborator: (
+    actorUserId: string,
+    input: { caseId: string; collaboratorUserId: string; collaboratorProfile?: AppUser },
+  ) => Promise<void>
+  addCaseCollaborators: (
+    actorUserId: string,
+    input: { caseId: string; items: { collaboratorUserId: string; collaboratorProfile?: AppUser }[] },
+  ) => Promise<void>
   removeCaseCollaborator: (actorUserId: string, input: { caseId: string; collaboratorUserId: string }) => Promise<void>
   createLocation: (input: {
     caseId: string
@@ -576,7 +583,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   )
 
   const addCaseCollaborator = useCallback(
-    async (actorUserId: string, input: { caseId: string; collaboratorUserId: string }) => {
+    async (actorUserId: string, input: { caseId: string; collaboratorUserId: string; collaboratorProfile?: AppUser }) => {
       const current = dataRef.current
       assertPermission(canManageCollaborators(current, input.caseId, actorUserId))
       const c = findCase(current, input.caseId)
@@ -590,8 +597,20 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         role: 'editor',
         createdAt: Date.now(),
       }
+      let users = current.users
+      if (input.collaboratorProfile && input.collaboratorProfile.id.trim() === uid) {
+        const prof = input.collaboratorProfile
+        const i = users.findIndex((u) => u.id === prof.id)
+        if (i >= 0) {
+          users = users.slice()
+          users[i] = prof
+        } else {
+          users = [...users, prof]
+        }
+      }
       const next: AppData = {
         ...current,
+        users,
         caseCollaborators: [...current.caseCollaborators, row],
       }
       if (relationalBackendEnabled() && supabase) {
@@ -603,6 +622,71 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           caseId: input.caseId,
           meta: { collaboratorUserId: uid },
         })
+      }
+      await persist(next)
+    },
+    [persist],
+  )
+
+  const addCaseCollaborators = useCallback(
+    async (
+      actorUserId: string,
+      input: { caseId: string; items: { collaboratorUserId: string; collaboratorProfile?: AppUser }[] },
+    ) => {
+      const current = dataRef.current
+      assertPermission(canManageCollaborators(current, input.caseId, actorUserId))
+      const c = findCase(current, input.caseId)
+      if (!c) throw new Error('Case not found')
+      const caseId = input.caseId
+      let users = current.users
+      const newRows: CaseCollaborator[] = []
+      const seen = new Set<string>()
+
+      for (const item of input.items) {
+        const uid = item.collaboratorUserId.trim()
+        if (!uid || uid === c.ownerUserId) continue
+        if (seen.has(uid)) continue
+        seen.add(uid)
+        if (current.caseCollaborators.some((cc) => cc.caseId === caseId && cc.userId === uid)) continue
+        if (newRows.some((r) => r.userId === uid)) continue
+
+        newRows.push({
+          caseId,
+          userId: uid,
+          role: 'editor',
+          createdAt: Date.now(),
+        })
+
+        if (item.collaboratorProfile && item.collaboratorProfile.id.trim() === uid) {
+          const prof = item.collaboratorProfile
+          const i = users.findIndex((u) => u.id === prof.id)
+          if (i >= 0) {
+            users = users.slice()
+            users[i] = prof
+          } else {
+            users = [...users, prof]
+          }
+        }
+      }
+
+      if (newRows.length === 0) return
+
+      const next: AppData = {
+        ...current,
+        users,
+        caseCollaborators: [...current.caseCollaborators, ...newRows],
+      }
+      if (relationalBackendEnabled() && supabase) {
+        for (const row of newRows) {
+          void logVcAudit(supabase, {
+            actorUserId: actorUserId.trim(),
+            action: 'case_collaborator.add',
+            entityType: 'case_collaborator',
+            entityId: row.userId,
+            caseId,
+            meta: { collaboratorUserId: row.userId },
+          })
+        }
       }
       await persist(next)
     },
@@ -1162,6 +1246,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       updateCaseAttachment,
       deleteCaseAttachment,
       addCaseCollaborator,
+      addCaseCollaborators,
       removeCaseCollaborator,
       createLocation,
       deleteLocation,
@@ -1187,6 +1272,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       updateCaseAttachment,
       deleteCaseAttachment,
       addCaseCollaborator,
+      addCaseCollaborators,
       removeCaseCollaborator,
       createLocation,
       deleteLocation,

@@ -8,8 +8,9 @@
  * `vc_case_editor` / RLS on `vc_locations`, `vc_tracks`, etc. **Viewers** may open the case but cannot
  * create or edit content (avoids UI allowing actions that the database rejects).
  *
- * Per-entity rules for editors: edit/delete locations they created (or "Needs follow up" for locations),
- * tracks/points/attachments they created; cannot rename/delete case or manage collaborators (owner only).
+ * Per-entity rules for editors: may **edit** any address (status, notes, geometry, etc.), track metadata, and
+ * track-point notes/times on the case; may **delete** only locations, tracks, and track points they created.
+ * Owners keep full control. Cannot rename/delete case or manage collaborators (owner only).
  * Legacy rows with empty `createdByUserId` count as the case owner for creator checks.
  */
 
@@ -101,11 +102,7 @@ export function canEditLocation(data: AppData, actorUserId: string, loc: Locatio
   const c = findCase(data, loc.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!canMutateCaseContent(data, loc.caseId, actorUserId)) return false
-  const ownerId = c.ownerUserId
-  if (effectiveLocationCreatorId(loc, ownerId) === actorUserId) return true
-  if (loc.status === 'camerasNoAnswer') return true
-  return false
+  return canMutateCaseContent(data, loc.caseId, actorUserId)
 }
 
 export function canDeleteLocation(data: AppData, actorUserId: string, loc: Location): boolean {
@@ -120,12 +117,15 @@ export function canEditTrack(data: AppData, actorUserId: string, track: Track): 
   const c = findCase(data, track.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!canMutateCaseContent(data, track.caseId, actorUserId)) return false
-  return effectiveTrackCreatorId(track, c.ownerUserId) === actorUserId
+  return canMutateCaseContent(data, track.caseId, actorUserId)
 }
 
 export function canDeleteTrack(data: AppData, actorUserId: string, track: Track): boolean {
-  return canEditTrack(data, actorUserId, track)
+  const c = findCase(data, track.caseId)
+  if (!c) return false
+  if (isCaseOwner(c, actorUserId)) return true
+  if (!canMutateCaseContent(data, track.caseId, actorUserId)) return false
+  return effectiveTrackCreatorId(track, c.ownerUserId) === actorUserId
 }
 
 export function canDeleteAllTracksForCase(data: AppData, caseId: string, actorUserId: string): boolean {
@@ -136,12 +136,15 @@ export function canEditTrackPoint(data: AppData, actorUserId: string, pt: TrackP
   const c = findCase(data, pt.caseId)
   if (!c) return false
   if (isCaseOwner(c, actorUserId)) return true
-  if (!canMutateCaseContent(data, pt.caseId, actorUserId)) return false
-  return effectiveTrackPointCreatorId(pt, c.ownerUserId) === actorUserId
+  return canMutateCaseContent(data, pt.caseId, actorUserId)
 }
 
 export function canDeleteTrackPoint(data: AppData, actorUserId: string, pt: TrackPoint): boolean {
-  return canEditTrackPoint(data, actorUserId, pt)
+  const c = findCase(data, pt.caseId)
+  if (!c) return false
+  if (isCaseOwner(c, actorUserId)) return true
+  if (!canMutateCaseContent(data, pt.caseId, actorUserId)) return false
+  return effectiveTrackPointCreatorId(pt, c.ownerUserId) === actorUserId
 }
 
 export function canManageCollaborators(data: AppData, caseId: string, actorUserId: string): boolean {

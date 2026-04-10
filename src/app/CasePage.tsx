@@ -30,6 +30,7 @@ import {
 import { processCaseImageFile } from '../lib/caseImageUpload'
 import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track, TrackPoint } from '../lib/types'
 import { caseAttachmentKindLabel, statusColor } from '../lib/types'
+import { localCaseAddressSuggestions } from '../lib/caseAddressSearchLocal'
 import { GEOCODE_SCOPE, reverseGeocodeAddressText, type PlaceSuggestion } from '../lib/geocode'
 import { fetchBuildingFootprint } from '../lib/building'
 import { buildResolvedTrackColorMap, TRACK_DEFAULT_COLORS_FIRST_FOUR } from '../lib/trackColors'
@@ -1090,6 +1091,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setResults: setSuggestions,
     loading: loadingSug,
     setLoading: setLoadingSug,
+    isRefreshing: addrRemoteSuggestRefreshing,
   } = useCaseGeocodeSearch('', { bias: geoBias, mapCenterFallback: mapSearchCenterFallback })
   const [addrFieldFocused, setAddrFieldFocused] = useState(false)
   const addrBlurClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1102,7 +1104,34 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setLoadingSug(false)
     }, 180)
   }, [setSuggestions, setLoadingSug])
-  const addrAutocompleteEngaged = addrFieldFocused || loadingSug || suggestions.length > 0
+  const { localAddrSugs, remoteAddrSugs } = useMemo(() => {
+    const q = addr.trim()
+    const minChars = 3
+    if (q.length < minChars) {
+      return { localAddrSugs: [] as PlaceSuggestion[], remoteAddrSugs: [] as PlaceSuggestion[] }
+    }
+    const locals = localCaseAddressSuggestions(locations, props.caseId, q, 8)
+    const seen = new Set<string>()
+    const localAddrSugs: PlaceSuggestion[] = []
+    for (const s of locals) {
+      const k = `${s.label}\0${s.lat}\0${s.lon}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      localAddrSugs.push(s)
+    }
+    const remoteAddrSugs: PlaceSuggestion[] = []
+    for (const s of suggestions) {
+      const k = `${s.label}\0${s.lat}\0${s.lon}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      remoteAddrSugs.push(s)
+    }
+    return { localAddrSugs, remoteAddrSugs }
+  }, [addr, locations, props.caseId, suggestions])
+
+  const mergedAddrSuggestCount = localAddrSugs.length + remoteAddrSugs.length
+
+  const addrAutocompleteEngaged = addrFieldFocused || loadingSug || mergedAddrSuggestCount > 0
   /** Map shield / `addrSearchBlocksMapClicks` / list selection only while the field is active or loading — not stale suggestions after blur. */
   const addrSearchBlocksMapInteraction = addrFieldFocused || loadingSug
   const dismissAddressSearch = useCallback(() => {
@@ -1269,6 +1298,10 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setCanvassMapResultQueue((q) => q.slice(1))
   }, [])
 
+  const popCanvassMapResultFront = useCallback(() => {
+    setCanvassMapResultQueue((q) => q.slice(1))
+  }, [])
+
   /** One in-flight reverse lookup per map coordinate so the record-result modal can fill in street text while you keep working. */
   const pendingQueueGeoKeysRef = useRef<Set<string>>(new Set())
   useEffect(() => {
@@ -1367,12 +1400,20 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   )
 
   const completePendingLocation = useCallback(
-    async (snapshot: PendingAddItem, status: CanvassStatus, notes?: string) => {
+    async (
+      snapshot: PendingAddItem,
+      status: CanvassStatus,
+      notes?: string,
+      opts?: { closeModalFirst?: boolean },
+    ) => {
       if (addCategoryInFlightRef.current) return
       const { lat, lon, bounds, vectorTileBuildingRing } = snapshot
       const { addressText } = snapshot
       addCategoryInFlightRef.current = true
       setAddLocationSaving(true)
+      if (opts?.closeModalFirst) {
+        popCanvassMapResultFront()
+      }
       try {
         const id = await createLocation({
           caseId: props.caseId,
@@ -1384,7 +1425,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           status,
           notes: (notes ?? '').trim(),
         })
-        closeAddLocationModal()
+        if (!opts?.closeModalFirst) {
+          closeAddLocationModal()
+        }
         setLocationDetailOpen(false)
         setSelectedId(id)
         enqueueOutlineForLocation(id, lat, lon, addressText, vectorTileBuildingRing ?? null)
@@ -1403,6 +1446,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             }
           })()
         }
+      } catch (e) {
+        console.warn('Save address failed:', e)
+        const msg =
+          e instanceof Error && e.message.trim()
+            ? e.message
+            : 'Could not save this address. Check permissions or try again.'
+        window.alert(msg)
       } finally {
         setAddLocationSaving(false)
         addCategoryInFlightRef.current = false
@@ -1413,6 +1463,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       closeAddLocationModal,
       createLocation,
       enqueueOutlineForLocation,
+      popCanvassMapResultFront,
       props.caseId,
       updateLocation,
     ],
@@ -1437,7 +1488,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         popCanvassResultIfFrontExistingId(t.locationId)
       })
     } else {
-      void completePendingLocation(t.pending, 'probativeFootage')
+      void completePendingLocation(t.pending, 'probativeFootage', undefined, { closeModalFirst: true })
     }
   }, [completePendingLocation, popCanvassResultIfFrontExistingId, updateLocation])
 
@@ -1493,7 +1544,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           popCanvassResultIfFrontExistingId(t.locationId)
         })
       } else {
-        void completePendingLocation(t.pending, 'probativeFootage', notesAppend)
+        void completePendingLocation(t.pending, 'probativeFootage', notesAppend, { closeModalFirst: true })
       }
     },
     [
@@ -1558,7 +1609,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         return
       }
 
-      await completePendingLocation(
+      void completePendingLocation(
         {
           lat: front.lat,
           lon: front.lon,
@@ -1567,6 +1618,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           vectorTileBuildingRing: front.vectorTileBuildingRing,
         },
         status,
+        undefined,
+        { closeModalFirst: true },
       )
     },
     [actorId, closeAddLocationModal, completePendingLocation, updateLocation],
@@ -2330,7 +2383,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }
 
   const addrSearchProminent =
-    addrFieldFocused || loadingSug || suggestions.length > 0 || addr.trim().length > 0
+    addrFieldFocused || loadingSug || mergedAddrSuggestCount > 0 || addr.trim().length > 0
 
   const renderAddAddressSearch = (
     floating: boolean,
@@ -2340,6 +2393,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     const narrowCondensed = opts?.narrowCondensed === true && isNarrow
     const mapPart = opts?.mapFloatingPart
     const hintColor = glass ? vcGlassFgMutedOnPanel : '#374151'
+    const pickAddrSuggestion = (s: PlaceSuggestion) => {
+      if (addrBlurClearRef.current) {
+        clearTimeout(addrBlurClearRef.current)
+        addrBlurClearRef.current = null
+      }
+      dismissAddressSearch()
+      setAddr('')
+      openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
+      const m = mapRef.current
+      if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
+    }
     /** Floating map search: light field on blue map glass; modal / slab search uses on-panel frost. */
     const glassInput: CSSProperties = glass ? (floating ? vcGlassFieldFloatingMapSearch : vcGlassFieldOnPanel) : {}
     const glassSug: CSSProperties = glass ? { ...suggestionBtn, ...vcGlassSuggestionRow } : suggestionBtn
@@ -2440,7 +2504,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               color: hintColor,
               fontSize: floating ? 11 : 12,
               lineHeight: 1.35,
-              marginBottom: suggestions.length || loadingSug ? 6 : 0,
+              marginBottom: mergedAddrSuggestCount || loadingSug ? 6 : 0,
             }}
           >
             Autocomplete is currently scoped to New York addresses.
@@ -2448,33 +2512,72 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ) : null}
         {!floating || addrSearchProminent ? (
           loadingSug ? (
-            <div style={{ color: hintColor, fontSize: floating ? 11 : 12, marginBottom: suggestions.length ? 6 : 0 }}>
-              Searching…
+            <div
+              style={{ color: hintColor, fontSize: floating ? 11 : 12, marginBottom: mergedAddrSuggestCount ? 6 : 0 }}
+            >
+              {addrRemoteSuggestRefreshing ? 'Updating results…' : 'Searching…'}
             </div>
           ) : null
         ) : null}
-        {suggestions.length ? (
+        {mergedAddrSuggestCount ? (
           <div style={{ display: 'grid', gap: 4 }}>
-            {suggestions.map((s) => (
-              <button
-                type="button"
-                key={`${s.lat},${s.lon},${s.label}`}
-                style={glassSug}
-                onClick={() => {
-                  if (addrBlurClearRef.current) {
-                    clearTimeout(addrBlurClearRef.current)
-                    addrBlurClearRef.current = null
-                  }
-                  dismissAddressSearch()
-                  setAddr('')
-                  openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
-                  const m = mapRef.current
-                  if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-                }}
-              >
-                {s.label}
-              </button>
-            ))}
+            {localAddrSugs.length ? (
+              <>
+                <div
+                  style={{
+                    fontSize: floating ? 10 : 11,
+                    fontWeight: 800,
+                    color: hintColor,
+                    opacity: 0.88,
+                    letterSpacing: '0.02em',
+                  }}
+                >
+                  On this case
+                </div>
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {localAddrSugs.map((s) => (
+                    <button
+                      type="button"
+                      key={`local-${s.lat},${s.lon},${s.label}`}
+                      style={glassSug}
+                      onClick={() => pickAddrSuggestion(s)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {remoteAddrSugs.length ? (
+              <>
+                {localAddrSugs.length ? (
+                  <div
+                    style={{
+                      fontSize: floating ? 10 : 11,
+                      fontWeight: 800,
+                      color: hintColor,
+                      opacity: 0.88,
+                      marginTop: 4,
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    Search
+                  </div>
+                ) : null}
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {remoteAddrSugs.map((s) => (
+                    <button
+                      type="button"
+                      key={`${s.lat},${s.lon},${s.label}`}
+                      style={glassSug}
+                      onClick={() => pickAddrSuggestion(s)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </div>
         ) : !floating || addrSearchProminent ? (
           addr.trim().length >= 3 ? (
@@ -2511,7 +2614,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       return inputGridOnly
     }
     if (floating && glass && mapPart === 'dropdown') {
-      const showMapFloatingDropdown = suggestions.length > 0 || loadingSug || addrSearchProminent
+      const showMapFloatingDropdown = mergedAddrSuggestCount > 0 || loadingSug || addrSearchProminent
       if (!showMapFloatingDropdown) return null
       return <div style={mapFloatingDropdownPanelStyle}>{mapFloatingDropdownBody}</div>
     }
@@ -2545,10 +2648,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ) : null}
         {!floating || addrSearchProminent ? (
           loadingSug ? (
-            <div style={{ color: hintColor, fontSize: floating ? 11 : 12 }}>Searching…</div>
+            <div style={{ color: hintColor, fontSize: floating ? 11 : 12 }}>
+              {addrRemoteSuggestRefreshing ? 'Updating results…' : 'Searching…'}
+            </div>
           ) : null
         ) : null}
-        {suggestions.length ? (
+        {mergedAddrSuggestCount ? (
           <div
             style={{
               display: 'grid',
@@ -2558,26 +2663,63 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               WebkitOverflowScrolling: isNarrow ? 'touch' : undefined,
             }}
           >
-            {suggestions.map((s) => (
-              <button
-                type="button"
-                key={`${s.lat},${s.lon},${s.label}`}
-                style={glassSug}
-                onClick={() => {
-                  if (addrBlurClearRef.current) {
-                    clearTimeout(addrBlurClearRef.current)
-                    addrBlurClearRef.current = null
-                  }
-                  dismissAddressSearch()
-                  setAddr('')
-                  openAddLocationModal({ lat: s.lat, lon: s.lon, addressText: s.label, bounds: s.bounds ?? null })
-                  const m = mapRef.current
-                  if (m) m.flyTo(s.lat, s.lon, Math.max(m.getZoom(), 16), { duration: 0.6 })
-                }}
-              >
-                {s.label}
-              </button>
-            ))}
+            {localAddrSugs.length ? (
+              <>
+                <div
+                  style={{
+                    fontSize: floating ? 10 : 11,
+                    fontWeight: 800,
+                    color: hintColor,
+                    opacity: 0.88,
+                    letterSpacing: '0.02em',
+                  }}
+                >
+                  On this case
+                </div>
+                <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
+                  {localAddrSugs.map((s) => (
+                    <button
+                      type="button"
+                      key={`local-${s.lat},${s.lon},${s.label}`}
+                      style={glassSug}
+                      onClick={() => pickAddrSuggestion(s)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {remoteAddrSugs.length ? (
+              <>
+                {localAddrSugs.length ? (
+                  <div
+                    style={{
+                      fontSize: floating ? 10 : 11,
+                      fontWeight: 800,
+                      color: hintColor,
+                      opacity: 0.88,
+                      marginTop: 4,
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    Search
+                  </div>
+                ) : null}
+                <div style={{ display: 'grid', gap: floating ? 3 : 6 }}>
+                  {remoteAddrSugs.map((s) => (
+                    <button
+                      type="button"
+                      key={`${s.lat},${s.lon},${s.label}`}
+                      style={glassSug}
+                      onClick={() => pickAddrSuggestion(s)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </div>
         ) : !floating || addrSearchProminent ? (
           addr.trim().length >= 3 ? (
@@ -2667,38 +2809,68 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       window.alert('Location is not available in this browser.')
       return
     }
+
+    const applyUserPosition = (position: GeolocationPosition) => {
+      const m = mapRef.current
+      if (m) {
+        m.flyTo(
+          position.coords.latitude,
+          position.coords.longitude,
+          Math.max(m.getZoom(), 16),
+          { duration: 0.6 },
+        )
+        if (!isNarrow) {
+          setMapLeftToolSection(null)
+          setWideSidebarListReveal(false)
+        }
+      }
+    }
+
+    const failMessage = (code: 'denied' | 'timeout' | 'unavailable' | 'unknown' | 'unsupported') => {
+      switch (code) {
+        case 'denied':
+          return 'Location permission was denied.'
+        case 'timeout':
+          return 'Location timed out. Try again with GPS/Wi‑Fi location on.'
+        case 'unavailable':
+          return 'Your device could not determine a position.'
+        default:
+          return 'Could not get your location.'
+      }
+    }
+
     const perm = await getGeolocationPermissionState()
     if (perm === 'denied') {
-      window.alert(
-        'Location is turned off for this site. Allow location in your browser or site settings, then tap Locate me again.',
+      const tryAfterEnabling = window.confirm(
+        'Location is turned off for this site. To use Locate me, allow location in your browser or site settings.\n\nTap OK to try again (for example, after you change the setting). Tap Cancel to close.',
       )
+      if (!tryAfterEnabling) return
+    }
+
+    let res = await requestCurrentPosition()
+    if (res.ok) {
+      applyUserPosition(res.position)
       return
     }
-    const res = await requestCurrentPosition()
-    if (!res.ok) {
-      const msg =
-        res.code === 'denied'
-          ? 'Location permission was denied.'
-          : res.code === 'timeout'
-            ? 'Location timed out. Try again with GPS/Wi‑Fi location on.'
-            : res.code === 'unavailable'
-              ? 'Your device could not determine a position.'
-              : 'Could not get your location.'
-      window.alert(msg)
-      return
-    }
-    const m = mapRef.current
-    if (m) {
-      m.flyTo(
-        res.position.coords.latitude,
-        res.position.coords.longitude,
-        Math.max(m.getZoom(), 16),
-        { duration: 0.6 },
+
+    if (res.code === 'denied' && perm !== 'denied') {
+      const tryAgain = window.confirm(
+        'Location permission was denied. Would you like to try again? Your browser may show the permission prompt again.',
       )
-      if (!isNarrow) {
-        setMapLeftToolSection(null)
-        setWideSidebarListReveal(false)
+      if (!tryAgain) return
+      res = await requestCurrentPosition()
+      if (res.ok) {
+        applyUserPosition(res.position)
+        return
       }
+    }
+
+    if (!res.ok) {
+      window.alert(
+        res.code === 'denied' && perm === 'denied'
+          ? 'Location is still blocked for this site. Allow location in your browser or site settings, then tap Locate me again.'
+          : failMessage(res.code),
+      )
     }
   }, [closeMapToolsDock, isNarrow])
 
@@ -3004,7 +3176,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     minWidth: 0,
     minHeight: 44,
     boxSizing: 'border-box',
-    overflow: 'hidden',
+    /** Must stay visible so the floating address dropdown (`top: 100%`) is not clipped under the pill. */
+    overflow: 'visible',
   }
 
   const narrowMapDockExpandedGlassShell: CSSProperties = {
@@ -3918,7 +4091,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     addrSearchProminent,
     addr,
     loadingSug,
-    suggestions.length,
+    mergedAddrSuggestCount,
   ])
 
   /** Wide without floating address search: mode toggles only in the blue glass slab. */

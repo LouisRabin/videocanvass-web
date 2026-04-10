@@ -26,6 +26,26 @@ In the Vercel project: **Settings → Environment Variables**
   - `https://videocanvass-web.vercel.app/**`
   - `https://*.vercel.app/**` (only if acceptable for your security posture)
 
+### Password reset (“Forgot password”)
+
+The app calls `resetPasswordForEmail` with `redirectTo` set to your current origin and path (see `passwordRecoveryRedirectTo()` in `src/lib/authPasswordReset.ts`). After the user clicks the email link, Supabase redirects back with tokens in the URL hash so they can set a new password.
+
+**Important:** **`redirectTo` must be a full URL including `https://`**. If Supabase or the dashboard uses a bare hostname (e.g. `videocanvass-web.vercel.app` without a scheme), the browser can end up at `https://<project>.supabase.co/your-hostname` and show `{"error":"requested path is invalid"}`. Fix:
+
+- **Authentication → URL configuration → Site URL:** use `https://your-domain` (with `https://`), not the hostname alone.
+- **Redirect URLs:** keep using patterns like `https://your-app.vercel.app/**`.
+
+Optional: set **`VITE_VC_SITE_URL`** in Vercel to the same public origin (e.g. `https://videocanvass-web.vercel.app`) so the reset link always uses that value even if `window.location` is unusual (some embedded browsers).
+
+1. **Redirect allow list:** Add the exact URLs users can land on after clicking the email link, e.g.:
+   - `http://localhost:5173/**` (Vite dev)
+   - `https://videocanvass-web.vercel.app/**`
+   - Preview URLs if you use them (`https://*.vercel.app/**` or each preview host).
+2. **Email:** Under **Authentication → Providers → Email**, keep **Confirm email** / **Secure email change** as you prefer. Password reset emails are sent by Supabase (or your custom SMTP if configured under **Project Settings → Auth**).
+3. **Template (optional):** **Authentication → Email templates → Reset password** — customize copy; the link must remain valid for Supabase to complete the redirect.
+
+If reset links redirect to the wrong host or show an “invalid redirect” error, the URL is missing from **Redirect URLs**.
+
 ## 3. Database — schema, then RLS
 
 ### Empty `public` schema (no tables in Table Editor)

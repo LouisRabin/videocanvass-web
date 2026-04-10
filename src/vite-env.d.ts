@@ -3,6 +3,8 @@
 interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
+  /** Public app URL with scheme, e.g. `https://your-app.vercel.app` — used for password-reset `redirectTo` if needed. */
+  readonly VITE_VC_SITE_URL?: string
   readonly VITE_VC_RELATIONAL_BACKEND?: string
   readonly VITE_VC_DEBUG?: string
   readonly VITE_SHARED_WORKSPACE_ID?: string

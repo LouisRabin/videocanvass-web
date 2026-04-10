@@ -28,6 +28,12 @@ function normUuid(s: string): string {
   return s.trim().toLowerCase()
 }
 
+/** RLS on `vc_case_collaborators` allows INSERT/UPDATE/DELETE only for the case owner. */
+function isSessionOwnerOfCase(data: AppData, caseId: string, sessionUidLower: string): boolean {
+  const c = data.cases.find((x) => x.id === caseId)
+  return !!c && normUuid(c.ownerUserId) === sessionUidLower
+}
+
 /** `auth.users.id` / JWT `sub` — reject empty or junk so we never upsert `owner_user_id: null` / invalid. */
 function assertAuthUuidForVcCases(ownerFromSession: string): string {
   const n = normUuid(ownerFromSession)
@@ -76,7 +82,8 @@ function parseCaseCollaboratorTombstoneKey(key: string): { case_id: string; user
   return { case_id: key.slice(0, i), user_id: key.slice(i + 2) }
 }
 
-type ProfileRow = {
+/** Row shape from `vc_profiles` or `vc_search_profiles_for_case_team`. */
+export type VcProfileRow = {
   id: string
   display_name: string
   email: string
@@ -85,7 +92,7 @@ type ProfileRow = {
   app_role?: string | null
 }
 
-function profileToUser(p: ProfileRow): AppUser {
+export function appUserFromVcProfileRow(p: VcProfileRow): AppUser {
   const role = (p.app_role ?? '').trim().toLowerCase()
   const emailRaw = (p.email ?? '').trim()
   const email = z.string().email().safeParse(emailRaw).success ? emailRaw : 'user@local.invalid'
@@ -99,6 +106,10 @@ function profileToUser(p: ProfileRow): AppUser {
     createdAt: new Date(p.created_at).getTime(),
     ...(role === 'admin' ? { appRole: 'admin' as const } : {}),
   }
+}
+
+function profileToUser(p: VcProfileRow): AppUser {
+  return appUserFromVcProfileRow(p)
 }
 
 type CaseRow = {
@@ -404,10 +415,10 @@ export async function loadAppDataFromRelational(opts?: {
     const [{ data: selfRow }, myUnitIds] = await Promise.all([
       uid
         ? sb.from('vc_profiles').select('*').eq('id', uid).maybeSingle()
-        : Promise.resolve({ data: null as ProfileRow | null }),
+        : Promise.resolve({ data: null as VcProfileRow | null }),
       loadMyUnitIdsForSession(sb, uid),
     ])
-    const users: AppUser[] = selfRow ? [profileToUser(selfRow as ProfileRow)] : []
+    const users: AppUser[] = selfRow ? [profileToUser(selfRow as VcProfileRow)] : []
     const empty: AppData = {
       ...DEFAULT_DATA,
       users,
@@ -450,7 +461,7 @@ export async function loadAppDataFromRelational(opts?: {
     if (e) console.warn(`loadAppDataFromRelational ${label}:`, e.message)
   }
 
-  const users = ((profRows ?? []) as ProfileRow[]).map(profileToUser)
+  const users = ((profRows ?? []) as VcProfileRow[]).map(profileToUser)
 
   const raw: AppData = {
     version: 1,
@@ -482,27 +493,46 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
   if (!supabase) throw new Error('Supabase client missing')
   const sb = supabase
   const { ensureRelationalClientSession } = await import('../supabaseAuthSession')
-  let uidRaw = authUserIdFromSession?.trim()
-  const aligned = await ensureRelationalClientSession(sb, uidRaw || undefined)
+  const uidHint = authUserIdFromSession?.trim()
+  let aligned = await ensureRelationalClientSession(sb, uidHint || undefined)
+  // Hint can be briefly stale vs shared storage while another tab/device refreshes; fall back to current session.
+  if (!aligned && uidHint) {
+    aligned = await ensureRelationalClientSession(sb)
+  }
   if (!aligned) {
     throw new Error(
-      uidRaw
-        ? 'Not signed in or session does not match this account. Sign out and sign in again.'
+      uidHint
+        ? 'Not signed in, or the session could not be verified. Try again, or refresh the page.'
         : 'Not signed in',
     )
   }
-  uidRaw = aligned.userId
-  const uidKey = assertAuthUuidForVcCases(uidRaw)
+  const uidKey = assertAuthUuidForVcCases(aligned.userId)
 
-  const { data: jwtUser, error: jwtErr } = await sb.auth.getUser()
-  if (jwtErr?.message) {
-    console.warn('[sync] getUser before relational push:', jwtErr.message)
+  const jwtMatchesSession = async (): Promise<boolean> => {
+    const { data: jwtUser, error: jwtErr } = await sb.auth.getUser()
+    if (jwtErr?.message) {
+      console.warn('[sync] getUser before relational push:', jwtErr.message)
+    }
+    const jwtSub = jwtUser?.user?.id?.trim()
+    return Boolean(jwtSub && normUuid(jwtSub) === uidKey)
   }
-  const jwtSub = jwtUser?.user?.id?.trim()
-  if (!jwtSub || normUuid(jwtSub) !== uidKey) {
-    throw new Error(
-      'Cannot save to database: signed-in user (JWT) does not match the session used for sync. Sign out, hard refresh, and sign in again.',
-    )
+
+  if (!(await jwtMatchesSession())) {
+    const { error: refErr } = await sb.auth.refreshSession()
+    if (refErr?.message) {
+      console.warn('[sync] refreshSession before relational push (jwt align):', refErr.message)
+    }
+    const again = await ensureRelationalClientSession(sb, uidKey)
+    if (!again || normUuid(again.userId) !== uidKey) {
+      throw new Error(
+        'Could not verify your sign-in with the server. Check your connection, try again in a moment, or refresh the page.',
+      )
+    }
+    if (!(await jwtMatchesSession())) {
+      throw new Error(
+        'Could not verify your sign-in with the server. Try again in a moment, or refresh the page.',
+      )
+    }
   }
 
   const { normalizeAppData } = await import('../db')
@@ -586,13 +616,20 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
     if (error) throw relationalPushError('vc_cases(upsert)', error)
   }
 
-  for (const batch of chunk(d.caseCollaborators.map(collabToRow), 120)) {
+  const collaboratorsOwnedCasesOnly = d.caseCollaborators.filter((cc) =>
+    isSessionOwnerOfCase(d, cc.caseId, uidKey),
+  )
+  for (const batch of chunk(collaboratorsOwnedCasesOnly.map(collabToRow), 120)) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_case_collaborators').upsert(batch, { onConflict: 'case_id,user_id' })
     if (error) throw relationalPushError('vc_case_collaborators', error)
   }
 
-  for (const batch of chunk(d.deletedCaseCollaboratorKeys, 40)) {
+  const deletedCollabKeysOwnedCasesOnly = d.deletedCaseCollaboratorKeys.filter((key) => {
+    const p = parseCaseCollaboratorTombstoneKey(key)
+    return p != null && isSessionOwnerOfCase(d, p.case_id, uidKey)
+  })
+  for (const batch of chunk(deletedCollabKeysOwnedCasesOnly, 40)) {
     if (!batch.length) continue
     const pairs = batch
       .map(parseCaseCollaboratorTombstoneKey)

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   canAddCaseContent,
+  canDeleteLocation,
+  canDeleteTrack,
+  canDeleteTrackPoint,
   canEditLocation,
+  canEditTrack,
+  canEditTrackPoint,
   canMutateCaseContent,
   hasCaseAccess,
 } from '../src/lib/casePermissions'
-import type { AppData, CaseFile, Location } from '../src/lib/types'
+import type { AppData, CaseFile, Location, Track, TrackPoint } from '../src/lib/types'
 import { DEFAULT_DATA } from '../src/lib/types'
 
 const baseCase = (ownerId: string): CaseFile => ({
@@ -32,6 +37,38 @@ const sampleLoc = (createdBy: string): Location => ({
   status: 'noCameras',
   notes: '',
   lastVisitedAt: null,
+  createdByUserId: createdBy,
+  createdAt: 1,
+  updatedAt: 1,
+})
+
+const sampleTrack = (createdBy: string): Track => ({
+  id: 'tr-1',
+  caseId: 'case-1',
+  label: 'Track A',
+  kind: 'person',
+  routeColor: '',
+  createdByUserId: createdBy,
+  createdAt: 1,
+  updatedAt: 1,
+})
+
+const samplePoint = (createdBy: string): TrackPoint => ({
+  id: 'tp-1',
+  caseId: 'case-1',
+  trackId: 'tr-1',
+  locationId: null,
+  addressText: 'Pin',
+  lat: 40,
+  lon: -73,
+  sequence: 0,
+  visitedAt: null,
+  notes: '',
+  showOnMap: true,
+  displayTimeOnMap: false,
+  mapTimeLabelOffsetX: 0,
+  mapTimeLabelOffsetY: 0,
+  placementSource: 'map',
   createdByUserId: createdBy,
   createdAt: 1,
   updatedAt: 1,
@@ -77,19 +114,44 @@ describe('canMutateCaseContent / viewer vs editor', () => {
     expect(canAddCaseContent(d, 'case-1', 'u-ed')).toBe(true)
   })
 
-  it('editor can edit own location; viewer cannot edit even own', () => {
-    const loc = sampleLoc('u-ed')
+  it('editor can edit any location but only delete own; viewer cannot edit', () => {
+    const locByOwner = sampleLoc('owner-1')
     const d = dataWith({
       collaborators: [{ caseId: 'case-1', userId: 'u-ed', role: 'editor', createdAt: 1 }],
-      locations: [loc],
+      locations: [locByOwner],
     })
-    expect(canEditLocation(d, 'u-ed', loc)).toBe(true)
+    expect(canEditLocation(d, 'u-ed', locByOwner)).toBe(true)
+    expect(canDeleteLocation(d, 'u-ed', locByOwner)).toBe(false)
+
+    const locOwn = sampleLoc('u-ed')
+    const dOwn = dataWith({
+      collaborators: [{ caseId: 'case-1', userId: 'u-ed', role: 'editor', createdAt: 1 }],
+      locations: [locOwn],
+    })
+    expect(canDeleteLocation(dOwn, 'u-ed', locOwn)).toBe(true)
 
     const dView = dataWith({
       collaborators: [{ caseId: 'case-1', userId: 'u-view', role: 'viewer', createdAt: 1 }],
-      locations: [{ ...loc, createdByUserId: 'u-view' }],
+      locations: [{ ...locOwn, createdByUserId: 'u-view' }],
     })
     expect(canEditLocation(dView, 'u-view', dView.locations[0]!)).toBe(false)
+  })
+
+  it('editor can edit any track / track point but only delete if creator', () => {
+    const tr = sampleTrack('owner-1')
+    const pt = samplePoint('owner-1')
+    const d = dataWith({
+      collaborators: [{ caseId: 'case-1', userId: 'u-ed', role: 'editor', createdAt: 1 }],
+    })
+    expect(canEditTrack(d, 'u-ed', tr)).toBe(true)
+    expect(canDeleteTrack(d, 'u-ed', tr)).toBe(false)
+    expect(canEditTrackPoint(d, 'u-ed', pt)).toBe(true)
+    expect(canDeleteTrackPoint(d, 'u-ed', pt)).toBe(false)
+
+    const trOwn = sampleTrack('u-ed')
+    const ptOwn = samplePoint('u-ed')
+    expect(canDeleteTrack(d, 'u-ed', trOwn)).toBe(true)
+    expect(canDeleteTrackPoint(d, 'u-ed', ptOwn)).toBe(true)
   })
 
   it('stranger has no access', () => {
