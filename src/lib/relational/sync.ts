@@ -482,8 +482,21 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
   // (and PostgREST often reports it as a WITH CHECK / "new row" style RLS error). Skip those ids.
   const ownedIds = casesOwnedBySession.map((c) => c.id)
   const remoteOwnerById = new Map<string, string>()
-  for (const idBatch of chunk(ownedIds, 100)) {
+  for (const idBatch of chunk(ownedIds, 200)) {
     if (!idBatch.length) continue
+    const { data: rpcRows, error: rpcErr } = await sb.rpc('vc_case_owners_for_ids', { p_ids: idBatch })
+    if (!rpcErr && rpcRows != null) {
+      for (const r of rpcRows as { id: string; owner_user_id: string }[]) {
+        remoteOwnerById.set(r.id, r.owner_user_id)
+      }
+      continue
+    }
+    if (rpcErr) {
+      console.warn(
+        '[sync] vc_case_owners_for_ids RPC failed; using RLS-visible preselect (apply migration 20260411190000_vc_case_owners_for_ids_rpc.sql for reliable inserts):',
+        rpcErr.message,
+      )
+    }
     const { data: existingRows, error: preErr } = await sb.from('vc_cases').select('id, owner_user_id').in('id', idBatch)
     if (preErr) throw relationalPushError('vc_cases(preselect)', preErr)
     for (const r of existingRows ?? []) {
@@ -504,22 +517,39 @@ export async function pushAppDataToRelational(data: AppData, authUserIdFromSessi
     )
   }
 
+  const forInsert = casesSafeForVcCasesUpsert.filter((c) => !remoteOwnerById.has(c.id))
+  const forUpsert = casesSafeForVcCasesUpsert.filter(
+    (c) => remoteOwnerById.has(c.id) && normUuid(remoteOwnerById.get(c.id)!) === uidKey,
+  )
+
   if (import.meta.env.VITE_VC_DEBUG === 'true' && casesSafeForVcCasesUpsert.length) {
     const {
       data: { session: dbgSession },
     } = await sb.auth.getSession()
-    console.warn('[vc_debug] vc_cases upsert', {
+    console.warn('[vc_debug] vc_cases push', {
       hasAccessToken: Boolean(dbgSession?.access_token),
       sessionUserId: dbgSession?.user?.id ?? null,
       ownerNorm: uidKey,
-      batchSize: casesSafeForVcCasesUpsert.length,
+      insertCount: forInsert.length,
+      upsertCount: forUpsert.length,
     })
   }
 
-  for (const batch of chunk(casesSafeForVcCasesUpsert.map((c) => vcCasePayloadForUpsert(c, uidKey)), 80)) {
+  for (const batch of chunk(
+    forInsert.map((c) => vcCasePayloadForUpsert(c, uidKey)),
+    80,
+  )) {
+    if (!batch.length) continue
+    const { error } = await sb.from('vc_cases').insert(batch)
+    if (error) throw relationalPushError('vc_cases(insert)', error)
+  }
+  for (const batch of chunk(
+    forUpsert.map((c) => vcCasePayloadForUpsert(c, uidKey)),
+    80,
+  )) {
     if (!batch.length) continue
     const { error } = await sb.from('vc_cases').upsert(batch, { onConflict: 'id' })
-    if (error) throw relationalPushError('vc_cases', error)
+    if (error) throw relationalPushError('vc_cases(upsert)', error)
   }
 
   for (const batch of chunk(d.caseCollaborators.map(collabToRow), 120)) {
