@@ -22,6 +22,11 @@ let state: SyncStatus = {
 
 const listeners = new Set<() => void>()
 
+/** For sync effects that need to promote stale “signed out” / fallback UI without redundant updates every poll. */
+export function getSyncStatusMode(): SyncMode {
+  return state.mode
+}
+
 export function setSyncStatus(next: Partial<Pick<SyncStatus, 'mode' | 'message' | 'remoteMergeNotice'>>): void {
   state = {
     ...state,

@@ -300,6 +300,9 @@ export function StoreProvider(props: { children: React.ReactNode }) {
             dataRef.current = next
             setData(next)
             await writeLocalDataCache(next)
+            // `pullAndMergeWithLocal` does not touch sync status; without this, post-login UI keeps the
+            // bootstrap `local_fallback` (“Sign in to load cloud data”) until a full page refresh.
+            setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
             return
           }
         }

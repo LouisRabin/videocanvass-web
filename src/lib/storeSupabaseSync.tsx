@@ -8,7 +8,7 @@ import {
 } from './db'
 import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
-import { setSyncStatus } from './syncStatus'
+import { getSyncStatusMode, setSyncStatus } from './syncStatus'
 import type { AppData } from './types'
 
 /**
@@ -40,7 +40,12 @@ export function useSupabaseAppDataSync(params: {
           const cur = dataRef.current
           const merged = await pullAndMergeWithLocal(cur)
           if (cancelled || !merged) return
-          if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) return
+          if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) {
+            if (getSyncStatusMode() !== 'supabase_ok') {
+              setSyncStatus({ mode: 'supabase_ok', message: 'Cloud sync OK' })
+            }
+            return
+          }
           dataRef.current = merged
           setData(merged)
           await writeLocalDataCache(merged)

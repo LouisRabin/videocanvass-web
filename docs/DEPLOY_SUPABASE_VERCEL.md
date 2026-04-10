@@ -34,7 +34,7 @@ If you send Supabase Auth mail through **Resend** from your domain, follow [**do
 
 The app calls `resetPasswordForEmail` with `redirectTo` set to your current origin and path (see `passwordRecoveryRedirectTo()` in `src/lib/authPasswordReset.ts`). After the user clicks the email link, Supabase redirects back with tokens in the URL hash so they can set a new password.
 
-**Important:** **`redirectTo` must be a full URL including `https://`**. If Supabase or the dashboard uses a bare hostname (e.g. `videocanvass-web.vercel.app` without a scheme), the browser can end up at `https://<project>.supabase.co/your-hostname` and show `{"error":"requested path is invalid"}`. Fix:
+**Important:** **`redirectTo` must be a full URL including `https://`**. If Supabase or the dashboard uses a bare hostname (e.g. `cameracanvass.com` or `videocanvass-web.vercel.app` without a scheme), the browser can end up at `https://<project>.supabase.co/your-hostname#access_token=…` and show `{"error":"requested path is invalid"}` — Supabase treats the hostname as a **path** on `*.supabase.co`. Fix:
 
 - **Authentication → URL configuration → Site URL:** use `https://your-domain` (with `https://`), not the hostname alone.
 - **Redirect URLs:** keep using patterns like `https://your-app.vercel.app/**`.
