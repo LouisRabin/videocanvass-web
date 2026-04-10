@@ -185,8 +185,10 @@ password_requirements = ""
 # rp_origins = ["http://127.0.0.1:3000"]
 
 [auth.rate_limit]
-# Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
-email_sent = 2
+# Number of emails that can be sent per hour (signup confirmations, password reset, magic links, etc.).
+# Default was 2 — too low for dev; password reset alone can hit the cap quickly. Raise only for local `supabase start`.
+# Hosted projects: Dashboard → Authentication → Rate limits (or Support) — do not rely on this file.
+email_sent = 60
 # Number of SMS messages that can be sent per hour. Requires auth.sms to be enabled.
 sms_sent = 30
 # Number of anonymous sign-ins that can be made per hour per IP address. Requires enable_anonymous_sign_ins = true.
@@ -223,20 +225,24 @@ otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
 otp_expiry = 3600
 
-# Use a production-ready SMTP server
+# Custom SMTP (e.g. Resend + verified cameracanvass.com). See docs/RESEND_CAMERACANVASS.md
 # [auth.email.smtp]
 # enabled = true
-# host = "smtp.sendgrid.net"
-# port = 587
-# user = "apikey"
-# pass = "env(SENDGRID_API_KEY)"
-# admin_email = "admin@email.com"
-# sender_name = "Admin"
+# host = "smtp.resend.com"
+# port = 465
+# user = "resend"
+# pass = "env(RESEND_API_KEY)"
+# admin_email = "Camera Canvass <noreply@cameracanvass.com>"
+# sender_name = "Camera Canvass"
 
 # Uncomment to customize email template
 # [auth.email.template.invite]
 # subject = "You have been invited"
-# content_path = "./supabase/templates/invite.html"
+# content_path = "./templates/invite.html"
+
+[auth.email.template.recovery]
+subject = "Reset your Camera Canvass password"
+content_path = "./templates/recovery.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]

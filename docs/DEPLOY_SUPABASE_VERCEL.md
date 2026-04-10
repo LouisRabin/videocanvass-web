@@ -17,6 +17,10 @@ In the Vercel project: **Settings → Environment Variables**
 
 **Symptom if Production is missing the flag or keys:** mock “choose demo user” sign-in, long loading, or no email/password login — while a preview URL behaves differently.
 
+## 2a. Outbound auth email (Resend + `cameracanvass.com`)
+
+If you send Supabase Auth mail through **Resend** from your domain, follow [**docs/RESEND_CAMERACANVASS.md**](./RESEND_CAMERACANVASS.md) (verify domain, SMTP in Supabase, sender `noreply@cameracanvass.com`).
+
 ## 2. Supabase — Auth URL configuration
 
 **Authentication → URL configuration**
@@ -42,9 +46,16 @@ Optional: set **`VITE_VC_SITE_URL`** in Vercel to the same public origin (e.g. `
    - `https://videocanvass-web.vercel.app/**`
    - Preview URLs if you use them (`https://*.vercel.app/**` or each preview host).
 2. **Email:** Under **Authentication → Providers → Email**, keep **Confirm email** / **Secure email change** as you prefer. Password reset emails are sent by Supabase (or your custom SMTP if configured under **Project Settings → Auth**).
-3. **Template (optional):** **Authentication → Email templates → Reset password** — customize copy; the link must remain valid for Supabase to complete the redirect.
+3. **Template (optional):** **Authentication → Email templates → Reset password** — the repo includes a branded HTML layout at [`supabase/templates/recovery.html`](../supabase/templates/recovery.html). For **hosted** Supabase, open that file, copy the full HTML into the dashboard editor, and keep the Go variables intact (`{{ .ConfirmationURL }}`, `{{ .Email }}`). For **local** `supabase start`, it is wired in [`supabase/config.toml`](../supabase/config.toml) under `[auth.email.template.recovery]`.
 
 If reset links redirect to the wrong host or show an “invalid redirect” error, the URL is missing from **Redirect URLs**.
+
+### “Email rate limit exceeded” (forgot password / sign-up mail)
+
+Supabase caps how many auth emails (reset, confirm, magic link) can be sent **per hour** per project. If testers hit **Forgot password** many times, you’ll see this until the window resets.
+
+- **Hosted (supabase.co):** Dashboard → **Authentication** → **Rate limits** (wording may vary by dashboard version). Increase the email quota if your plan allows, or wait for the hourly window to roll over.
+- **Local `supabase start`:** Repo `supabase/config.toml` → `[auth.rate_limit]` → `email_sent` (defaults were raised in-repo for dev). Restart the stack after editing: `supabase stop` then `supabase start`.
 
 ## 3. Database — schema, then RLS
 

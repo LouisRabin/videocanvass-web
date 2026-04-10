@@ -49,6 +49,17 @@ const btnGhost: CSSProperties = {
   padding: 0,
 }
 
+function friendlyAuthMessage(raw: string): string {
+  const m = raw.toLowerCase()
+  if (m.includes('email') && m.includes('rate limit')) {
+    return 'Too many authentication emails were sent recently (Supabase hourly cap). Try again in up to an hour. Local: raise `email_sent` under `[auth.rate_limit]` in `supabase/config.toml`, then `supabase stop` and `supabase start`. Hosted: Dashboard → Authentication → Rate limits.'
+  }
+  if (m.includes('rate limit')) {
+    return `${raw} Try again later, or adjust rate limits in Supabase Auth settings.`
+  }
+  return raw
+}
+
 export function LoginPage() {
   const [mode, setMode] = useState<'sign_in' | 'sign_up' | 'forgot_password'>('sign_in')
   const [email, setEmail] = useState('')
@@ -99,7 +110,7 @@ export function LoginPage() {
           'If an account exists for that email, we sent a reset link. Check your inbox and spam folder.',
         )
       } catch (e) {
-        setMessage(e instanceof Error ? e.message : 'Could not send reset email')
+        setMessage(e instanceof Error ? friendlyAuthMessage(e.message) : 'Could not send reset email')
       } finally {
         setBusy(false)
       }
@@ -133,7 +144,7 @@ export function LoginPage() {
         // Session + optional MFA step are handled by SessionGate (auth listener).
       }
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : 'Authentication failed')
+      setMessage(e instanceof Error ? friendlyAuthMessage(e.message) : 'Authentication failed')
     } finally {
       setBusy(false)
     }
