@@ -1,9 +1,15 @@
-import { mergeConfig } from 'vite'
+import { mergeConfig, type ConfigEnv, type UserConfig } from 'vite'
 import { defineConfig } from 'vitest/config'
-import viteConfig from './vite.config'
+import viteConfigExport from './vite.config'
+
+const viteEnv: ConfigEnv = { command: 'serve', mode: 'test' }
+const viteBase: UserConfig =
+  typeof viteConfigExport === 'function'
+    ? (viteConfigExport as (env: ConfigEnv) => UserConfig)(viteEnv)
+    : viteConfigExport
 
 export default mergeConfig(
-  viteConfig,
+  viteBase,
   defineConfig({
     test: {
       environment: 'node',

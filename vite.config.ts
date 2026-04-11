@@ -1,10 +1,36 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * Vercel’s Supabase integration sets `SUPABASE_URL` / `SUPABASE_ANON_KEY` (and sometimes
+ * `NEXT_PUBLIC_*`), but Vite only exposes `VITE_*` to the client. Map those into the names
+ * `src/lib/supabase.ts` reads so a linked project works without duplicating variables.
+ */
+function resolveSupabaseClientEnv(mode: string, cwd: string): { url: string; anonKey: string } {
+  const fileEnv = loadEnv(mode, cwd, '')
+  const pick = (...keys: string[]): string => {
+    for (const key of keys) {
+      const v = (fileEnv[key] ?? process.env[key] ?? '').toString().trim()
+      if (v) return v
+    }
+    return ''
+  }
+  return {
+    url: pick('VITE_SUPABASE_URL', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL'),
+    anonKey: pick(
+      'VITE_SUPABASE_ANON_KEY',
+      'SUPABASE_ANON_KEY',
+      'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+      'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+      'SUPABASE_PUBLISHABLE_KEY',
+    ),
+  }
+}
 
 /** Supabase packages often ship `sourceMappingURL` without the .map file (or maps reference unpublished src/). */
 function stripSupabaseSourcemapRefs(): Plugin {
@@ -26,7 +52,15 @@ function stripSupabaseSourcemapRefs(): Plugin {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const { url: supabaseUrl, anonKey: supabaseAnonKey } = resolveSupabaseClientEnv(mode, process.cwd())
+  const defineSupabase: Record<string, string> = {}
+  if (supabaseUrl && supabaseAnonKey) {
+    defineSupabase['import.meta.env.VITE_SUPABASE_URL'] = JSON.stringify(supabaseUrl)
+    defineSupabase['import.meta.env.VITE_SUPABASE_ANON_KEY'] = JSON.stringify(supabaseAnonKey)
+  }
+
+  return {
   base: './',
   plugins: [stripSupabaseSourcemapRefs(), react()],
   resolve: {
@@ -90,4 +124,6 @@ export default defineConfig({
       },
     },
   },
+  define: defineSupabase,
+  }
 })
