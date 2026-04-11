@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 import type { Location, TrackPoint } from '../../lib/types'
-import { statusColor } from '../../lib/types'
+import { statusColor, statusLabel } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
 import { DvrSingleDateTimePicker } from '../ProbativeDvrFlow'
 import { formatAddressLineForMapList, formatLatLonForStepUi } from '../casePageHelpers'
@@ -20,15 +28,6 @@ const btn: CSSProperties = {
   fontWeight: 800,
   fontSize: 'var(--vc-fs-sm)',
   whiteSpace: 'nowrap',
-}
-
-export function viewModeBtn(active: boolean): CSSProperties {
-  return {
-    ...btn,
-    borderColor: active ? '#111827' : 'rgba(148, 163, 184, 0.45)',
-    background: active ? '#111827' : 'rgba(226, 232, 240, 0.45)',
-    color: active ? '#f8fafc' : '#111827',
-  }
 }
 
 const btnDanger: CSSProperties = {
@@ -274,66 +273,266 @@ export const caseHeaderReadonlyDesc: CSSProperties = {
   WebkitLineClamp: 2,
 }
 
+/**
+ * Status filter chips: two equal columns (or one when `columnCount` is 1) sized so every chip is at least as
+ * wide as the widest chip’s content — avoids truncating long labels like “Probative Footage”.
+ */
+export function UniformFilterChipGrid(props: {
+  children: ReactNode
+  columnCount?: 1 | 2
+  /** Include anything that changes chip text width (e.g. counts). */
+  measureKey: string
+  id?: string
+  role?: string
+  'aria-label'?: string
+}) {
+  const columnCount = props.columnCount === 1 ? 1 : 2
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [colMinPx, setColMinPx] = useState(0)
+
+  useLayoutEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const run = () => {
+      const buttons = host.querySelectorAll<HTMLButtonElement>(':scope > button')
+      if (buttons.length === 0) return
+      let m = 0
+      buttons.forEach((b) => {
+        const wPrev = b.style.width
+        const mwPrev = b.style.maxWidth
+        b.style.width = 'max-content'
+        b.style.maxWidth = 'none'
+        m = Math.max(m, Math.ceil(b.getBoundingClientRect().width))
+        b.style.width = wPrev
+        b.style.maxWidth = mwPrev
+      })
+      setColMinPx((prev) => (prev === m ? prev : m))
+    }
+    run()
+    requestAnimationFrame(run)
+    const ro = new ResizeObserver(() => {
+      run()
+      requestAnimationFrame(run)
+    })
+    ro.observe(host)
+    return () => ro.disconnect()
+  }, [props.measureKey, columnCount])
+
+  /**
+   * Fixed pixel tracks after measure. Before `colMinPx` is set, avoid `1fr` under `width: max-content`
+   * parents — it resolves to 0 and the grid (and filter panel) collapse so nothing “pops up”.
+   */
+  const track =
+    colMinPx > 0
+      ? columnCount === 1
+        ? `minmax(${colMinPx}px, 1fr)`
+        : `repeat(2, ${colMinPx}px)`
+      : columnCount === 1
+        ? 'auto'
+        : 'repeat(2, auto)'
+
+  const gridWidthPx =
+    colMinPx > 0 ? (columnCount === 2 ? colMinPx * 2 + 6 : colMinPx) : undefined
+
+  return (
+    <div
+      ref={hostRef}
+      id={props.id}
+      role={props.role}
+      aria-label={props['aria-label']}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: track,
+        gap: 6,
+        width: gridWidthPx != null ? `${gridWidthPx}px` : 'max-content',
+        minWidth: 'min-content',
+        overflow: 'visible',
+        alignItems: 'stretch',
+        boxSizing: 'border-box',
+      }}
+    >
+      {props.children}
+    </div>
+  )
+}
+
 export function LegendChip(props: {
   label: string
+  /** When set, `label` is the name only; count is shown in a non-shrinking segment (narrow filter chips). */
+  count?: number
   color: string
   on: boolean
   onToggle: () => void
   /** Compact pill for one-line filter rows (list view). */
   dense?: boolean
-  /** Allow label to wrap in narrow tool panels. */
+  /** Allow label to wrap (rare); filter chips omit this so “Result (n)” stays one line. */
   allowMultiline?: boolean
   /** Tighter two-column pills for the narrow map tool dock. */
   dockCompact?: boolean
+  /** Merged onto the root button last (e.g. flex row: `flex`, `minWidth`, `maxWidth`). */
+  rootStyle?: CSSProperties
 }) {
   const dense = props.dense === true
   const multiline = props.allowMultiline === true
   const dockCompact = props.dockCompact === true
+  const count = props.count
+  const on = props.on
+  const titleText = count != null ? `${props.label} (${count})` : props.label
+  /** Fixed-width swatch track + flex `gap` (dock): one flex gap between track and label so spacing cannot drift. */
+  const swatchTrackPx = 14
+  const dotPx = dockCompact ? 7 : 10
+  const labelGapPx = 6
+  /** Map / list filter dock: equal vertical + horizontal padding on every chip. */
+  const dockChipPad = '7px 8px'
+  const labelTextStyle: CSSProperties = {
+    fontWeight: 900,
+    fontSize: multiline ? 11 : dockCompact ? 10 : 12,
+    lineHeight: dockCompact ? 1.2 : 1.25,
+    wordBreak: multiline ? 'break-word' : undefined,
+    overflowWrap: multiline ? 'anywhere' : undefined,
+    minWidth: 0,
+    textAlign: 'left',
+    color: on ? vcGlassFgDarkReadable : 'rgba(15, 23, 42, 0.58)',
+    whiteSpace: multiline ? 'normal' : 'nowrap',
+  }
+  const countSuffixStyle: CSSProperties = {
+    ...labelTextStyle,
+    overflow: 'visible',
+    whiteSpace: 'nowrap',
+  }
+  const dotStyle: CSSProperties = {
+    width: dotPx,
+    height: dotPx,
+    borderRadius: 999,
+    background: props.color,
+    flexShrink: 0,
+    display: 'block',
+  }
   return (
     <button
       type="button"
       onClick={props.onToggle}
-      title={props.label}
+      title={titleText}
       style={{
         ...chip,
         width: dense && !dockCompact ? 'auto' : '100%',
         flex: dense && !dockCompact ? '0 0 auto' : undefined,
-        minWidth: dense && !dockCompact ? undefined : 0,
-        maxWidth: dense && !dockCompact ? 'none' : '100%',
+        minWidth: dockCompact ? 'min-content' : dense && !dockCompact ? undefined : 0,
+        maxWidth: dockCompact || (dense && !dockCompact) ? 'none' : '100%',
         boxSizing: 'border-box',
-        justifyContent: 'flex-start',
-        alignItems: multiline || dockCompact ? 'flex-start' : 'center',
-        opacity: props.on ? 1 : 0.55,
-        background: props.on ? '#f9fafb' : 'transparent',
-        whiteSpace: multiline || dockCompact ? 'normal' : 'nowrap',
-        padding: dockCompact ? '5px 6px' : dense ? '6px 10px' : chip.padding,
-        gap: dockCompact ? 5 : dense ? 6 : chip.gap,
+        ...(dockCompact
+          ? {
+              display: 'flex',
+              alignItems: multiline ? 'flex-start' : 'center',
+              justifyContent: 'flex-start',
+              gap: 0,
+            }
+          : {
+              display: 'inline-flex',
+              justifyContent: 'flex-start',
+              alignItems: multiline ? 'flex-start' : 'center',
+              gap: dense ? 6 : chip.gap,
+            }),
+        /** Match `chip` / row status pills: slate frost, not paper white (reads on map HUD + list). */
+        background: on ? 'rgba(203, 213, 225, 0.82)' : 'rgba(148, 163, 184, 0.36)',
+        borderColor: on ? 'rgba(15, 23, 42, 0.16)' : 'rgba(15, 23, 42, 0.12)',
+        boxShadow: on
+          ? 'inset 0 1px 0 rgba(255,255,255,0.35), 0 1px 4px rgba(15, 23, 42, 0.08)'
+          : 'inset 0 1px 0 rgba(255,255,255,0.12)',
+        whiteSpace: multiline ? 'normal' : 'nowrap',
+        padding: dockCompact ? dockChipPad : dense ? '6px 10px' : chip.padding,
+        ...props.rootStyle,
+        ...(dockCompact
+          ? {
+              overflow: 'hidden' as const,
+              /** After `rootStyle` so callers cannot force `minWidth: 0` and squash chips below label+count. */
+              minWidth: 'min-content' as const,
+            }
+          : {}),
       }}
     >
-      <span
-        style={{
-          width: dockCompact ? 7 : 10,
-          height: dockCompact ? 7 : 10,
-          borderRadius: 999,
-          background: props.color,
-          flexShrink: 0,
-          display: 'inline-block',
-          marginTop: multiline || dockCompact ? 2 : undefined,
-        }}
-      />
-      <span
-        style={{
-          fontWeight: 900,
-          fontSize: multiline ? 11 : dockCompact ? 10 : 12,
-          lineHeight: dockCompact ? 1.2 : 1.25,
-          wordBreak: multiline || dockCompact ? 'break-word' : undefined,
-          overflowWrap: multiline || dockCompact ? 'anywhere' : undefined,
-          minWidth: 0,
-          textAlign: 'left',
-        }}
-      >
-        {props.label}
-      </span>
+      {dockCompact ? (
+        <span
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `${swatchTrackPx}px minmax(0, 1fr)`,
+            columnGap: labelGapPx,
+            alignItems: multiline ? 'start' : 'center',
+            width: '100%',
+            minWidth: 'min-content',
+            boxSizing: 'border-box',
+          }}
+        >
+          <span
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              alignSelf: multiline ? 'start' : 'center',
+            }}
+          >
+            <span style={dotStyle} />
+          </span>
+          {count != null ? (
+            <span
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                flexWrap: 'nowrap',
+                alignItems: 'center',
+                width: 'max-content',
+                minWidth: 'min-content',
+                overflow: 'visible',
+                gap: 5,
+              }}
+            >
+              <span
+                style={{
+                  ...labelTextStyle,
+                  minWidth: 'auto',
+                  flexShrink: 0,
+                  overflow: 'visible',
+                }}
+              >
+                {props.label}
+              </span>
+              <span style={{ ...countSuffixStyle, flexShrink: 0, minWidth: 'max-content' }}>{`(${count})`}</span>
+            </span>
+          ) : (
+            <span
+              style={{
+                ...labelTextStyle,
+                width: '100%',
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: multiline ? undefined : 'ellipsis',
+              }}
+            >
+              {props.label}
+            </span>
+          )}
+        </span>
+      ) : (
+        <>
+          <span
+            style={{
+              ...dotStyle,
+              marginTop: multiline ? 2 : undefined,
+            }}
+          />
+          <span style={labelTextStyle}>
+            {count != null ? (
+              <>
+                {props.label}
+                <span style={{ marginLeft: 5 }}>{`(${count})`}</span>
+              </>
+            ) : (
+              props.label
+            )}
+          </span>
+        </>
+      )}
     </button>
   )
 }
@@ -782,7 +981,7 @@ export function LocationDrawer(props: {
     return (
       <div style={wrap}>
         <StatusPill
-          label="No cameras"
+          label={statusLabel('noCameras')}
           color={statusColor('noCameras')}
           active={props.location.status === 'noCameras'}
           disabled={!canEdit}
@@ -790,7 +989,7 @@ export function LocationDrawer(props: {
           onClick={() => props.onUpdate({ status: 'noCameras' })}
         />
         <StatusPill
-          label="Needs Follow up"
+          label={statusLabel('camerasNoAnswer')}
           color={statusColor('camerasNoAnswer')}
           active={props.location.status === 'camerasNoAnswer'}
           disabled={!canEdit}
@@ -798,7 +997,7 @@ export function LocationDrawer(props: {
           onClick={() => props.onUpdate({ status: 'camerasNoAnswer' })}
         />
         <StatusPill
-          label="Not probative"
+          label={statusLabel('notProbativeFootage')}
           color={statusColor('notProbativeFootage')}
           active={props.location.status === 'notProbativeFootage'}
           disabled={!canEdit}
@@ -806,7 +1005,7 @@ export function LocationDrawer(props: {
           onClick={() => props.onUpdate({ status: 'notProbativeFootage' })}
         />
         <StatusPill
-          label="Probative"
+          label={statusLabel('probativeFootage')}
           color={statusColor('probativeFootage')}
           active={props.location.status === 'probativeFootage'}
           disabled={!canEdit}

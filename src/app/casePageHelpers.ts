@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import L from 'leaflet'
 import type { CanvassStatus, LatLon, Location, TrackPoint } from '../lib/types'
 
-/** Order rows in list view: probative → follow up → not probative → no cameras, then newest first. */
+/** Order rows in list view: probative → follow up → Not Probative → no cameras, then newest first. */
 export const LIST_STATUS_SORT_ORDER: Record<CanvassStatus, number> = {
   probativeFootage: 0,
   camerasNoAnswer: 1,
@@ -19,7 +19,7 @@ export function appendToNotes(existing: string, block: string) {
   return `${e}\n\n${b}`
 }
 
-/** Building-outline worker parallelism. Documented with other retrieval settings in `HANDOFF.md`. */
+/** Building-outline worker parallelism. Documented with other retrieval settings in `docs/HANDOFF.md`. */
 export const OUTLINE_CONCURRENCY = 3
 
 export type PendingAddItem = {
@@ -59,23 +59,83 @@ export function isProvisionalCanvassLabel(text: string | undefined | null): bool
   return false
 }
 
-/** Trailing country names after the last comma (common geocoder tails). */
-const ADDRESS_LIST_COUNTRY_TAIL =
-  /,\s*(United States(?:\s+of\s+America)?|USA|U\.S\.A\.?|U\.S\.?|Canada|Mexico|United Kingdom|UK)\s*$/i
+/**
+ * Common English geocoder country tails — used for whole comma-separated segments and
+ * `, Country` suffix cleanup.
+ */
+const ADDRESS_DISPLAY_COUNTRY_NAMES_BODY =
+  'United States(?:\\s+of\\s+America)?|USA|U\\.S\\.A\\.?|U\\.S\\.?|Canada|Mexico|United Kingdom|UK|Great Britain|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Deutschland|Italy|Italia|Spain|España|Netherlands|The Netherlands|Holland|Belgium|Luxembourg|Austria|Österreich|Switzerland|Australia|New Zealand|Japan|Brazil|Brasil|India|China|South Korea|Norway|Sweden|Denmark|Finland|Poland|Czechia|Czech Republic|Hungary|Romania|Portugal|Greece|Turkey|Türkiye|Israel|Singapore|South Africa|Argentina|Chile|Colombia|Peru|Philippines|Thailand|Vietnam|Indonesia|Malaysia|Taiwan|Russia|Ukraine'
+
+const ADDRESS_DISPLAY_COUNTRY_SEGMENT = new RegExp(`^(?:${ADDRESS_DISPLAY_COUNTRY_NAMES_BODY})$`, 'iu')
+const ADDRESS_LIST_COUNTRY_TAIL = new RegExp(`,\\s*(?:${ADDRESS_DISPLAY_COUNTRY_NAMES_BODY})\\s*$`, 'iu')
+
+function isStatePlusUsZipSegment(seg: string): boolean {
+  return /^[A-Z]{2}\s+\d{5}(?:-\d{4})?$/i.test(seg.trim())
+}
+
+/** Last comma-separated segment is only a postal / ZIP code (US, CA, UK, NL, EU-style digits, Nordic). */
+function isPostalCodeOnlySegment(seg: string): boolean {
+  const t = seg.trim()
+  if (!t) return false
+  if (/^\d{5}(?:-\d{4})?$/.test(t)) return true
+  if (/^\d{9}$/.test(t)) return true
+  if (/^[ABCEGHJ-NPRSTVXY]\d[A-Z]\s?\d[A-Z]\d$/i.test(t)) return true
+  if (/^[A-Z]{1,2}\d[A-Z0-9]?\s*\d[A-Z]{2}$/i.test(t)) return true
+  if (/^\d{4}\s?[A-Z]{2}$/i.test(t)) return true
+  if (/^\d{4,6}$/.test(t)) return true
+  if (/^\d{3}\s\d{2}$/.test(t)) return true
+  return false
+}
+
+function stripTrailingPostalCountryCommaSegments(parts: string[]): string[] {
+  const out = parts.map((p) => p.trim()).filter((p) => p.length > 0)
+  let changed = true
+  while (changed && out.length > 0) {
+    changed = false
+    const last = out[out.length - 1]!
+    if (ADDRESS_DISPLAY_COUNTRY_SEGMENT.test(last)) {
+      out.pop()
+      changed = true
+      continue
+    }
+    if (isPostalCodeOnlySegment(last)) {
+      out.pop()
+      changed = true
+      continue
+    }
+    if (isStatePlusUsZipSegment(last)) {
+      out.pop()
+      changed = true
+      continue
+    }
+  }
+  return out
+}
 
 /**
- * Shorter label for map list rows: remove trailing postal/ZIP and country when clearly present.
+ * Shorter label for map and list UI: drop trailing postal/ZIP and country when clearly present.
  * Does not change stored `addressText`; display-only.
  */
 export function formatAddressLineForMapList(addressText: string): string {
   let s = (addressText ?? '').trim()
   if (!s) return s
+
+  const rawParts = s.split(',')
+  if (rawParts.length > 1) {
+    s = stripTrailingPostalCountryCommaSegments(rawParts).join(', ')
+  }
+
   let prev = ''
   while (s !== prev) {
     prev = s
     s = s.replace(ADDRESS_LIST_COUNTRY_TAIL, '').trim()
     s = s.replace(/,\s*\d{5}(?:-\d{4})?\s*$/i, '').trim()
     s = s.replace(/,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$/i, '').trim()
+    s = s.replace(/,\s*[ABCEGHJ-NPRSTVXY]\d[A-Z]\s?\d[A-Z]\d\s*$/i, '').trim()
+    s = s.replace(/,\s*[A-Z]{1,2}\d[A-Z0-9]?\s*\d[A-Z]{2}\s*$/i, '').trim()
+    s = s.replace(/,\s*\d{4}\s?[A-Z]{2}\s*$/i, '').trim()
+    s = s.replace(/,\s*\d{4,6}\s*$/i, '').trim()
+    s = s.replace(/,\s*\d{3}\s\d{2}\s*$/i, '').trim()
   }
   return s
 }
@@ -157,6 +217,41 @@ export function extendBoundsWithPathPoints(
     out = out ? out.extend(ll) : L.latLngBounds(ll, ll)
   }
   return out
+}
+
+/** Same bounds as the case map “Fit canvass” control (filtered list when filters hide all rows). */
+export function boundsForPdfExportFitCanvass(
+  filtered: Location[],
+  locations: Location[],
+): InstanceType<typeof L.LatLngBounds> | null {
+  const pts = filtered.length ? filtered : locations
+  if (!pts.length) return null
+  const b = extendBoundsWithLocations(null, pts)
+  if (!b || !b.isValid()) return null
+  return b.pad(0.2)
+}
+
+/** Same bounds as “Fit paths” (visible track points on map). */
+export function boundsForPdfExportFitPaths(
+  trackingMapPoints: Array<{ lat: number; lon: number }>,
+): InstanceType<typeof L.LatLngBounds> | null {
+  if (!trackingMapPoints.length) return null
+  const b = extendBoundsWithPathPoints(null, trackingMapPoints)
+  if (!b || !b.isValid()) return null
+  return b.pad(0.18)
+}
+
+/** Same bounds as “Fit all” (canvass + paths). */
+export function boundsForPdfExportFitAll(
+  filtered: Location[],
+  locations: Location[],
+  trackingMapPoints: Array<{ lat: number; lon: number }>,
+): InstanceType<typeof L.LatLngBounds> | null {
+  const locPts = filtered.length ? filtered : locations
+  let b = extendBoundsWithLocations(null, locPts)
+  b = extendBoundsWithPathPoints(b, trackingMapPoints)
+  if (!b || !b.isValid()) return null
+  return b.pad(0.2)
 }
 
 export function casePhotoCarouselArrowStyle(side: 'left' | 'right'): CSSProperties {
@@ -246,7 +341,6 @@ export function findDuplicateLocationInCaseByAddressText(
 export function decideCanvassSaveTarget(
   locations: Location[],
   session: CanvassMapResultSession,
-  _footprintLoadingIds: Set<string>,
 ): { kind: 'update'; id: string } | { kind: 'create'; pending: PendingAddItem } {
   if (session.mode === 'existing') {
     return { kind: 'update', id: session.locationId }

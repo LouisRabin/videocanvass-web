@@ -30,7 +30,7 @@
 	<string>Main</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
-		<string>armv7</string>
+		<string>arm64</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
@@ -49,5 +49,9 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>VideoCanvass uses your location to center the map and place canvass addresses.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>VideoCanvass needs photo library access so you can attach reference images to a case.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>VideoCanvass needs camera access when you choose to take a new photo for a case attachment.</string>
 </dict>
 </plist>

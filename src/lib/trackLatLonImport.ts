@@ -23,7 +23,7 @@ export type LatLonImportRow = {
   pasteLine1Based?: number
 }
 
-export type GridAutoDiagnostics = {
+type GridAutoDiagnostics = {
   reason: 'header' | 'scored'
   latCol1Based: number
   lonCol1Based: number
@@ -56,7 +56,7 @@ export type GridParseOpts =
       dataStartCol?: number
     }
 
-export type GridParseResult = {
+type GridParseResult = {
   points: LatLonPoint[]
   /** Parallel detail for each point (same order as `points`) when available */
   rows?: LatLonImportRow[]
@@ -66,7 +66,7 @@ export type GridParseResult = {
   diagnostics?: GridAutoDiagnostics
 }
 
-export type OverlapGroup = {
+type OverlapGroup = {
   /** Rounded-coordinate key for debugging */
   key: string
   approxLat: number
@@ -186,7 +186,7 @@ export function pairToLatLon(a: number, b: number): { lat: number; lon: number }
   return null
 }
 
-export type TextParseResult = GridParseResult
+type TextParseResult = GridParseResult
 
 /** Parse pasted lines: two numbers per line (comma, tab, or spaces). */
 export function parseLatLonPasteText(text: string): TextParseResult {
@@ -226,7 +226,7 @@ export function parseLatLonPasteText(text: string): TextParseResult {
 }
 
 /** Minimal CSV line split (handles quoted fields). */
-export function splitCsvLine(line: string): string[] {
+function splitCsvLine(line: string): string[] {
   const out: string[] = []
   let cur = ''
   let inQ = false

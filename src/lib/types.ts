@@ -201,13 +201,13 @@ export function caseAttachmentKindLabel(k: CaseAttachmentKind): string {
 export function statusLabel(s: CanvassStatus): string {
   switch (s) {
     case 'noCameras':
-      return 'No cameras'
+      return 'No Cameras'
     case 'camerasNoAnswer':
-      return 'Needs Follow up'
+      return 'Needs Follow Up'
     case 'notProbativeFootage':
-      return 'Not probative footage'
+      return 'Not Probative'
     case 'probativeFootage':
-      return 'Probative footage'
+      return 'Probative Footage'
   }
 }
 

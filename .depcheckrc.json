@@ -3,7 +3,13 @@
     "@capacitor/android",
     "@capacitor/ios",
     "knip",
-    "depcheck"
+    "depcheck",
+    "@supabase/postgrest-js",
+    "@rollup/wasm-node",
+    "hermes-parser",
+    "iceberg-js",
+    "magic-string",
+    "tslib"
   ],
   "ignoreMatches": ["geojson"]
 }

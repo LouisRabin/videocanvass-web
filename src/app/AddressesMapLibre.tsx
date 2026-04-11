@@ -9,6 +9,7 @@ import {
   useState,
   type MutableRefObject,
 } from 'react'
+import { flushSync } from 'react-dom'
 import MapGL, { Layer, Marker, Source, useMap, type MapLayerMouseEvent, type MapRef } from 'react-map-gl/maplibre'
 import type { Map as GlMap } from 'maplibre-gl'
 import type { Feature, FeatureCollection } from 'geojson'
@@ -23,7 +24,7 @@ import {
   CARTO_VECTOR_BUILDING_LAYER_IDS,
 } from '../lib/vectorTileBuilding'
 
-// See docs/CODEMAP.md; geocode/footprint policy in HANDOFF.md.
+// See docs/CODEMAP.md; geocode/footprint policy in docs/HANDOFF.md.
 
 const MAP_LONG_PRESS_MS = 550
 const MAP_LONG_PRESS_MOVE_PX2 = 64
@@ -64,6 +65,8 @@ import {
 } from './addressesMapLibreHelpers'
 import { TrackWaypointMarkersMapLibre } from './addressesMapLibre/TrackWaypointMarkers'
 
+export type CaseExportSnapshotMode = 'full' | 'addresses' | 'tracks'
+
 export type UnifiedCaseMapHandle = {
   flyTo: (lat: number, lon: number, zoom: number, opts?: { duration?: number }) => void
   fitBounds: (bounds: InstanceType<typeof L.LatLngBounds>) => void
@@ -76,6 +79,71 @@ export type UnifiedCaseMapHandle = {
   clearPendingMapTap: () => void
   /** Ignore map click handling until `performance.now()` + ms (extends any existing deadline). */
   suppressMapClicksFor: (ms: number) => void
+  /**
+   * Temporarily adjusts layer visibility + DOM track decorations, fits to the same bounds as Fit all / Fit canvass / Fit paths, waits for idle, returns PNG data URL.
+   * Restores view + layers afterward. May return null if the map/canvas is unavailable or tiles taint the canvas (CORS).
+   */
+  captureExportSnapshot: (opts: {
+    mode: CaseExportSnapshotMode
+    /** Leaflet bounds from the same helpers as Fit all / Fit canvass / Fit paths (includes address footprint extent). */
+    leafletBounds: InstanceType<typeof L.LatLngBounds> | null
+    /** When `mode` is `tracks`, render only this path (lines + pins) for the snapshot. */
+    onlyTrackId?: string
+  }) => Promise<string | null>
+}
+
+/** Layer ids owned by this map for export visibility toggling (ignore if missing in style). */
+const EXPORT_CANVASS_LAYERS = ['canvass-fill', 'canvass-outline', 'canvass-pin-circles'] as const
+const EXPORT_TRACK_LINE_LAYERS = ['travel-line-layer-subject', 'travel-line-layer-coordinate'] as const
+const EXPORT_TRACK_POINT_LAYERS = ['track-wpts-unclustered', 'track-wpts-stepnum'] as const
+const EXPORT_HEAT_LAYER = 'visit-heat-layer'
+
+const EXPORT_ALL_TOGGLE_LAYERS = [
+  ...EXPORT_CANVASS_LAYERS,
+  ...EXPORT_TRACK_LINE_LAYERS,
+  ...EXPORT_TRACK_POINT_LAYERS,
+  EXPORT_HEAT_LAYER,
+] as const
+
+function tryGetLayerVisibility(map: GlMap, layerId: string): string | undefined {
+  try {
+    const v = map.getLayoutProperty(layerId, 'visibility')
+    return typeof v === 'string' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function trySetLayerVisibility(map: GlMap, layerId: string, visibility: 'visible' | 'none') {
+  try {
+    map.setLayoutProperty(layerId, 'visibility', visibility)
+  } catch {
+    /* layer may not exist (heatmap off, etc.) */
+  }
+}
+
+function waitMapIdle(map: GlMap, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      map.off('idle', onIdle)
+      resolve()
+    }
+    const t = setTimeout(finish, timeoutMs)
+    const onIdle = () => finish()
+    map.once('idle', onIdle)
+  })
+}
+
+function raf2(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve())
+    })
+  })
 }
 
 type MapTrackingInteraction = {
@@ -605,6 +673,80 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       }
     })
 
+    const initialViewState = useMemo(() => {
+      const r = props.resumeMapFocus
+      if (r) {
+        return { longitude: r.lon, latitude: r.lat, zoom: MAP_RESUME_FOCUS_ZOOM }
+      }
+      return {
+        longitude: props.defaultCenter[1],
+        latitude: props.defaultCenter[0],
+        zoom: 15,
+      }
+    }, [props.resumeMapFocus, props.defaultCenter])
+
+    const mapStyle = useMemo(() => resolveCaseMapBasemapStyle(props.basemap), [props.basemap])
+
+    useEffect(() => {
+      const map = mapRef.current?.getMap()
+      if (!map) return
+      const run = () => collapseMaplibreAttributionToCompactChip(map)
+      run()
+      const t = window.setTimeout(run, 80)
+      const t2 = window.setTimeout(run, 240)
+      return () => {
+        window.clearTimeout(t)
+        window.clearTimeout(t2)
+      }
+    }, [mapStyle])
+
+    const canvassFc = useMemo(
+      () => buildCanvassCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
+      [props.mapPins, props.selectedId, props.footprintLoadingIds],
+    )
+
+    const pinsFc = useMemo(
+      () => buildPinCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
+      [props.mapPins, props.selectedId, props.footprintLoadingIds],
+    )
+
+    const outlineLoadingPins = useMemo(() => {
+      return props.mapPins.filter(
+        (l) => props.footprintLoadingIds.has(l.id) && !(l.footprint && l.footprint.length >= 3),
+      )
+    }, [props.mapPins, props.footprintLoadingIds])
+
+    const trackPtsForMap = props.caseTrackPointsForMap ?? props.caseTrackPoints
+
+    /** During PDF per-path map capture: show only that track so other paths are not in the screenshot. */
+    const [exportPathSnapshotTrackId, setExportPathSnapshotTrackId] = useState<string | null>(null)
+    const visibleTrackIdsForMap = useMemo(() => {
+      if (exportPathSnapshotTrackId == null) return props.visibleTrackIds
+      const next: Record<string, boolean> = {}
+      for (const t of props.caseTracks) {
+        next[t.id] = t.id === exportPathSnapshotTrackId
+      }
+      return next
+    }, [exportPathSnapshotTrackId, props.caseTracks, props.visibleTrackIds])
+
+    const canManipulateTrackPointOnMap = useCallback(
+      (id: string) =>
+        props.canManipulateTrackPoint(id) &&
+        (!props.trackingInteraction.canPickTrackPoint || props.trackingInteraction.canPickTrackPoint(id)),
+      [props.canManipulateTrackPoint, props.trackingInteraction.canPickTrackPoint],
+    )
+
+    const tracksData = useMemo(
+      () => buildTracksData(props.caseTracks, trackPtsForMap, visibleTrackIdsForMap, props.getRouteColor),
+      [props.caseTracks, trackPtsForMap, visibleTrackIdsForMap, props.getRouteColor],
+    )
+
+    const [mapZoom, setMapZoom] = useState(15)
+    const showDetailOverlays = mapZoom >= MAP_DETAIL_MIN_ZOOM
+    /** During PDF export “addresses only” snapshot: hide DOM track markers/labels (lines stay WebGL). */
+    const [exportHideDomTrackDecor, setExportHideDomTrackDecor] = useState(false)
+    const showTrackDomOverlays = showDetailOverlays && !exportHideDomTrackDecor
+
     useImperativeHandle(ref, () => ({
       flyTo(lat, lon, zoom, opts) {
         const map = mapRef.current?.getMap()
@@ -673,77 +815,92 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           mapClickSuppressUntilRef.current = until
         }
       },
+      async captureExportSnapshot(opts: {
+        mode: CaseExportSnapshotMode
+        leafletBounds: InstanceType<typeof L.LatLngBounds> | null
+        onlyTrackId?: string
+      }) {
+        const map = mapRef.current?.getMap()
+        const b = opts.leafletBounds
+        if (!map || !b || !b.isValid()) return null
+        const center = map.getCenter()
+        const zoom = map.getZoom()
+        const prevVis = new Map<string, string | undefined>()
+        for (const id of EXPORT_ALL_TOGGLE_LAYERS) {
+          prevVis.set(id, tryGetLayerVisibility(map, id))
+        }
+        const applyMode = (mode: CaseExportSnapshotMode) => {
+          const showC = mode === 'full' || mode === 'addresses'
+          const showT = mode === 'full' || mode === 'tracks'
+          const showHeat = mode === 'full' || mode === 'addresses'
+          for (const id of EXPORT_CANVASS_LAYERS) trySetLayerVisibility(map, id, showC ? 'visible' : 'none')
+          for (const id of EXPORT_TRACK_LINE_LAYERS) trySetLayerVisibility(map, id, showT ? 'visible' : 'none')
+          for (const id of EXPORT_TRACK_POINT_LAYERS) trySetLayerVisibility(map, id, showT ? 'visible' : 'none')
+          trySetLayerVisibility(map, EXPORT_HEAT_LAYER, showHeat ? 'visible' : 'none')
+        }
+        let dataUrl: string | null = null
+        try {
+          applyMode(opts.mode)
+          const singleTrackId = opts.mode === 'tracks' && opts.onlyTrackId ? opts.onlyTrackId : null
+          flushSync(() => {
+            setExportHideDomTrackDecor(opts.mode === 'addresses')
+            setExportPathSnapshotTrackId(singleTrackId)
+          })
+          await raf2()
+          const sw = b.getSouthWest()
+          const ne = b.getNorthEast()
+          map.fitBounds(
+            [
+              [sw.lng, sw.lat],
+              [ne.lng, ne.lat],
+            ],
+            { padding: 48, duration: 0 },
+          )
+          await waitMapIdle(map, 8000)
+          await raf2()
+          try {
+            dataUrl = map.getCanvas().toDataURL('image/png')
+          } catch {
+            dataUrl = null
+          }
+        } catch {
+          dataUrl = null
+        } finally {
+          for (const id of EXPORT_ALL_TOGGLE_LAYERS) {
+            const prev = prevVis.get(id)
+            try {
+              if (prev === 'none' || prev === 'visible') {
+                map.setLayoutProperty(id, 'visibility', prev)
+              } else {
+                map.setLayoutProperty(id, 'visibility', 'visible')
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          flushSync(() => {
+            setExportHideDomTrackDecor(false)
+            setExportPathSnapshotTrackId(null)
+          })
+          try {
+            map.jumpTo({ center, zoom })
+          } catch {
+            /* ignore */
+          }
+        }
+        return dataUrl
+      },
     }))
-
-    const initialViewState = useMemo(() => {
-      const r = props.resumeMapFocus
-      if (r) {
-        return { longitude: r.lon, latitude: r.lat, zoom: MAP_RESUME_FOCUS_ZOOM }
-      }
-      return {
-        longitude: props.defaultCenter[1],
-        latitude: props.defaultCenter[0],
-        zoom: 15,
-      }
-    }, [props.resumeMapFocus, props.defaultCenter])
-
-    const mapStyle = useMemo(() => resolveCaseMapBasemapStyle(props.basemap), [props.basemap])
-
-    useEffect(() => {
-      const map = mapRef.current?.getMap()
-      if (!map) return
-      const run = () => collapseMaplibreAttributionToCompactChip(map)
-      run()
-      const t = window.setTimeout(run, 80)
-      const t2 = window.setTimeout(run, 240)
-      return () => {
-        window.clearTimeout(t)
-        window.clearTimeout(t2)
-      }
-    }, [mapStyle])
-
-    const canvassFc = useMemo(
-      () => buildCanvassCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
-      [props.mapPins, props.selectedId, props.footprintLoadingIds],
-    )
-
-    const pinsFc = useMemo(
-      () => buildPinCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
-      [props.mapPins, props.selectedId, props.footprintLoadingIds],
-    )
-
-    const outlineLoadingPins = useMemo(() => {
-      return props.mapPins.filter(
-        (l) => props.footprintLoadingIds.has(l.id) && !(l.footprint && l.footprint.length >= 3),
-      )
-    }, [props.mapPins, props.footprintLoadingIds])
-
-    const trackPtsForMap = props.caseTrackPointsForMap ?? props.caseTrackPoints
-
-    const canManipulateTrackPointOnMap = useCallback(
-      (id: string) =>
-        props.canManipulateTrackPoint(id) &&
-        (!props.trackingInteraction.canPickTrackPoint || props.trackingInteraction.canPickTrackPoint(id)),
-      [props.canManipulateTrackPoint, props.trackingInteraction.canPickTrackPoint],
-    )
-
-    const tracksData = useMemo(
-      () => buildTracksData(props.caseTracks, trackPtsForMap, props.visibleTrackIds, props.getRouteColor),
-      [props.caseTracks, trackPtsForMap, props.visibleTrackIds, props.getRouteColor],
-    )
-
-    const [mapZoom, setMapZoom] = useState(15)
-    const showDetailOverlays = mapZoom >= MAP_DETAIL_MIN_ZOOM
 
     const trackWptClusterFc = useMemo(
       () =>
         buildTrackWaypointClusterCollection(
           props.caseTracks,
           trackPtsForMap,
-          props.visibleTrackIds,
+          visibleTrackIdsForMap,
           props.getRouteColor,
         ),
-      [props.caseTracks, trackPtsForMap, props.visibleTrackIds, props.getRouteColor],
+      [props.caseTracks, trackPtsForMap, visibleTrackIdsForMap, props.getRouteColor],
     )
 
     const visitHeatmapFc = useMemo(() => {
@@ -1313,6 +1470,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         ref={mapRef}
         initialViewState={initialViewState}
         mapStyle={mapStyle}
+        /** Required for PDF export: default WebGL clears the drawing buffer after compositing, so `toDataURL` is often blank. */
+        canvasContextAttributes={{ preserveDrawingBuffer: true }}
         style={{ width: '100%', height: '100%' }}
         doubleClickZoom={false}
         dragPan={mapHandlersOn}
@@ -1462,7 +1621,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         <TrackWaypointMarkersMapLibre
           tracks={props.caseTracks}
           trackPoints={trackPtsForMap}
-          visibleTrackIds={props.visibleTrackIds}
+          visibleTrackIds={visibleTrackIdsForMap}
           selectedPointId={props.selectedTrackPointId ?? null}
           getRouteColor={props.getRouteColor}
           canManipulatePoint={canManipulateTrackPointOnMap}
@@ -1470,7 +1629,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           draggable={props.caseTab === 'tracking'}
           onDragEndPoint={props.onTrackPointDragEnd}
           onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
-          showMarkers={showDetailOverlays}
+          showMarkers={showTrackDomOverlays}
           mapLeftToolDockOpenRef={props.mapLeftToolDockOpenRef}
           blockMapCanvasPointerEvents={props.blockMapCanvasPointerEvents}
         />
@@ -1478,14 +1637,14 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         <TrackTimeLabelsMapLibre
           tracks={props.caseTracks}
           trackPoints={trackPtsForMap}
-          visibleTrackIds={props.visibleTrackIds}
+          visibleTrackIds={visibleTrackIdsForMap}
           getRouteColor={props.getRouteColor}
           canManipulatePoint={canManipulateTrackPointOnMap}
           selectedPointId={props.selectedTrackPointId ?? null}
           onSelectPoint={props.onSelectTrackPoint}
           onDoubleTapTrackPoint={props.onDoubleTapTrackPoint}
           onDragEndLabel={props.onTrackTimeLabelDragEnd}
-          showLabels={showDetailOverlays}
+          showLabels={showTrackDomOverlays}
           mapLeftToolDockOpenRef={props.mapLeftToolDockOpenRef}
           blockMapCanvasPointerEvents={props.blockMapCanvasPointerEvents}
         />

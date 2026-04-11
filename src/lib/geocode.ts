@@ -1,3 +1,4 @@
+import { getAppServerOrigin } from './appServerOrigin'
 import type { AddressBounds } from './types'
 
 export type PlaceSuggestion = {
@@ -168,10 +169,10 @@ export async function searchPlaces(query: string, opts?: SearchOpts): Promise<Pl
     params.set('bbox', US_PHOTON_BBOX)
   }
 
-  const proxyUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/geocode/photon-api?${params.toString()}`
-      : `/api/geocode/photon-api?${params.toString()}`
+  const origin = typeof window !== 'undefined' ? getAppServerOrigin() : ''
+  const proxyUrl = origin
+    ? `${origin}/api/geocode/photon-api?${params.toString()}`
+    : `/api/geocode/photon-api?${params.toString()}`
 
   const res = await fetchPhotonSearch(proxyUrl, params, opts?.signal)
   if (!res.ok) return []

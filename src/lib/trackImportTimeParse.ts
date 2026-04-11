@@ -4,7 +4,7 @@
  */
 
 /** Excel serial date (days since 1899-12-30 UTC, fraction = time of day) → UTC ms. */
-export function excelSerialToUtcMs(serial: number): number {
+function excelSerialToUtcMs(serial: number): number {
   const MS_PER_DAY = 86400000
   // 25569 = days from Excel epoch to Unix epoch (accounting for Excel’s 1900 leap bug in practice)
   return Math.round((serial - 25569) * MS_PER_DAY)

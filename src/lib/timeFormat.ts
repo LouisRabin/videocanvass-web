@@ -13,6 +13,14 @@ export function formatAppDateTime(ts: number | Date): string {
   return `${cal}, ${clock}`
 }
 
+/** Same as {@link formatAppDateTime} but clock is `HH:mm` only (DVR calculator). */
+export function formatAppDateTimeNoSeconds(ts: number | Date): string {
+  const d = new Date(ts)
+  const cal = d.toLocaleDateString(APP_DISPLAY_LOCALE, { year: 'numeric', month: 'short', day: 'numeric' })
+  const clock = `${padClock(d.getHours())}:${padClock(d.getMinutes())}`
+  return `${cal}, ${clock}`
+}
+
 const pad = (n: number) => String(n).padStart(2, '0')
 
 /**
@@ -42,6 +50,14 @@ export function parseDatetimeLocalToTimestamp(s: string): number | null {
 export function formatTimeThenDate(ts: number | Date): string {
   const d = new Date(ts)
   const clock = `${padClock(d.getHours())}:${padClock(d.getMinutes())}:${padClock(d.getSeconds())}`
+  const cal = d.toLocaleDateString(APP_DISPLAY_LOCALE, { year: 'numeric', month: 'short', day: 'numeric' })
+  return `${clock}, ${cal}`
+}
+
+/** Same as {@link formatTimeThenDate} but clock is `HH:mm` only (DVR calculator). */
+export function formatTimeThenDateNoSeconds(ts: number | Date): string {
+  const d = new Date(ts)
+  const clock = `${padClock(d.getHours())}:${padClock(d.getMinutes())}`
   const cal = d.toLocaleDateString(APP_DISPLAY_LOCALE, { year: 'numeric', month: 'short', day: 'numeric' })
   return `${clock}, ${cal}`
 }

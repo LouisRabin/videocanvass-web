@@ -21,7 +21,7 @@ import {
   listIanaTimeZones,
 } from '../../lib/trackTimeDisplay'
 
-export const TRACK_IMPORT_NEW_TRACK_VALUE = '__vc_import_new_track__'
+const TRACK_IMPORT_NEW_TRACK_VALUE = '__vc_import_new_track__'
 
 const PREVIEW_ERROR_CAP = 50
 const PREVIEW_WARNING_CAP = 50
@@ -114,7 +114,7 @@ function buildGridOpts(
   return { opts: { mode: 'auto' }, setupError: null }
 }
 
-export type TrackImportPanelProps = {
+type TrackImportPanelProps = {
   caseTracks: Track[]
   /** Default selected track id for import target */
   trackForMapAdd: string | null

@@ -11,7 +11,12 @@ import {
 import { Layout } from './Layout'
 import { Modal } from './Modal'
 import { AddressesMapLibre, type UnifiedCaseMapHandle } from './AddressesMapLibre'
+import { CaseExportModal } from './case/CaseExportModal'
+import { downloadCaseAddressesTracksWorkbook } from '../lib/caseExportWorkbook'
 import { downloadCaseLocationsCsv } from '../lib/caseLocationsCsv'
+import { downloadCaseTracksCsv } from '../lib/caseTracksCsv'
+import { EXPORT_ADDRESS_STATUS_ORDER, type CaseExportSelections } from '../lib/caseExportOptions'
+import { buildCaseExportPdf, downloadCaseExportPdf, type CaseExportPdfMapImages } from '../lib/caseExportPdf'
 import { useStore } from '../lib/store'
 import {
   canAddCaseContent,
@@ -29,7 +34,7 @@ import {
 } from '../lib/casePermissions'
 import { processCaseImageFile } from '../lib/caseImageUpload'
 import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track, TrackPoint } from '../lib/types'
-import { caseAttachmentKindLabel, statusColor } from '../lib/types'
+import { caseAttachmentKindLabel, statusColor, statusLabel } from '../lib/types'
 import { localCaseAddressSuggestions } from '../lib/caseAddressSearchLocal'
 import { GEOCODE_SCOPE, reverseGeocodeAddressText, type PlaceSuggestion } from '../lib/geocode'
 import { fetchBuildingFootprint } from '../lib/building'
@@ -56,13 +61,16 @@ import { COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useM
  * 4. **Locations** — list filters, selection, canvass result queue, DVR / probative flows.
  * 5. **Tracks** — visibility, import (`useCaseTrackImport`), playback, dock panels (`mapToolsDock*`).
  * 6. **Chrome / layout** — wide vs narrow shells, `WebCaseWorkspace`, glass toolbars, basemap cycle.
- * 7. **Modals & sync** — attachments, notes, import wizard, `CaseInlineSyncBar`, undo snackbar.
+ * 7. **Modals & sync** — attachments, notes, import wizard, undo snackbar (header sync dot for cloud status).
  *
- * Geocode / footprint policy: HANDOFF.md. Module index: docs/CODEMAP.md.
+ * Geocode / footprint policy: docs/HANDOFF.md. Module index: docs/CODEMAP.md.
  */
 
 import {
   appendToNotes,
+  boundsForPdfExportFitAll,
+  boundsForPdfExportFitCanvass,
+  boundsForPdfExportFitPaths,
   casePhotoCarouselArrowStyle,
   extendBoundsWithLocations,
   extendBoundsWithPathPoints,
@@ -85,11 +93,11 @@ import {
   type VcCaseMapBasemapId,
 } from './addressesMapLibreHelpers'
 
-import { CaseInlineSyncBar } from './case/CaseInlineSyncBar'
 import { CanvassMapResultModal } from './case/CanvassMapResultModal'
 import { UndoSnackbar } from './case/UndoSnackbar'
 import {
   LegendChip,
+  UniformFilterChipGrid,
   LocationDrawer,
   TrackPointDrawer,
   btn,
@@ -104,7 +112,6 @@ import {
   label,
   select,
   suggestionBtn,
-  viewModeBtn,
 } from './case/CasePageChrome'
 import {
   MAP_LAYERS_GLYPH_PX,
@@ -162,8 +169,8 @@ function CaseBackToListButton(props: { onBack: () => void }) {
       type="button"
       data-vc-tour={VC_TOUR.caseBack}
       onClick={props.onBack}
-      aria-label="Back to cases"
-      title="Back to cases"
+      aria-label="Back to Cases"
+      title="Back to Cases"
       style={{
         ...vcGlassHeaderBtn,
         display: 'inline-flex',
@@ -292,6 +299,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     [data, props.caseId, actorId],
   )
 
+  /** When false, map dock “Import coordinates” entry and panel are hidden (feature not ready). */
+  const MAP_TOOLS_IMPORT_COORDINATES_ENABLED = false
+
   const caseAttachments = useMemo(() => {
     return data.caseAttachments
       .filter((a) => a.caseId === props.caseId)
@@ -313,6 +323,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const mobileOS = useMemo(() => (targetMode === 'mobile' ? getMobileOS() : null), [targetMode])
   const [geoBias, setGeoBias] = useState<{ lat: number; lon: number } | null>(null)
   const mapRef = useRef<UnifiedCaseMapHandle | null>(null)
+  const [caseExportOpen, setCaseExportOpen] = useState(false)
+  const [caseExportBusy, setCaseExportBusy] = useState(false)
   const mapSearchCenterFallback = useCallback(() => mapRef.current?.getCenter() ?? null, [])
   const [mapBasemap, setMapBasemap] = useState<VcCaseMapBasemapId>(() => readStoredCaseMapBasemap())
   useEffect(() => {
@@ -329,6 +341,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   type MapToolsDockSection = 'filters' | 'views' | 'photos' | 'tracks' | 'importCoords' | 'dvr'
   type MapToolsDockRailSection = MapToolsDockSection
   const [mapLeftToolSection, setMapLeftToolSection] = useState<null | MapToolsDockSection>(null)
+  useEffect(() => {
+    if (!MAP_TOOLS_IMPORT_COORDINATES_ENABLED && mapLeftToolSection === 'importCoords') {
+      setMapLeftToolSection(null)
+    }
+  }, [MAP_TOOLS_IMPORT_COORDINATES_ENABLED, mapLeftToolSection])
   /** Wide web: show Locations in sidebar only after List view is chosen; cleared by any other toolbar action. */
   const [wideSidebarListReveal, setWideSidebarListReveal] = useState(false)
   /** Addresses list panel: status filter chips collapsed until user taps Filters. */
@@ -789,11 +806,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     [actorId, caseTrackPoints, deleteTrackPoint, showUndoSnack],
   )
 
-  const exportCaseAddressesCsv = useCallback(() => {
-    if (!c) return
-    downloadCaseLocationsCsv(c.caseNumber, locations)
-  }, [c, locations])
-
   /** Map tools Tracks tab: subject paths only (empty or map-placed steps). Import-only paths → Import coordinates. */
   const caseTracksForMapDockTracksTab = useMemo(
     () => caseTracks.filter((t) => trackBelongsInTracksMapTab(t, caseTrackPoints)),
@@ -1102,8 +1114,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setAddrFieldFocused(false)
       setSuggestions([])
       setLoadingSug(false)
+      setAddr('')
     }, 180)
-  }, [setSuggestions, setLoadingSug])
+  }, [setAddr, setSuggestions, setLoadingSug])
   const { localAddrSugs, remoteAddrSugs } = useMemo(() => {
     const q = addr.trim()
     const minChars = 3
@@ -1140,8 +1153,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     setAddrFieldFocused(false)
     setSuggestions([])
     setLoadingSug(false)
+    setAddr('')
     addrSearchInputRef.current?.blur()
-  }, [setSuggestions, setLoadingSug])
+  }, [setAddr, setSuggestions, setLoadingSug])
 
   useEffect(() => {
     return () => {
@@ -1638,7 +1652,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       const loc = locations.find((l) => l.id === s.locationId)
       return loc ? formatAddressLineForMapList(loc.addressText) : 'Address'
     }
-    return s.addressText
+    return formatAddressLineForMapList(s.addressText)
   }, [canvassMapResultQueue, locations])
 
   useEffect(() => {
@@ -1754,6 +1768,98 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
     return pts
   }, [caseTrackPoints, visibleTrackIds])
+
+  /** Tracks with ≥1 visible map point (export modal + PDF path maps use track label). */
+  const pdfPathExportChoices = useMemo(() => {
+    const trackIdsWithPoints = new Set<string>()
+    for (const p of caseTrackPoints) {
+      if (visibleTrackIds[p.trackId] === false) continue
+      if (p.showOnMap === false) continue
+      trackIdsWithPoints.add(p.trackId)
+    }
+    return caseTracks
+      .filter((t) => trackIdsWithPoints.has(t.id))
+      .slice()
+      .sort(
+        (a, b) =>
+          a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }) || a.id.localeCompare(b.id),
+      )
+      .map((t) => ({ trackId: t.id, label: t.label }))
+  }, [caseTracks, caseTrackPoints, visibleTrackIds])
+
+  const addressExportStatusOptions = useMemo(
+    () => EXPORT_ADDRESS_STATUS_ORDER.map((status) => ({ status, label: statusLabel(status) })),
+    [],
+  )
+
+  const runCaseExport = useCallback(
+    async (sel: CaseExportSelections) => {
+      if (!c) return
+      setCaseExportBusy(true)
+      try {
+        const pdfAddressLocations = locations.filter((l) => sel.exportAddressStatuses.includes(l.status))
+        if (sel.csvAddresses && sel.csvTracks) {
+          await downloadCaseAddressesTracksWorkbook(c.caseNumber, locations, caseTracks, caseTrackPoints)
+        } else {
+          if (sel.csvAddresses) downloadCaseLocationsCsv(c.caseNumber, locations)
+          if (sel.csvTracks) downloadCaseTracksCsv(c.caseNumber, caseTracks, caseTrackPoints)
+        }
+
+        if (sel.pdf) {
+          const mapImages: CaseExportPdfMapImages = { full: null, addresses: null, pathMaps: [] }
+          const map = mapRef.current
+          if (map) {
+            if (sel.pdfMapFull) {
+              const bb = boundsForPdfExportFitAll(filtered, locations, trackingMapPoints)
+              if (bb) mapImages.full = await map.captureExportSnapshot({ mode: 'full', leafletBounds: bb })
+            }
+            if (sel.pdfMapAddresses) {
+              const bb = boundsForPdfExportFitCanvass(pdfAddressLocations, pdfAddressLocations)
+              if (bb) mapImages.addresses = await map.captureExportSnapshot({ mode: 'addresses', leafletBounds: bb })
+            }
+            if (sel.pdfMapTracks) {
+              const validIds = sel.pdfMapPathTrackIds.filter((id) =>
+                pdfPathExportChoices.some((c) => c.trackId === id),
+              )
+              for (const trackId of validIds) {
+                const pathPts: Array<{ lat: number; lon: number }> = []
+                for (const p of caseTrackPoints) {
+                  if (visibleTrackIds[p.trackId] === false) continue
+                  if (p.showOnMap === false) continue
+                  if (p.trackId !== trackId) continue
+                  pathPts.push({ lat: p.lat, lon: p.lon })
+                }
+                const bb = boundsForPdfExportFitPaths(pathPts)
+                const choice = pdfPathExportChoices.find((x) => x.trackId === trackId)
+                const pathName = choice?.label.trim() || 'Untitled path'
+                const title = `Map — ${pathName}`
+                const dataUrl = bb
+                  ? await map.captureExportSnapshot({ mode: 'tracks', leafletBounds: bb, onlyTrackId: trackId })
+                  : null
+                mapImages.pathMaps.push({ title, dataUrl })
+              }
+            }
+          }
+          const doc = await buildCaseExportPdf({
+            caseFile: c,
+            locations: sel.pdfAddressesTable ? pdfAddressLocations : locations,
+            tracks: caseTracks,
+            trackPoints: caseTrackPoints,
+            selections: sel,
+            mapImages,
+            exportedAtMs: Date.now(),
+          })
+          await downloadCaseExportPdf(doc, c.caseNumber)
+        }
+        setCaseExportOpen(false)
+      } catch (e) {
+        console.warn('Case export failed:', e)
+      } finally {
+        setCaseExportBusy(false)
+      }
+    },
+    [c, locations, caseTracks, caseTrackPoints, filtered, trackingMapPoints, pdfPathExportChoices, visibleTrackIds],
+  )
 
   const selectedTrackPoint = useMemo(
     () => (selectedTrackPointId ? caseTrackPoints.find((p) => p.id === selectedTrackPointId) ?? null : null),
@@ -1947,8 +2053,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       const s = dvrLinkPicked
       const status: CanvassStatus = probativePick ? 'probativeFootage' : 'notProbativeFootage'
       const canvassLine = probativePick
-        ? `[Canvass — DVR link] Probative. ${s.label}`
-        : `[Canvass — DVR link] Not probative. ${s.label}`
+        ? `[Canvass — DVR link] ${statusLabel('probativeFootage')}. ${s.label}`
+        : `[Canvass — DVR link] ${statusLabel('notProbativeFootage')}. ${s.label}`
       const mergedNotes = appendToNotes(dvrLinkLocationSession.notesAppend, canvassLine)
 
       setDvrLinkSaving(true)
@@ -2158,7 +2264,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       const p = caseTrackPoints.find((x) => x.id === pointId)
       if (!p) return
       if (isImportedCoordinatePoint(p)) {
-        setMapLeftToolSection('importCoords')
+        if (MAP_TOOLS_IMPORT_COORDINATES_ENABLED) {
+          setMapLeftToolSection('importCoords')
+        }
         closeMapToolsDock()
         return
       }
@@ -2168,7 +2276,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setTrackMapModalOpen(true)
       closeMapToolsDock()
     },
-    [caseTrackPoints, setWorkspaceCaseTab, closeMapToolsDock, setMapLeftToolSection],
+    [caseTrackPoints, setWorkspaceCaseTab, closeMapToolsDock, setMapLeftToolSection, MAP_TOOLS_IMPORT_COORDINATES_ENABLED],
   )
   const onDoubleTapLocationFromMap = useCallback(
     (locationId: string) => {
@@ -2269,8 +2377,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         ? {
             display: 'grid',
             gridTemplateColumns: '1fr',
-            gridTemplateRows: 'auto minmax(0, 1fr)',
-            gridTemplateAreas: '"sync" "map"',
+            gridTemplateRows: 'minmax(0, 1fr)',
+            gridTemplateAreas: '"map"',
             gap: 6,
             alignItems: 'stretch',
             flex: 1,
@@ -2280,8 +2388,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         : {
             display: 'grid',
             gridTemplateColumns: '1fr',
-            gridTemplateRows: 'auto minmax(0, 1fr)',
-            gridTemplateAreas: '"sync" "map"',
+            gridTemplateRows: 'minmax(0, 1fr)',
+            gridTemplateAreas: '"map"',
             gap: 8,
             alignItems: 'stretch',
             flex: 1,
@@ -2762,46 +2870,87 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     },
     [cancelPendingTrackNameSelectClick, selectTrackQuickPick],
   )
+  const mapFilterUniformGridChipRoot = useMemo(
+    () =>
+      ({
+        width: '100%' as const,
+        maxWidth: 'none' as const,
+      }) satisfies CSSProperties,
+    [],
+  )
+  const filterChipsMeasureKey = `${isNarrow ? 1 : 0}-${counts.noCameras}-${counts.camerasNoAnswer}-${counts.notProbativeFootage}-${counts.probativeFootage}`
   const filterLegendChipsGridDock = (
-    <div
-      style={{
-        display: 'grid',
-        gap: 4,
-        gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr',
-        alignItems: 'stretch',
-        minWidth: 0,
-      }}
-    >
+    <UniformFilterChipGrid columnCount={2} measureKey={filterChipsMeasureKey}>
       <LegendChip
         dockCompact
-        label={`No cameras (${counts.noCameras})`}
+        rootStyle={mapFilterUniformGridChipRoot}
+        label={statusLabel('noCameras')}
+        count={counts.noCameras}
         color={statusColor('noCameras')}
         on={filters.noCameras}
         onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
       />
       <LegendChip
         dockCompact
-        label={`Needs Follow up (${counts.camerasNoAnswer})`}
+        rootStyle={mapFilterUniformGridChipRoot}
+        label={statusLabel('camerasNoAnswer')}
+        count={counts.camerasNoAnswer}
         color={statusColor('camerasNoAnswer')}
         on={filters.camerasNoAnswer}
         onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
       />
       <LegendChip
         dockCompact
-        label={`Not probative (${counts.notProbativeFootage})`}
+        rootStyle={mapFilterUniformGridChipRoot}
+        label={statusLabel('notProbativeFootage')}
+        count={counts.notProbativeFootage}
         color={statusColor('notProbativeFootage')}
         on={filters.notProbativeFootage}
         onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
       />
       <LegendChip
         dockCompact
-        label={`Probative (${counts.probativeFootage})`}
+        rootStyle={mapFilterUniformGridChipRoot}
+        label={statusLabel('probativeFootage')}
+        count={counts.probativeFootage}
         color={statusColor('probativeFootage')}
         on={filters.probativeFootage}
         onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
       />
-    </div>
+    </UniformFilterChipGrid>
   )
+
+  /**
+   * Primary glass button recipe (`btnPrimary` + responsive padding/font) for map tools rail
+   * (Views, Filters, …) and Views dock actions (List / Fit / Locate).
+   */
+  const mapDockViewsChromeBtn = (active: boolean): CSSProperties => ({
+    ...btnPrimary,
+    fontSize: 'clamp(10px, 0.98vw, 12px)',
+    padding: 'clamp(5px, 0.9vw, 9px) clamp(8px, 1.2vw, 12px)',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    margin: 0,
+    textAlign: 'left',
+    whiteSpace: 'nowrap',
+    alignSelf: 'stretch',
+    flexShrink: 0,
+    WebkitTapHighlightColor: 'transparent',
+    ...(active
+      ? {
+          border: '1px solid rgba(15, 23, 42, 0.2)',
+          background: 'linear-gradient(180deg, rgba(226,232,240,0.98) 0%, rgba(186,198,210,0.92) 100%)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 16px rgba(15,23,42,0.14)',
+        }
+      : {}),
+  })
+
+  /** Views panel only: same padding/font as Add Photo (`btnPrimary` + clamps), centered label. */
+  const mapViewPanelActionBtn = (active: boolean): CSSProperties => ({
+    ...mapDockViewsChromeBtn(active),
+    textAlign: 'center',
+  })
 
   const runLocateMe = useCallback(async () => {
     if (isNarrow) closeMapToolsDock()
@@ -2879,10 +3028,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       <button
         type="button"
         data-vc-tour={VC_TOUR.caseListViewBtn}
-        style={{
-          ...viewModeBtn(viewMode === 'list'),
-          width: '100%',
-        }}
+        style={mapViewPanelActionBtn(viewMode === 'list')}
         onClick={() => {
           setWorkspaceViewMode('list')
           if (isNarrow) closeMapToolsDock()
@@ -2892,11 +3038,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           }
         }}
       >
-        List view
+        List View
       </button>
       <button
         type="button"
-        style={{ ...btn, width: '100%' }}
+        style={{
+          ...mapViewPanelActionBtn(false),
+          ...(!locations.length ? { opacity: 0.45, cursor: 'not-allowed' } : {}),
+        }}
         onClick={() => {
           fitMapToCanvass()
           if (isNarrow) closeMapToolsDock()
@@ -2906,13 +3055,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           }
         }}
         disabled={!locations.length}
-        title="Zoom to canvass pins"
+        title="Zoom to Canvass Pins"
       >
-        Fit canvass
+        Fit Canvass
       </button>
       <button
         type="button"
-        style={{ ...btn, width: '100%' }}
+        style={{
+          ...mapViewPanelActionBtn(false),
+          ...(!trackingMapPoints.length ? { opacity: 0.45, cursor: 'not-allowed' } : {}),
+        }}
         onClick={() => {
           fitMapToPaths()
           if (isNarrow) closeMapToolsDock()
@@ -2922,13 +3074,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           }
         }}
         disabled={!trackingMapPoints.length}
-        title="Zoom to visible tracks"
+        title="Zoom to Visible Tracks"
       >
-        Fit paths
+        Fit Paths
       </button>
       <button
         type="button"
-        style={{ ...btn, width: '100%' }}
+        style={{
+          ...mapViewPanelActionBtn(false),
+          ...(!locations.length && !trackingMapPoints.length ? { opacity: 0.45, cursor: 'not-allowed' } : {}),
+        }}
         onClick={() => {
           fitMapToAll()
           if (isNarrow) closeMapToolsDock()
@@ -2938,12 +3093,12 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           }
         }}
         disabled={!locations.length && !trackingMapPoints.length}
-        title="Zoom to show everything"
+        title="Zoom to Show Everything"
       >
-        Fit all
+        Fit All
       </button>
-      <button type="button" style={{ ...btn, width: '100%' }} onClick={() => void runLocateMe()}>
-        Locate me
+      <button type="button" style={mapViewPanelActionBtn(false)} onClick={() => void runLocateMe()}>
+        Locate Me
       </button>
     </>
   )
@@ -2978,7 +3133,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               setAddPhotoModalOpen(true)
             }}
           >
-            Add photo
+            Add Photo
           </button>
         ) : null}
         {caseAttachments.length > 0 ? (
@@ -3130,8 +3285,25 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   }
   const mapDockPanelShellForMapTools: CSSProperties = isNarrow ? mapDockNarrowToolPanelGlass : webWideMapToolPanelGlass
   const mapDockFilterPanelShellForMapTools: CSSProperties = isNarrow
-    ? { ...mapDockNarrowToolPanelGlass, maxHeight: 'none', overflowY: 'visible', padding: 8, marginTop: 4 }
-    : { ...webWideMapToolPanelGlass, padding: 8 }
+    ? {
+        ...mapDockNarrowToolPanelGlass,
+        maxHeight: 'none',
+        overflowY: 'visible',
+        overflowX: 'visible',
+        padding: 8,
+        marginTop: 4,
+        width: 'fit-content',
+        minWidth: 'min-content',
+        maxWidth: 'none',
+      }
+    : {
+        ...webWideMapToolPanelGlass,
+        padding: 8,
+        overflowX: 'visible',
+        overflowY: 'visible',
+        width: 'fit-content',
+        maxWidth: '100%',
+      }
 
   const trackDockSegBtn = (active: boolean): CSSProperties => ({
     ...btn,
@@ -3180,41 +3352,42 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     overflow: 'visible',
   }
 
-  const narrowMapDockExpandedGlassShell: CSSProperties = {
-    ...vcLiquidGlassPanel,
-    borderRadius: 16,
-    padding: 8,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    alignItems: 'stretch',
-    minWidth: 0,
-    width: 'max-content',
-    maxWidth: 'min(280px, calc(100vw - 48px))',
-    maxHeight:
-      detailOverlayHeightPx > 0
-        ? `min(65vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${detailOverlayHeightPx + 100}px))`
-        : 'min(65vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 120px))',
-    overflowY: 'auto',
-    overflowX: 'hidden',
-    WebkitOverflowScrolling: 'touch',
-    boxSizing: 'border-box',
-  }
+  const narrowMapDockExpandedGlassShell: CSSProperties = useMemo(
+    () => ({
+      ...vcLiquidGlassPanel,
+      borderRadius: 16,
+      padding: 8,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      /** `stretch` + `max-content` shell used nav button width and clipped the wider filter grid. */
+      alignItems: mapLeftToolSection === 'filters' ? 'flex-start' : 'stretch',
+      minWidth: 'min-content',
+      width: 'max-content',
+      maxWidth:
+        mapLeftToolSection === 'filters'
+          ? 'calc(100vw - 20px)'
+          : 'min(280px, calc(100vw - 48px))',
+      maxHeight:
+        mapLeftToolSection === 'filters'
+          ? 'none'
+          : detailOverlayHeightPx > 0
+            ? `min(65vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - ${detailOverlayHeightPx + 100}px))`
+            : 'min(65vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 120px))',
+      overflowY: mapLeftToolSection === 'filters' ? 'visible' : 'auto',
+      overflowX: 'visible',
+      WebkitOverflowScrolling: 'touch',
+      boxSizing: 'border-box',
+    }),
+    [mapLeftToolSection, detailOverlayHeightPx],
+  )
 
-  const mapDockNavBtnBase: CSSProperties = {
-    ...btn,
-    alignSelf: 'flex-end',
-    width: 'auto',
-    maxWidth: '100%',
-    boxSizing: 'border-box',
-    padding: '7px 12px',
-    fontSize: 12,
-    fontWeight: 700,
-    lineHeight: 1.2,
-    whiteSpace: 'nowrap',
-    boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
-    flexShrink: 0,
-  }
+  const narrowMapDockPositionedShellMaxW = useMemo(
+    () =>
+      mapLeftToolSection === 'filters' ? 'calc(100vw - 20px)' : 'min(280px, calc(100vw - 24px))',
+    [mapLeftToolSection],
+  )
+
   /** Shared 44×44 glass chip: basemap cycle button + narrow map tools face (pixel-matched). */
   const mapLayersGlassChipFaceStyle: CSSProperties = {
     ...vcLiquidGlassPanelDense,
@@ -3253,24 +3426,6 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     background: 'rgba(255,255,255,0.14)',
     boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.22)',
   }
-  const mapDockNavBtnNarrowGlass = (active: boolean): CSSProperties => ({
-    alignSelf: 'stretch',
-    width: '100%',
-    maxWidth: '100%',
-    boxSizing: 'border-box',
-    padding: '9px 12px',
-    fontSize: 12,
-    fontWeight: 700,
-    lineHeight: 1.2,
-    whiteSpace: 'nowrap',
-    borderRadius: 10,
-    border: active ? '1px solid rgba(255,255,255,0.42)' : '1px solid rgba(255,255,255,0.2)',
-    background: active ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)',
-    color: '#f8fafc',
-    cursor: 'pointer',
-    textAlign: 'left',
-    flexShrink: 0,
-  })
   const dockRailBtnActive = (section: MapToolsDockRailSection) => mapLeftToolSection === section
 
   const renderDockSectionButton = (section: MapToolsDockRailSection, label: string) => (
@@ -3285,15 +3440,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         if (section === 'dvr') setProbativeFlow(null)
         setMapLeftToolSection((s) => (s === section ? null : section))
       }}
-      style={
-        isNarrow
-          ? mapDockNavBtnNarrowGlass(dockRailBtnActive(section))
-          : {
-              ...mapDockNavBtnBase,
-              textAlign: 'left',
-              background: dockRailBtnActive(section) ? 'rgba(203, 213, 225, 0.55)' : 'rgba(226, 232, 240, 0.42)',
-            }
-      }
+      style={mapDockViewsChromeBtn(dockRailBtnActive(section))}
     >
       {label}
     </button>
@@ -3432,7 +3579,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
         onChange={(e) => setVisitHeatmapOn(e.target.checked)}
         style={{ width: 16, height: 16 }}
       />
-      Visit density heatmap
+      Visit Density Heatmap
     </label>
   )
 
@@ -3443,7 +3590,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           className="case-pane-actions-row"
           style={{
             display: 'grid',
-            gap: 6,
+            gap: 8,
             gridTemplateColumns: '1fr',
             alignItems: 'stretch',
             minWidth: 0,
@@ -3471,7 +3618,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             value={trackLabelDrafts[t.id] ?? t.label}
             aria-label="Track name"
             placeholder="Track name"
-            title="Rename track"
+            title="Rename Track"
             onFocus={() => {
               trackLabelFocusRef.current[t.id] = true
             }}
@@ -3635,7 +3782,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             style={{
               fontWeight: 800,
               fontSize: 10,
-              color: isNarrow ? '#6b7280' : '#94a3b8',
+              color: isNarrow ? '#6b7280' : '#cbd5e1',
               marginBottom: 4,
             }}
           >
@@ -3672,13 +3819,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 {caseTracks.length > 0 ? (
                   <>
                     Every path in this case only has imported coordinates — they stay in{' '}
-                    <strong>Import coordinates</strong>. Use <strong>New Track</strong> here to start a subject path
+                    <strong>Import Coordinates</strong>. Use <strong>New Track</strong> here to start a subject path
                     (map-placed steps).
                   </>
                 ) : (
                   <>
                     No paths yet — add one for subject tracking (map-placed steps). Imported coordinates live only in{' '}
-                    <strong>Import coordinates</strong>.
+                    <strong>Import Coordinates</strong>.
                   </>
                 )}
               </div>
@@ -3708,13 +3855,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 }}
               >
                 This tab lists subject paths only. While it is open, the map hides imported pins and solid segments — open{' '}
-                <strong>Import coordinates</strong> to work with imports.
+                <strong>Import Coordinates</strong> to work with imports.
               </div>
             ) : null}
           </div>
         </div>
       ) : null}
-      {mapLeftToolSection === 'importCoords' ? (
+      {MAP_TOOLS_IMPORT_COORDINATES_ENABLED && mapLeftToolSection === 'importCoords' ? (
         <div style={mapDockPanelShellForMapTools}>
           <div style={{ display: 'grid', gap: 8, width: '100%', minWidth: 0 }}>
             <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.45 }}>
@@ -3731,11 +3878,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   marginBottom: 4,
                 }}
               >
-                Paths with imported coordinates
+                Paths with Imported Coordinates
               </div>
               {caseTracksForImportCoordsPanel.length === 0 ? (
                 <div style={{ fontSize: 11, color: isNarrow ? '#6b7280' : '#94a3b8', lineHeight: 1.4 }}>
-                  None yet — run <strong>Import coordinates…</strong> to add a path.
+                  None yet — run <strong>Import Coordinates…</strong> to add a path.
                 </div>
               ) : (
                 <MapDockTrackRows
@@ -3762,7 +3909,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               title={contentMutateBlockedTitle}
               onClick={() => setTrackImportModalOpen(true)}
             >
-              Import coordinates…
+              Import Coordinates…
             </button>
             <div>
               <div
@@ -3773,7 +3920,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   marginBottom: 4,
                 }}
               >
-                Map path (dense tracks)
+                Map Path (Dense Tracks)
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 {(['off', 'moderate', 'aggressive'] as const).map((preset) => (
@@ -3808,7 +3955,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   marginBottom: 4,
                 }}
               >
-                Step times (dwell labels)
+                Step Times (Dwell Labels)
               </div>
               <input
                 list="vc-track-display-tz-datalist"
@@ -3848,7 +3995,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     marginBottom: 4,
                   }}
                 >
-                  Playback (imported coordinates only)
+                  Playback (Imported Coordinates only)
                   {focusTrackIdForPlayback
                     ? ` · ${caseTracks.find((x) => x.id === focusTrackIdForPlayback)?.label ?? 'track'}`
                     : ''}
@@ -3871,7 +4018,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     Reset
                   </button>
                   <button type="button" style={{ ...btn, fontSize: 11, padding: '6px 10px' }} onClick={cyclePlaybackSpeed}>
-                    {PLAYBACK_SPEED_STEPS[playbackSpeedIdx] ?? 1}× speed
+                    {PLAYBACK_SPEED_STEPS[playbackSpeedIdx] ?? 1}× Speed
                   </button>
                   <span style={{ fontSize: 10, color: isNarrow ? '#6b7280' : '#94a3b8' }}>
                     Step {Math.min(playbackStepIndex + 1, Math.max(playbackTrackPointsOrdered.length, 1))} /{' '}
@@ -3898,7 +4045,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                     >
                       <span>
-                        Dwell segments (copy){' '}
+                        Dwell Segments (Copy){' '}
                         <span style={{ fontWeight: 600, opacity: 0.85 }}>({focusTrackDwellSegments.length})</span>
                       </span>
                       <span aria-hidden>{importPanelDwellExpanded ? '▼' : '▶'}</span>
@@ -3961,7 +4108,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           <div style={{ minWidth: 0, overflow: 'hidden' }}>
             {casePhotosSidebarBlock ?? (
               <div style={{ fontSize: 12, color: isNarrow ? '#6b7280' : '#cbd5e1', lineHeight: 1.4 }}>
-                No reference photos yet{canAddCaseContentHere ? '. Use Add photo in this panel.' : '.'}
+                No reference photos yet{canAddCaseContentHere ? '. Use Add Photo in this panel.' : '.'}
               </div>
             )}
           </div>
@@ -4280,16 +4427,20 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const webWideMapToolsPillPanelGapPx = 6
   const webWideMapToolsLeft = `max(${webWideMapToolsZoomMargin}, env(safe-area-inset-left, 0px))`
   const webWideMapToolsMapRightPad = '10px'
-  const webWideMapToolsLayerWidth = `min(280px, calc(100% - max(${webWideMapToolsZoomMargin}, env(safe-area-inset-left, 0px)) - ${webWideMapToolsMapRightPad}))`
+  const webWideMapToolsLayerWidthDefault = `min(280px, calc(100% - max(${webWideMapToolsZoomMargin}, env(safe-area-inset-left, 0px)) - ${webWideMapToolsMapRightPad}))`
   const webWideMapToolsPillTop = `calc(${webWideMapToolsZoomMargin} + ${webWideMapToolsZoomStackH} + ${webWideMapToolsBelowZoomGap})`
   const webWideMapToolsPanelTop = `calc(${webWideMapToolsZoomMargin} + ${webWideMapToolsZoomStackH} + ${webWideMapToolsBelowZoomGap} + ${webWideMapDockPillFullPx}px + ${webWideMapToolsPillPanelGapPx}px)`
 
+  /**
+   * Keep a definite width here: pill + panel children are `position: absolute`, so they do not contribute to
+   * intrinsic sizing. `width: max-content` on this layer collapsed to ~0 and the Filters panel never appeared.
+   */
   const webWideMapToolsLayerShell: CSSProperties = {
     position: 'absolute',
     left: webWideMapToolsLeft,
     top: 0,
     bottom: 0,
-    width: webWideMapToolsLayerWidth,
+    width: webWideMapToolsLayerWidthDefault,
     zIndex: 40,
     pointerEvents: 'none',
     boxSizing: 'border-box',
@@ -4306,19 +4457,22 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     transform: 'none',
     pointerEvents: 'none',
   }
-  const webWideMapToolsPanelShell: CSSProperties = {
-    position: 'absolute',
-    top: webWideMapToolsPanelTop,
-    left: 0,
-    right: 0,
-    bottom: webWideMapToolsRailEdgeGap,
-    overflowX: 'hidden',
-    overflowY: 'auto',
-    WebkitOverflowScrolling: 'touch',
-    boxSizing: 'border-box',
-    pointerEvents: 'auto',
-    minWidth: 0,
-  }
+  const webWideMapToolsPanelShell: CSSProperties = useMemo(
+    () => ({
+      position: 'absolute',
+      top: webWideMapToolsPanelTop,
+      left: 0,
+      right: 0,
+      bottom: webWideMapToolsRailEdgeGap,
+      overflowX: mapLeftToolSection === 'filters' ? 'visible' : 'hidden',
+      overflowY: mapLeftToolSection === 'filters' ? 'visible' : 'auto',
+      WebkitOverflowScrolling: 'touch',
+      boxSizing: 'border-box',
+      pointerEvents: 'auto',
+      minWidth: 0,
+    }),
+    [mapLeftToolSection],
+  )
 
   const webWideMapToolsFloatingPill =
     !isNarrow && showMapInMapColumn ? (
@@ -4349,19 +4503,29 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               {renderWebDockSectionButton('views', 'Views')}
               {renderWebDockSectionButton('filters', 'Filters')}
               {renderWebDockSectionButton('tracks', 'Tracks')}
-              {renderWebDockSectionButton('importCoords', 'Import coordinates')}
+              {MAP_TOOLS_IMPORT_COORDINATES_ENABLED
+                ? renderWebDockSectionButton('importCoords', 'Import Coordinates')
+                : null}
               {renderWebDockSectionButton('photos', 'Photos')}
-              {renderWebDockSectionButton('dvr', 'DVR calculator')}
+              {renderWebDockSectionButton('dvr', 'DVR Calculator')}
             </div>
           </div>
           {mapLeftToolSection != null ? (
             <div
               style={webWideMapToolsPanelShell}
               role="region"
-              aria-label="Map tool panel"
+              aria-label="Map Tool Panel"
               onPointerDown={(e) => e.stopPropagation()}
             >
-              <div style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}>{mapToolsDockSectionPanels}</div>
+              <div
+                style={{
+                  width: '100%',
+                  minWidth: mapLeftToolSection === 'filters' ? 'min-content' : 0,
+                  boxSizing: 'border-box',
+                }}
+              >
+                {mapToolsDockSectionPanels}
+              </div>
             </div>
           ) : null}
         </div>
@@ -4420,7 +4584,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             type="button"
             data-vc-tour={VC_TOUR.caseHeaderMeta}
             onClick={beginCaseMetaEdit}
-            title="Edit case name and description"
+            title="Edit Case Name and Description"
             style={{ ...caseHeaderReadonlyTitle, width: '100%' }}
           >
             {c.caseNumber}
@@ -4463,7 +4627,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           <button
             type="button"
             onClick={beginCaseMetaEdit}
-            title="Edit case name and description"
+            title="Edit Case Name and Description"
             style={{ ...caseHeaderReadonlyDesc, width: '100%' }}
           >
             {(c.description ?? '').trim() ? c.description : 'Add description'}
@@ -4494,20 +4658,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           {c ? (
             <button
               type="button"
-              onClick={exportCaseAddressesCsv}
+              onClick={() => setCaseExportOpen(true)}
               style={vcGlassHeaderBtn}
-              title="Download a CSV of addresses on this case"
+              title="Export Case — CSV and PDF options"
             >
-              Export CSV
+              Export Case
             </button>
           ) : null}
         </div>
       }
     >
       <WorkspaceShell {...workspaceShellProps} isNarrow={isNarrow}>
-        <div style={{ gridArea: 'sync', minWidth: 0 }}>
-          <CaseInlineSyncBar />
-        </div>
         <div
           style={{
             gridArea: 'map',
@@ -4636,8 +4797,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                             type="button"
                             aria-label={
                               mapLeftToolDockOpen
-                                ? 'Close map tools'
-                                : 'Open map tools: views, filters, tracks, and photos'
+                                ? 'Close Map Tools'
+                                : 'Open Map Tools: Views, Filters, Tracks, and Photos'
                             }
                             onClick={() => {
                               mapToolsDockIgnoreOutsideUntilRef.current =
@@ -4684,6 +4845,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                               pointerEvents: 'auto',
                               position: 'relative',
                               zIndex: 55,
+                              opacity: addrSearchProminent ? 1 : 0.52,
+                              transition: 'opacity 0.2s ease',
                             }}
                           >
                             {renderAddAddressSearch(true, {
@@ -4712,7 +4875,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                               top: `calc(max(6px, env(safe-area-inset-top, 0px)) + ${narrowMapTopRowHeightPx}px + 8px)`,
                               left: 'max(10px, env(safe-area-inset-left, 0px))',
                               zIndex: 1,
-                              maxWidth: 'min(280px, calc(100vw - 24px))',
+                              width:
+                                mapLeftToolSection === 'filters'
+                                  ? 'min(max-content, calc(100vw - 20px))'
+                                  : undefined,
+                              maxWidth: narrowMapDockPositionedShellMaxW,
                               pointerEvents: 'auto',
                             }}
                           >
@@ -4720,9 +4887,11 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                               {renderDockSectionButton('views', 'Views')}
                               {renderDockSectionButton('filters', 'Filters')}
                               {renderDockSectionButton('tracks', 'Tracks')}
-                              {renderDockSectionButton('importCoords', 'Import coordinates')}
+                              {MAP_TOOLS_IMPORT_COORDINATES_ENABLED
+                                ? renderDockSectionButton('importCoords', 'Import Coordinates')
+                                : null}
                               {renderDockSectionButton('photos', 'Photos')}
-                              {renderDockSectionButton('dvr', 'DVR calculator')}
+                              {renderDockSectionButton('dvr', 'DVR Calculator')}
                               {mapToolsDockSectionPanels}
                             </div>
                           </div>
@@ -5126,6 +5295,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       </WorkspaceShell>
       </Layout>
 
+      <CaseExportModal
+        open={caseExportOpen}
+        onClose={() => {
+          if (!caseExportBusy) setCaseExportOpen(false)
+        }}
+        busy={caseExportBusy}
+        pdfPathChoices={pdfPathExportChoices}
+        addressStatusOptions={addressExportStatusOptions}
+        onExport={runCaseExport}
+      />
+
       {undoSnack ? (
         <UndoSnackbar
           message={undoSnack.kind === 'location' ? 'Address removed from case.' : 'Track step removed.'}
@@ -5252,7 +5432,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </Modal>
 
     <Modal
-      title="Time on map"
+      title="Time on Map"
       open={trackMapTimeModalOpen && !!selectedTrackPoint}
       onClose={() => setTrackMapTimeModalOpen(false)}
     >
@@ -5290,14 +5470,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 void updateTrackPoint(actorId, selectedTrackPoint.id, { displayTimeOnMap: e.target.checked })
               }
             />
-            <span>Show time on map next to pin</span>
+            <span>Show Time on Map next to Pin</span>
           </label>
         </div>
       ) : null}
     </Modal>
 
     <Modal
-      title="Manage tracks"
+      title="Manage Tracks"
       open={showManageTracks}
       onClose={() => setShowManageTracks(false)}
     >
@@ -5359,7 +5539,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                   })
                 })
               }}
-              title="Delete track and its steps"
+              title="Delete Track and its Steps"
             >
               Delete
             </button>
@@ -5450,7 +5630,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </Modal>
 
     <Modal
-      title="Add route marker?"
+      title="Add Route Marker?"
       open={postProbativeMarkerPhase != null}
       onClose={() => setPostProbativeMarkerPhase(null)}
       zBase={63000}
@@ -5533,7 +5713,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       onCalcApply={handleProbativeCalcApply}
     />
 
-    <Modal title="Import coordinates" open={trackImportModalOpen} onClose={() => setTrackImportModalOpen(false)}>
+    <Modal title="Import Coordinates" open={trackImportModalOpen} onClose={() => setTrackImportModalOpen(false)}>
       <TrackImportPanel
         caseTracks={caseTracks}
         trackForMapAdd={trackForMapAdd}
@@ -5589,7 +5769,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </Modal>
 
     <Modal
-      title="Link DVR result to address"
+      title="Link DVR Result to Address"
       open={dvrLinkLocationSession != null}
       zBase={62500}
       onClose={() => {
@@ -5678,7 +5858,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 disabled={dvrLinkSaving}
                 onClick={() => void submitDvrLinkLocation(false)}
               >
-                Not probative
+                {statusLabel('notProbativeFootage')}
               </button>
               <button
                 type="button"
@@ -5686,7 +5866,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 disabled={dvrLinkSaving}
                 onClick={() => void submitDvrLinkLocation(true)}
               >
-                {dvrLinkSaving ? 'Saving…' : 'Probative'}
+                {dvrLinkSaving ? 'Saving…' : statusLabel('probativeFootage')}
               </button>
             </div>
           </div>
@@ -5707,7 +5887,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     </Modal>
 
     <Modal
-      title="Add photo"
+      title="Add Photo"
       open={addPhotoModalOpen}
       onClose={() => {
         if (!refPhotoBusy) setAddPhotoModalOpen(false)
@@ -5944,7 +6124,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         })
                       }}
                     >
-                      Remove photo
+                      Remove Photo
                     </button>
                   ) : null}
                   {canAddCaseContentHere ? (
@@ -5958,7 +6138,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       }}
                       onClick={() => setAddPhotoModalOpen(true)}
                     >
-                      Add photo
+                      Add Photo
                     </button>
                   ) : null}
                 </div>

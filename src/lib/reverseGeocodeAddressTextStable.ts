@@ -2,7 +2,7 @@
  * STABLE MODULE — Do not casually edit.
  *
  * Resolves a human-readable address line from coordinates (map tap, pending-add queue, post-save backfill,
- * building hint refinement). Behavior is documented in `HANDOFF.md` (Address & footprint retrieval).
+ * building hint refinement). Behavior is documented in `docs/HANDOFF.md` (Address & footprint retrieval).
  *
  * If you need to change providers, cache TTL, or deduplication: validate end-to-end, update HANDOFF, and edit
  * here deliberately. Avoid drifting copies of this logic into `geocode.ts` or callers.
@@ -11,6 +11,8 @@
  * intentionally depending only on this file.
  */
 import { z } from 'zod'
+
+import { getAppServerOrigin } from './appServerOrigin'
 
 const PhotonReversePropertiesSchema = z.object({
   street: z.string().optional(),
@@ -106,7 +108,7 @@ function labelFromPhotonProperties(p: PhotonRevProps, fallback: string | null): 
 }
 
 async function reverseGeocodePhoton(lat: number, lon: number, signal?: AbortSignal): Promise<string | null> {
-  const url = new URL('/api/geocode/photon-reverse', window.location.origin)
+  const url = new URL('/api/geocode/photon-reverse', getAppServerOrigin())
   url.searchParams.set('lat', String(lat))
   url.searchParams.set('lon', String(lon))
   url.searchParams.set('lang', 'en')
@@ -145,7 +147,7 @@ function labelFromNominatimAddress(a: Record<string, string>): string | null {
 }
 
 async function reverseGeocodeNominatim(lat: number, lon: number, signal?: AbortSignal): Promise<string | null> {
-  const url = new URL('/api/geocode/nominatim-reverse', window.location.origin)
+  const url = new URL('/api/geocode/nominatim-reverse', getAppServerOrigin())
   url.searchParams.set('format', 'jsonv2')
   url.searchParams.set('lat', String(lat))
   url.searchParams.set('lon', String(lon))

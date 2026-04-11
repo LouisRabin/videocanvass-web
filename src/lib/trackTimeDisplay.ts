@@ -82,7 +82,7 @@ export function formatInstantInTimeZone(ms: number, timeZone: string): string {
 }
 
 /** Short clock for compact dwell strings (same calendar day assumed OK for label). */
-export function formatTimeOnlyInZone(ms: number, timeZone: string): string {
+function formatTimeOnlyInZone(ms: number, timeZone: string): string {
   try {
     return new Intl.DateTimeFormat('en-US', {
       timeZone,
@@ -96,7 +96,7 @@ export function formatTimeOnlyInZone(ms: number, timeZone: string): string {
   }
 }
 
-export function formatDurationShort(ms: number): string {
+function formatDurationShort(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   const sec = Math.round(ms / 1000)
   if (sec < 60) return `${sec}s`

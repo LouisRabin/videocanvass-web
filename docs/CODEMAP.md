@@ -1,6 +1,6 @@
 # Code map
 
-Short orientation for humans and tooling. **Policy and tuning** for geocoding, footprints, and retrieval live in [HANDOFF.md](../HANDOFF.md); this file only points to code locations.
+Short orientation for humans and tooling. **Policy and tuning** for geocoding, footprints, and retrieval live in [HANDOFF.md](HANDOFF.md); this file only points to code locations.
 
 ## Entry points
 

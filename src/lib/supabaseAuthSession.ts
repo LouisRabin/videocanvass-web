@@ -63,7 +63,7 @@ export async function getUsableSessionOrSignOut(sb: SupabaseClient): Promise<Ses
  * Same as {@link getUsableSessionOrSignOut} but bounded: `getSession()` can hang in some browsers / storage
  * states, which left SessionGate on “Loading…” forever with no route to {@link LoginPage}.
  */
-export const USABLE_SESSION_TIMEOUT_MS = 10_000
+const USABLE_SESSION_TIMEOUT_MS = 10_000
 
 /**
  * Same rules as {@link getUsableSessionOrSignOut} but **without** calling `getSession()`.
@@ -207,10 +207,11 @@ export async function getRelationalAuthUserId(sb: SupabaseClient): Promise<strin
     return { uid: readUserId(user), error }
   }
 
-  let { uid, error } = await tryGetUser()
+  const first = await tryGetUser()
+  let uid = first.uid
   if (uid) return uid
-  if (error?.message) {
-    console.warn('[auth] getUser before relational API:', error.message)
+  if (first.error?.message) {
+    console.warn('[auth] getUser before relational API:', first.error.message)
   }
 
   const { data: refreshed, error: refErr } = await sb.auth.refreshSession()

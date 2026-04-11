@@ -8,7 +8,7 @@ import type { Location } from '../src/lib/types'
 describe('decideCanvassSaveTarget', () => {
   it('existing mode always targets that location id', () => {
     const session = { key: 'k', mode: 'existing' as const, locationId: 'row-1' }
-    expect(decideCanvassSaveTarget([], session, new Set())).toEqual({ kind: 'update', id: 'row-1' })
+    expect(decideCanvassSaveTarget([], session)).toEqual({ kind: 'update', id: 'row-1' })
   })
 
   it('new session updates existing row when normalized street matches (no duplicate list entries)', () => {
@@ -36,7 +36,7 @@ describe('decideCanvassSaveTarget', () => {
       lon: -73.9,
       addressText: '100 Main St, New York, USA',
     }
-    expect(decideCanvassSaveTarget(locations, session, new Set())).toEqual({
+    expect(decideCanvassSaveTarget(locations, session)).toEqual({
       kind: 'update',
       id: 'dup',
     })
@@ -50,7 +50,7 @@ describe('decideCanvassSaveTarget', () => {
       lon: -74,
       addressText: '999 Elsewhere Road',
     }
-    const d = decideCanvassSaveTarget([], session, new Set())
+    const d = decideCanvassSaveTarget([], session)
     expect(d).toEqual({
       kind: 'create',
       pending: {

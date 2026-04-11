@@ -15,9 +15,14 @@ import {
   RELATIONAL_AUTH_USER_ID_TIMEOUT_MS,
 } from './supabaseAuthSession'
 import { setSyncStatus } from './syncStatus'
+import { traceRelationalPullStep } from './syncPullTrace'
 
 /** Merge rules, polling, and Realtime overview: `docs/SYNC_CONTRACT.md`. */
 const STORE_KEY = 'videocanvass:data:v1'
+
+/** Short TTL: skip repeat `getRelationalAuthUserId` during poll/realtime bursts (same tab session). */
+let relationalPullAuthCache: { uid: string; expires: number } | null = null
+const RELATIONAL_PULL_AUTH_TTL_MS = 4000
 
 /** Cap how long first relational pull can block store bootstrap (slow network / hung PostgREST). */
 const RELATIONAL_BOOTSTRAP_REMOTE_MS = 22_000
@@ -174,7 +179,7 @@ async function loadSharedData(): Promise<AppData | null> {
         setSyncStatus({ mode: 'local_fallback', message: 'Supabase payload parse failed' })
         return null
       }
-      setSyncStatus({ mode: 'supabase_ok', message: 'Supabase load OK' })
+      setSyncStatus({ mode: 'supabase_ok' })
       return normalizeAppData(parsed.data)
     } catch (err) {
       console.warn('Supabase load threw unexpectedly, falling back to local storage:', err)
@@ -218,7 +223,7 @@ async function saveSharedData(data: AppData): Promise<boolean> {
       setSyncStatus({ mode: 'local_fallback', message: `Supabase save failed: ${error.message}` })
       return false
     }
-    setSyncStatus({ mode: 'supabase_ok', message: 'Supabase save OK' })
+    setSyncStatus({ mode: 'supabase_ok' })
     return true
   } catch (err) {
     console.warn('Supabase save threw unexpectedly, falling back to local storage:', err)
@@ -448,7 +453,7 @@ export async function loadData(): Promise<AppData> {
       } catch (e) {
         console.warn('Local cache write failed or timed out:', e)
       }
-      setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
+      setSyncStatus({ mode: 'supabase_ok' })
       return remote
     }
     setSyncStatus({ mode: 'local_fallback', message: 'Database load failed or empty' })
@@ -493,7 +498,7 @@ export async function saveData(data: AppData): Promise<AppData> {
       const { pushAppDataToRelational } = await import('./relational/sync')
       await pushAppDataToRelational(payloadToSave, writeAuth.userId)
       await localforage.setItem(STORE_KEY, payloadToSave)
-      setSyncStatus({ mode: 'supabase_ok', message: 'Saved to database' })
+      setSyncStatus({ mode: 'supabase_ok' })
       return payloadToSave
     } catch (e) {
       let err: unknown = e
@@ -508,7 +513,7 @@ export async function saveData(data: AppData): Promise<AppData> {
               const { pushAppDataToRelational } = await import('./relational/sync')
               await pushAppDataToRelational(payloadToSave, retryAuth.userId)
               await localforage.setItem(STORE_KEY, payloadToSave)
-              setSyncStatus({ mode: 'supabase_ok', message: 'Saved to database' })
+              setSyncStatus({ mode: 'supabase_ok' })
               return payloadToSave
             } catch (e2) {
               err = e2
@@ -606,12 +611,33 @@ export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | n
   if (relationalBackendEnabled() && supabase) {
     const quick = await getUsableSessionOrSignOut(supabase)
     if (!quick?.user) return null
-    const auth = await getRelationalAuthUserIdWithTimeout(supabase, RELATIONAL_AUTH_USER_ID_TIMEOUT_MS)
+    const sid = quick.user.id?.trim().toLowerCase() ?? ''
+    const now = Date.now()
+    if (relationalPullAuthCache && relationalPullAuthCache.uid !== sid) {
+      relationalPullAuthCache = null
+    }
+    let auth: { uid: string | null; timedOut: boolean }
+    if (
+      relationalPullAuthCache &&
+      relationalPullAuthCache.expires > now &&
+      relationalPullAuthCache.uid === sid
+    ) {
+      auth = { uid: relationalPullAuthCache.uid, timedOut: false }
+    } else {
+      auth = await getRelationalAuthUserIdWithTimeout(supabase, RELATIONAL_AUTH_USER_ID_TIMEOUT_MS)
+      if (auth.uid && !auth.timedOut) {
+        relationalPullAuthCache = { uid: auth.uid.trim().toLowerCase(), expires: now + RELATIONAL_PULL_AUTH_TTL_MS }
+      } else {
+        relationalPullAuthCache = null
+      }
+    }
     if (!auth.uid && !auth.timedOut) return null
     const { loadAppDataFromRelational } = await import('./relational/sync')
+    const tPull = performance.now()
     const remote = await loadAppDataFromRelational({
       emptyCaseUserId: auth.timedOut ? null : auth.uid,
     })
+    traceRelationalPullStep('pullAndMerge_loadAppDataFromRelational', tPull)
     if (!remote) return null
     return mergeAppData(local, remote)
   }

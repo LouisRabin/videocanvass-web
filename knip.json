@@ -4,6 +4,15 @@
   "project": ["src/**/*.ts", "src/**/*.tsx"],
   "ignore": ["android/**", "ios/**"],
   "ignoreFiles": ["src/leaflet-shim.d.ts"],
-  "ignoreDependencies": ["@capacitor/android", "@capacitor/ios"],
+  "ignoreDependencies": [
+    "@capacitor/android",
+    "@capacitor/ios",
+    "@supabase/postgrest-js",
+    "hermes-parser",
+    "iceberg-js",
+    "magic-string",
+    "tslib",
+    "@rollup/wasm-node"
+  ],
   "ignoreBinaries": ["powershell"]
 }

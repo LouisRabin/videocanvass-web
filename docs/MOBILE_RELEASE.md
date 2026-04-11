@@ -10,6 +10,35 @@ npm run build
 
 Produces `dist/` (see [capacitor.config.ts](../capacitor.config.ts): `webDir: 'dist'`).
 
+### 1.1 `VITE_APP_SERVER_ORIGIN` (native `/api` geocode proxies)
+
+The app calls **`/api/geocode/*`** and **`/api/nyc-open-data`** through your **deployed** site (e.g. Vercel serverless), same as production web. In a **Capacitor** WebView, `window.location.origin` is the app shell (e.g. `capacitor://localhost`), **not** that host — so geocode, reverse geocode, Overpass, and NYC proxy calls will fail unless you bake in your public web origin.
+
+Set at **build time** (same machine/CI as `npm run build` → `cap:sync`):
+
+- **`VITE_APP_SERVER_ORIGIN`** — HTTPS origin only, no path or trailing slash, e.g. `https://your-app.vercel.app`
+
+Implementation: [`src/lib/appServerOrigin.ts`](../src/lib/appServerOrigin.ts). **Hosted web** builds can omit this variable; the client keeps using `window.location.origin`.
+
+If you add strict **CORS** on `/api/*` later, allow the Capacitor WebView origin pattern as needed.
+
+### 1.1b `VITE_VC_SITE_URL` (native password reset `redirectTo`)
+
+[`passwordRecoveryRedirectTo()`](../src/lib/authPasswordReset.ts) must produce an **absolute `https://…` URL** for `resetPasswordForEmail`. In Capacitor, `window.location` is often **not** a normal https origin, so set:
+
+- **`VITE_VC_SITE_URL`** — same value you use for public web, e.g. `https://www.cameracanvass.com` (no trailing slash).
+
+For **store / device** native builds, set **`VITE_APP_SERVER_ORIGIN`** and **`VITE_VC_SITE_URL`** to the **same** production origin whenever both apply.
+
+### 1.2 JS baseline (web + Capacitor)
+
+[`vite.config.ts`](../vite.config.ts) sets **`build.target: 'safari15'`** (Safari / WKWebView on **iOS 15+**) and disables production **sourcemaps** to keep `dist/` smaller for Xcode/Android asset copies. Raise the target only if you intentionally drop older devices.
+
+### 1.3 iOS project: privacy manifest and usage strings
+
+- **[`ios/App/App/PrivacyInfo.xcprivacy`](../ios/App/App/PrivacyInfo.xcprivacy)** — bundled with the app target; declares no tracking. After **Archive**, if App Store Connect or Xcode flags **required-reason APIs** from a dependency, extend this file or follow the SDK vendor’s manifest guidance.
+- **`Info.plist`** — `NSPhotoLibraryUsageDescription` and `NSCameraUsageDescription` for case **image** attachments (`<input type="file" accept="image/*">`). **`UIRequiredDeviceCapabilities`** uses **`arm64`** (64-bit only).
+
 ## 2. Copy/sync into native projects
 
 **Preferred (runs Capacitor CLI):**
@@ -46,7 +75,9 @@ Optionally tie these to `package.json` `version` in your release process so mark
 
 ## 5. Pre-submission checklist
 
-- [ ] **Supabase / `VITE_*`**: same production env for web and Android builds so cloud data matches (see §8).
+- [ ] **`VITE_APP_SERVER_ORIGIN`**: set to your production web URL for **iOS/Android store** builds so `/api/geocode/*` works (see §1.1). Omit for pure web deploys.
+- [ ] **`VITE_VC_SITE_URL`**: same HTTPS origin as production web for **forgot-password** `redirectTo` in native builds (see §1.1b).
+- [ ] **Supabase / `VITE_*`**: same production env for web and native builds so cloud data matches (see §8).
 - [ ] **Icons & splash** updated for both platforms if branding changed.
 - [ ] **Display name** matches store listing.
 - [ ] **Permissions** only what you use (`AndroidManifest.xml`, `Info.plist`): location, camera, notifications, etc.
@@ -62,6 +93,7 @@ Run on a **physical device** when possible (WebView + keyboard + GPS differ from
 
 - [ ] Map loads; pan, zoom, and rotate behave normally.
 - [ ] Canvass polygons / pins / tracking waypoints render and respond to tap as on mobile web.
+- [ ] Address search / reverse geocode / building footprint behave like production web (confirms `VITE_APP_SERVER_ORIGIN` if using a release native build).
 
 **Auth / session**
 
@@ -105,7 +137,7 @@ The Android project sets `org.gradle.vfs.watch=false` in [gradle.properties](../
 
 ## 8. Web and Play: same cloud data (Supabase)
 
-The app reads **`VITE_SUPABASE_URL`**, **`VITE_SUPABASE_ANON_KEY`**, and related **`VITE_*`** flags at **build time** (see [`src/lib/supabase.ts`](../src/lib/supabase.ts)). Whatever is in the environment when you run **`npm run build`** is embedded in `dist/` — and that same folder is what Capacitor copies into the Android app.
+The app reads **`VITE_SUPABASE_URL`**, **`VITE_SUPABASE_ANON_KEY`**, **`VITE_APP_SERVER_ORIGIN`** (for native `/api` calls), and related **`VITE_*`** flags at **build time** (Supabase: [`src/lib/supabase.ts`](../src/lib/supabase.ts); API origin: [`src/lib/appServerOrigin.ts`](../src/lib/appServerOrigin.ts)). Whatever is in the environment when you run **`npm run build`** is embedded in `dist/` — and that same folder is what Capacitor copies into the iOS and Android apps.
 
 **Checklist**
 

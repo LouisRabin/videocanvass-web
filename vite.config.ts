@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
@@ -62,6 +63,12 @@ export default defineConfig(({ mode }) => {
 
   return {
   base: './',
+  /**
+   * Keep Vite’s cache on local disk (e.g. `%TEMP%`), not inside OneDrive/cloud-synced trees.
+   * Synced folders on Windows often throw `UNKNOWN: unknown error, read` during optimizeDeps
+   * when many `node_modules` files are read in parallel.
+   */
+  cacheDir: path.join(os.tmpdir(), 'videocanvass-web-vite'),
   plugins: [stripSupabaseSourcemapRefs(), react()],
   resolve: {
     alias: {
@@ -77,6 +84,9 @@ export default defineConfig(({ mode }) => {
       '@supabase/storage-js',
       '@supabase/auth-js',
       '@supabase/functions-js',
+      // Large PDF stack: fewer optimizer reads when discovery is on.
+      'jspdf',
+      'jspdf-autotable',
     ],
   },
   server: {
@@ -125,5 +135,10 @@ export default defineConfig(({ mode }) => {
     },
   },
   define: defineSupabase,
+  build: {
+    sourcemap: false,
+    /** Safari 15 / iOS 15+ WKWebView baseline; see `docs/MOBILE_RELEASE.md`. */
+    target: 'safari15',
+  },
   }
 })

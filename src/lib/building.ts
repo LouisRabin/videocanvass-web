@@ -1,7 +1,8 @@
 /**
  * Building footprint retrieval (NYC layer, sequential Overpass radii, Nominatim merge/search, vector hint).
- * Tuned for speed + rate limits; see `HANDOFF.md` (Address & footprint retrieval) before changing strategy.
+ * Tuned for speed + rate limits; see `docs/HANDOFF.md` (Address & footprint retrieval) before changing strategy.
  */
+import { appServerApiUrl, getAppServerOrigin } from './appServerOrigin'
 import { reverseGeocodeAddressText } from './geocode'
 
 type LatLon = [number, number]
@@ -119,7 +120,7 @@ async function overpassBuildingElements(
 );
 out geom;
 `
-  const res = await fetch('/api/geocode/overpass', {
+  const res = await fetch(appServerApiUrl('/api/geocode/overpass'), {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
     body: query,
@@ -196,7 +197,7 @@ async function fetchNycOpenDataBuildingFootprint(lat: number, lon: number, signa
 
   type Fc = { type?: string; features?: Array<{ geometry?: LooseGeoJson }> }
   let parsed: Fc | null = null
-  for (const base of [`/api/nyc-open-data`, `https://data.cityofnewyork.us`] as const) {
+  for (const base of [appServerApiUrl('/api/nyc-open-data'), 'https://data.cityofnewyork.us'] as const) {
     try {
       const res = await fetch(`${base}${path}`, { signal })
       if (!res.ok) continue
@@ -346,7 +347,7 @@ async function nominatimSearch(
   signal?: AbortSignal,
 ): Promise<SearchHit[]> {
   const span = 0.012
-  const url = new URL('/api/geocode/nominatim', window.location.origin)
+  const url = new URL('/api/geocode/nominatim', getAppServerOrigin())
   url.searchParams.set('q', q)
   url.searchParams.set('format', 'jsonv2')
   url.searchParams.set('polygon_geojson', '1')
@@ -371,7 +372,7 @@ async function nominatimStructuredSearch(
   signal?: AbortSignal,
 ): Promise<SearchHit[]> {
   const span = 0.02
-  const url = new URL('/api/geocode/nominatim', window.location.origin)
+  const url = new URL('/api/geocode/nominatim', getAppServerOrigin())
   url.searchParams.set('street', parsed.street)
   url.searchParams.set('city', 'New York')
   url.searchParams.set('state', 'NY')
@@ -431,7 +432,7 @@ async function nominatimReverseRingAtZoom(
   zoom: string,
   signal?: AbortSignal,
 ): Promise<LatLon[] | null> {
-  const url = new URL('/api/geocode/nominatim-reverse', window.location.origin)
+  const url = new URL('/api/geocode/nominatim-reverse', getAppServerOrigin())
   url.searchParams.set('format', 'jsonv2')
   url.searchParams.set('lat', String(lat))
   url.searchParams.set('lon', String(lon))

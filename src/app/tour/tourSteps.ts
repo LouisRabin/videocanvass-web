@@ -94,7 +94,7 @@ const CASE_STEPS_WEB: TourStepDef[] = [
   {
     id: 'case-wide-tools',
     title: 'Map tools on the map',
-    body: 'On a wide screen, Views, Filters, Tracks, Photos, and DVR calculator sit on the map as a vertical strip. Tap an icon to open that tool in a panel below the strip.',
+    body: 'On a wide screen, Views, Filters, Tracks, Photos, and DVR Calculator sit on the map as a vertical strip. Tap an icon to open that tool in a panel below the strip.',
     target: VC_TOUR.caseMapToolsWide,
     placement: 'right',
     variants: ['web'],
@@ -102,7 +102,7 @@ const CASE_STEPS_WEB: TourStepDef[] = [
   {
     id: 'case-list-view',
     title: 'List of addresses',
-    body: 'Open Views on the map toolbar, then List view to show canvass addresses in a scrollable list (bottom sheet on phone, or beside the map on a wide screen). Works in Video canvassing and Subject tracking.',
+    body: 'Open Views on the map toolbar, then List View to show canvass addresses in a scrollable list (bottom sheet on phone, or beside the map on a wide screen). Works in Video canvassing and Subject tracking.',
     target: VC_TOUR.caseListViewBtn,
     placement: 'right',
     variants: ['web'],
@@ -121,7 +121,7 @@ const CASE_STEPS_MOBILE: TourStepDef[] = [
   {
     id: 'case-mobile-menu',
     title: 'Map tools menu',
-    body: 'Tap the menu (☰) to open Views, Filters, Tracks, Photos, and DVR calculator over the map.',
+    body: 'Tap the menu (☰) to open Views, Filters, Tracks, Photos, and DVR Calculator over the map.',
     target: VC_TOUR.caseMapToolsMobile,
     placement: 'left',
     variants: ['mobile'],

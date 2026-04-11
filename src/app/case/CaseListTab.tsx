@@ -7,6 +7,7 @@ import { canDeleteLocation, canEditLocation } from '../../lib/casePermissions'
 import { formatAddressLineForMapList } from '../casePageHelpers'
 import {
   LegendChip,
+  UniformFilterChipGrid,
   RowStatusButton,
   btn,
   listHeaderRow,
@@ -22,11 +23,16 @@ import {
   vcLiquidGlassPanelDense,
 } from '../../lib/vcLiquidGlass'
 
-export type CaseAddressesListFilters = Record<CanvassStatus, boolean>
+const listAddressFilterUniformGridChipRoot: CSSProperties = {
+  width: '100%',
+  maxWidth: 'none',
+}
 
-export type CaseAddressesListCounts = Record<CanvassStatus, number>
+type CaseAddressesListFilters = Record<CanvassStatus, boolean>
 
-export type CaseProbativeFlowState =
+type CaseAddressesListCounts = Record<CanvassStatus, number>
+
+type CaseProbativeFlowState =
   | null
   | {
       step: 'accuracy' | 'calc'
@@ -36,7 +42,7 @@ export type CaseProbativeFlowState =
         | { kind: 'dvr_only' }
     }
 
-export type CaseAddressesListPanelProps = {
+type CaseAddressesListPanelProps = {
   placement: 'mapColumn' | 'controlColumn'
   isNarrow: boolean
   data: AppData
@@ -259,23 +265,19 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
           </div>
         </div>
         {addressesListFiltersOpen ? (
-          <div
+          <UniformFilterChipGrid
             id="vc-addresses-list-status-filters"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-              gap: 6,
-              width: '100%',
-              minWidth: 0,
-            }}
+            columnCount={2}
+            measureKey={`${counts.noCameras}-${counts.camerasNoAnswer}-${counts.notProbativeFootage}-${counts.probativeFootage}`}
             role="group"
             aria-label="Filter locations by result"
           >
             <LegendChip
               dense
               dockCompact
-              allowMultiline
-              label={`No cameras (${counts.noCameras})`}
+              rootStyle={listAddressFilterUniformGridChipRoot}
+              label={statusLabel('noCameras')}
+              count={counts.noCameras}
               color={statusColor('noCameras')}
               on={filters.noCameras}
               onToggle={() => setFilters((f) => ({ ...f, noCameras: !f.noCameras }))}
@@ -283,8 +285,9 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
             <LegendChip
               dense
               dockCompact
-              allowMultiline
-              label={`Needs Follow up (${counts.camerasNoAnswer})`}
+              rootStyle={listAddressFilterUniformGridChipRoot}
+              label={statusLabel('camerasNoAnswer')}
+              count={counts.camerasNoAnswer}
               color={statusColor('camerasNoAnswer')}
               on={filters.camerasNoAnswer}
               onToggle={() => setFilters((f) => ({ ...f, camerasNoAnswer: !f.camerasNoAnswer }))}
@@ -292,8 +295,9 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
             <LegendChip
               dense
               dockCompact
-              allowMultiline
-              label={`Not probative (${counts.notProbativeFootage})`}
+              rootStyle={listAddressFilterUniformGridChipRoot}
+              label={statusLabel('notProbativeFootage')}
+              count={counts.notProbativeFootage}
               color={statusColor('notProbativeFootage')}
               on={filters.notProbativeFootage}
               onToggle={() => setFilters((f) => ({ ...f, notProbativeFootage: !f.notProbativeFootage }))}
@@ -301,13 +305,14 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
             <LegendChip
               dense
               dockCompact
-              allowMultiline
-              label={`Probative (${counts.probativeFootage})`}
+              rootStyle={listAddressFilterUniformGridChipRoot}
+              label={statusLabel('probativeFootage')}
+              count={counts.probativeFootage}
               color={statusColor('probativeFootage')}
               on={filters.probativeFootage}
               onToggle={() => setFilters((f) => ({ ...f, probativeFootage: !f.probativeFootage }))}
             />
-          </div>
+          </UniformFilterChipGrid>
         ) : null}
       </div>
       {filtered.length > 0 ? (
@@ -516,7 +521,7 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
                       }}
                     >
                       <RowStatusButton
-                        label="No cameras"
+                        label={statusLabel('noCameras')}
                         color={statusColor('noCameras')}
                         active={l.status === 'noCameras'}
                         disabled={!canEditL}
@@ -529,7 +534,7 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
                         }}
                       />
                       <RowStatusButton
-                        label="Needs Follow up"
+                        label={statusLabel('camerasNoAnswer')}
                         color={statusColor('camerasNoAnswer')}
                         active={l.status === 'camerasNoAnswer'}
                         disabled={!canEditL}
@@ -542,7 +547,7 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
                         }}
                       />
                       <RowStatusButton
-                        label="Not probative"
+                        label={statusLabel('notProbativeFootage')}
                         color={statusColor('notProbativeFootage')}
                         active={l.status === 'notProbativeFootage'}
                         disabled={!canEditL}
@@ -555,7 +560,7 @@ export function CaseAddressesListPanel(props: CaseAddressesListPanelProps) {
                         }}
                       />
                       <RowStatusButton
-                        label="Probative"
+                        label={statusLabel('probativeFootage')}
                         color={statusColor('probativeFootage')}
                         active={l.status === 'probativeFootage'}
                         disabled={!canEditL}

@@ -3,7 +3,7 @@ import type { Track } from '../../lib/types'
 import { field } from './CasePageChrome'
 import { TrackMapVisibilityButton } from './casePageMapUi'
 
-export type MapDockTrackRowsProps = {
+type MapDockTrackRowsProps = {
   isNarrow: boolean
   caseTracks: Track[]
   visibleTrackIds: Record<string, boolean>

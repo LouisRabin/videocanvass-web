@@ -56,6 +56,8 @@ const STORE_BOOTSTRAP_TIMEOUT_MS = 60_000
 
 /** Per-save ceiling so the UI cannot stick on "Saving N…" if PostgREST never responds. */
 const REMOTE_COMMIT_TIMEOUT_MS = 90_000
+/** Coalesce rapid relational `persist` calls into one `saveData` / push (ms). */
+const RELATIONAL_SAVE_DEBOUNCE_MS = 320
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -224,6 +226,9 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   const lastRemoteUpdatedAtRef = useRef<string | null>(null)
   /** Avoid overlapping pull/merge work (poll + realtime can stack and freeze the UI). */
   const syncPullInFlightRef = useRef(false)
+  /** Relational: debounce timer + whether a debounced cloud save is pending (`adjustPendingRemoteSaves`). */
+  const relationalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const relationalSaveBumpRef = useRef(false)
   /** Serialize remote commits so save completions apply in order. */
   const remoteCommitChainRef = useRef(Promise.resolve())
   /** Serialize track creates so auto `routeColor` always accounts for paths just added (subject + import). */
@@ -302,7 +307,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
             await writeLocalDataCache(next)
             // `pullAndMergeWithLocal` does not touch sync status; without this, post-login UI keeps the
             // bootstrap `local_fallback` (“Sign in to load cloud data”) until a full page refresh.
-            setSyncStatus({ mode: 'supabase_ok', message: 'Loaded from database' })
+            setSyncStatus({ mode: 'supabase_ok' })
             return
           }
         }
@@ -319,6 +324,14 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'SIGNED_OUT' || (event as string) === 'USER_DELETED') {
+        if (relationalSaveTimerRef.current) {
+          clearTimeout(relationalSaveTimerRef.current)
+          relationalSaveTimerRef.current = null
+        }
+        if (relationalSaveBumpRef.current) {
+          relationalSaveBumpRef.current = false
+          adjustPendingRemoteSaves(-1)
+        }
         if (debounceT) clearTimeout(debounceT)
         debounceT = undefined
         void reload()
@@ -353,12 +366,53 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     }
   }, [])
 
+  const flushRelationalDebouncedSave = useCallback(async () => {
+    relationalSaveTimerRef.current = null
+    if (!relationalSaveBumpRef.current) return
+    relationalSaveBumpRef.current = false
+    try {
+      await withTimeout(
+        commitOptimisticToRemote(dataRef.current),
+        REMOTE_COMMIT_TIMEOUT_MS,
+        'Cloud save',
+      )
+    } catch (e) {
+      console.warn('Remote commit debounced save failed:', e)
+      if (
+        relationalBackendEnabled() &&
+        e instanceof Error &&
+        e.message.includes('timed out')
+      ) {
+        setSyncStatus({
+          mode: 'local_fallback',
+          message: 'Cloud save timed out; working locally. Retry when online.',
+        })
+      }
+    } finally {
+      adjustPendingRemoteSaves(-1)
+    }
+  }, [commitOptimisticToRemote])
+
   const persist = useCallback(
     (next: AppData) => {
       const optimistic = normalizeAppData(next)
       dataRef.current = optimistic
       setData(optimistic)
       void writeLocalDataCache(optimistic)
+
+      if (relationalBackendEnabled() && supabase) {
+        if (!relationalSaveBumpRef.current) {
+          relationalSaveBumpRef.current = true
+          adjustPendingRemoteSaves(1)
+        }
+        if (relationalSaveTimerRef.current) clearTimeout(relationalSaveTimerRef.current)
+        relationalSaveTimerRef.current = setTimeout(() => {
+          relationalSaveTimerRef.current = null
+          void flushRelationalDebouncedSave()
+        }, RELATIONAL_SAVE_DEBOUNCE_MS)
+        return
+      }
+
       adjustPendingRemoteSaves(1)
       remoteCommitChainRef.current = remoteCommitChainRef.current
         .then(() =>
@@ -385,7 +439,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           adjustPendingRemoteSaves(-1)
         })
     },
-    [commitOptimisticToRemote],
+    [commitOptimisticToRemote, flushRelationalDebouncedSave],
   )
 
   useSupabaseAppDataSync({

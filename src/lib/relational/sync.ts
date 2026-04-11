@@ -14,8 +14,23 @@ import type {
 } from '../types'
 import { DEFAULT_DATA, AppDataSchema } from '../types'
 import { deleteCaseAttachmentFromStorage } from './storageAttachment'
+import { traceRelationalPullStep } from '../syncPullTrace'
 
 /** High-level sync narrative: `docs/SYNC_CONTRACT.md`. */
+
+/** PostgREST column lists (avoid `*`, trim payload vs unbounded columns). */
+const SEL_VC_CASES =
+  'id,owner_user_id,organization_id,unit_id,case_number,title,description,created_at_ms,updated_at_ms,lifecycle'
+const SEL_VC_LOCATIONS =
+  'id,case_id,address_text,lat,lon,bounds,footprint,status,notes,last_visited_at_ms,created_by_user_id,created_at_ms,updated_at_ms'
+const SEL_VC_TRACKS =
+  'id,case_id,label,kind,route_color,created_by_user_id,created_at_ms,updated_at_ms'
+const SEL_VC_TRACK_POINTS =
+  'id,case_id,track_id,location_id,address_text,lat,lon,sequence,visited_at_ms,notes,show_on_map,display_time_on_map,map_time_label_offset_x,map_time_label_offset_y,placement_source,created_by_user_id,created_at_ms,updated_at_ms'
+const SEL_VC_COLLABORATORS = 'case_id,user_id,role,created_at_ms'
+const SEL_VC_ATTACHMENTS =
+  'id,case_id,kind,caption,image_data_url,image_storage_path,content_type,created_by_user_id,created_at_ms,updated_at_ms'
+const SEL_VC_PROFILES = 'id,display_name,email,tax_number,created_at,app_role'
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
@@ -387,6 +402,46 @@ function attachmentToRow(a: CaseAttachment): Record<string, unknown> {
   }
 }
 
+function collectProfileUserIds(
+  sessionUid: string | null,
+  cases: CaseFile[],
+  locRows: LocRow[] | null | undefined,
+  trackRows: TrackRow[] | null | undefined,
+  tpRows: TpRow[] | null | undefined,
+  collabRows: CollabRow[] | null | undefined,
+  attRows: AttRow[] | null | undefined,
+): string[] {
+  const s = new Set<string>()
+  const add = (id: string | null | undefined) => {
+    const n = normUuid(id ?? '')
+    if (n) s.add(n)
+  }
+  add(sessionUid)
+  for (const c of cases) add(c.ownerUserId)
+  for (const r of locRows ?? []) add(r.created_by_user_id)
+  for (const r of trackRows ?? []) add(r.created_by_user_id)
+  for (const r of tpRows ?? []) add(r.created_by_user_id)
+  for (const r of collabRows ?? []) add(r.user_id)
+  for (const r of attRows ?? []) add(r.created_by_user_id)
+  return [...s]
+}
+
+async function loadVcProfilesBatched(sb: NonNullable<typeof supabase>, ids: string[]): Promise<VcProfileRow[]> {
+  if (!ids.length) return []
+  const out: VcProfileRow[] = []
+  for (const batch of chunk(ids, 150)) {
+    const t0 = performance.now()
+    const { data, error } = await sb.from('vc_profiles').select(SEL_VC_PROFILES).in('id', batch)
+    traceRelationalPullStep('vc_profiles(batch)', t0, data?.length)
+    if (error) {
+      console.warn('loadAppDataFromRelational vc_profiles:', error.message)
+      continue
+    }
+    out.push(...(((data ?? []) as unknown[]) as VcProfileRow[]))
+  }
+  return out
+}
+
 export async function loadAppDataFromRelational(opts?: {
   /** When set (including `null`), empty-case path skips `getRelationalAuthUserId` (avoids a second hung Auth round-trip). */
   emptyCaseUserId?: string | null
@@ -400,10 +455,12 @@ export async function loadAppDataFromRelational(opts?: {
       ? Promise.resolve(opts.emptyCaseUserId ?? null)
       : getRelationalAuthUserId(sb)
 
+  const tCases = performance.now()
   const [{ data: casesRows, error: e1 }, sessionUid] = await Promise.all([
-    sb.from('vc_cases').select('*'),
+    sb.from('vc_cases').select(SEL_VC_CASES),
     sessionUidPromise,
   ])
+  traceRelationalPullStep('vc_cases', tCases, casesRows?.length)
   if (e1) {
     console.warn('loadAppDataFromRelational vc_cases:', e1.message)
     return null
@@ -412,12 +469,14 @@ export async function loadAppDataFromRelational(opts?: {
   const caseIds = cases.map((c) => c.id)
   if (caseIds.length === 0) {
     const uid = sessionUid
+    const tEmpty = performance.now()
     const [{ data: selfRow }, myUnitIds] = await Promise.all([
       uid
-        ? sb.from('vc_profiles').select('*').eq('id', uid).maybeSingle()
+        ? sb.from('vc_profiles').select(SEL_VC_PROFILES).eq('id', uid).maybeSingle()
         : Promise.resolve({ data: null as VcProfileRow | null }),
       loadMyUnitIdsForSession(sb, uid),
     ])
+    traceRelationalPullStep('vc_profiles_empty_case', tEmpty, selfRow ? 1 : 0)
     const users: AppUser[] = selfRow ? [profileToUser(selfRow as VcProfileRow)] : []
     const empty: AppData = {
       ...DEFAULT_DATA,
@@ -432,23 +491,23 @@ export async function loadAppDataFromRelational(opts?: {
     return normalizeAppData(parsedEmpty.data)
   }
 
+  const tParallel = performance.now()
   const [
     { data: locRows, error: e2 },
     { data: trackRows, error: e3 },
     { data: tpRows, error: e4 },
     { data: collabRows, error: e5 },
     { data: attRows, error: e6 },
-    { data: profRows, error: e7 },
     myUnitIds,
   ] = await Promise.all([
-    sb.from('vc_locations').select('*').in('case_id', caseIds),
-    sb.from('vc_tracks').select('*').in('case_id', caseIds),
-    sb.from('vc_track_points').select('*').in('case_id', caseIds),
-    sb.from('vc_case_collaborators').select('*').in('case_id', caseIds),
-    sb.from('vc_case_attachments').select('*').in('case_id', caseIds),
-    sb.from('vc_profiles').select('*'),
+    sb.from('vc_locations').select(SEL_VC_LOCATIONS).in('case_id', caseIds),
+    sb.from('vc_tracks').select(SEL_VC_TRACKS).in('case_id', caseIds),
+    sb.from('vc_track_points').select(SEL_VC_TRACK_POINTS).in('case_id', caseIds),
+    sb.from('vc_case_collaborators').select(SEL_VC_COLLABORATORS).in('case_id', caseIds),
+    sb.from('vc_case_attachments').select(SEL_VC_ATTACHMENTS).in('case_id', caseIds),
     loadMyUnitIdsForSession(sb, sessionUid),
   ])
+  traceRelationalPullStep('parallel_case_children', tParallel, (locRows?.length ?? 0) + (tpRows?.length ?? 0))
 
   for (const [e, label] of [
     [e2, 'vc_locations'],
@@ -456,12 +515,14 @@ export async function loadAppDataFromRelational(opts?: {
     [e4, 'vc_track_points'],
     [e5, 'vc_case_collaborators'],
     [e6, 'vc_case_attachments'],
-    [e7, 'vc_profiles'],
   ] as const) {
     if (e) console.warn(`loadAppDataFromRelational ${label}:`, e.message)
   }
 
-  const users = ((profRows ?? []) as VcProfileRow[]).map(profileToUser)
+  const profileIds = collectProfileUserIds(sessionUid, cases, locRows, trackRows, tpRows, collabRows, attRows)
+  const profRows = await loadVcProfilesBatched(sb, profileIds)
+
+  const users = profRows.map(profileToUser)
 
   const raw: AppData = {
     version: 1,

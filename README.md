@@ -21,8 +21,9 @@ For native plugin changes or if you prefer the official tool: **`npm run cap:syn
 
 ## For developers
 
+- **Optional local helpers (not part of build):** root `*.bat` (dev server, tunnels, git shortcuts) and [`MacGit/`](MacGit/) scripts for cross-machine workflows.
 - **Where the code lives:** [docs/CODEMAP.md](docs/CODEMAP.md)
-- **Geocode, footprints, and retrieval policy:** [HANDOFF.md](HANDOFF.md)
+- **Geocode, footprints, and retrieval policy:** [docs/HANDOFF.md](docs/HANDOFF.md)
 - **Hosted web + same env as Android:** [docs/HOSTING_QUICKSTART.md](docs/HOSTING_QUICKSTART.md) and [docs/DEPLOY_ENV_CHECKLIST.md](docs/DEPLOY_ENV_CHECKLIST.md)
 - **Netlify:** [`netlify.toml`](netlify.toml) · **Vercel:** [`vercel.json`](vercel.json)
 

@@ -8,7 +8,7 @@ import {
 } from './db'
 import { relationalBackendEnabled } from './backendMode'
 import { SHARED_WORKSPACE_ID, hasSupabaseConfig, supabase } from './supabase'
-import { getSyncStatusMode, setSyncStatus } from './syncStatus'
+import { getSyncStatusMode, recordSyncDebug, setSyncStatus } from './syncStatus'
 import type { AppData } from './types'
 
 /**
@@ -42,21 +42,17 @@ export function useSupabaseAppDataSync(params: {
           if (cancelled || !merged) return
           if (appDataSyncFingerprint(merged) === appDataSyncFingerprint(cur)) {
             if (getSyncStatusMode() !== 'supabase_ok') {
-              setSyncStatus({ mode: 'supabase_ok', message: 'Cloud sync OK' })
+              setSyncStatus({ mode: 'supabase_ok' })
             }
             return
           }
           dataRef.current = merged
           setData(merged)
           await writeLocalDataCache(merged)
-          setSyncStatus({
-            mode: 'supabase_ok',
-            message: 'Updated from database',
-            remoteMergeNotice:
-              'Some entries were updated from the server. Re-check open cases if something looks unexpected.',
-          })
+          setSyncStatus({ mode: 'supabase_ok' })
         } catch (e) {
           console.warn('Relational sync pull failed:', e)
+          recordSyncDebug(`Relational sync pull failed: ${e instanceof Error ? e.message : String(e)}`)
         } finally {
           syncPullInFlightRef.current = false
         }
@@ -132,9 +128,10 @@ export function useSupabaseAppDataSync(params: {
         dataRef.current = merged
         setData(merged)
         await writeLocalDataCache(merged)
-        setSyncStatus({ mode: 'supabase_ok', message: 'Updated from shared workspace' })
+        setSyncStatus({ mode: 'supabase_ok' })
       } catch (e) {
         console.warn('Collaborative sync pull failed:', e)
+        recordSyncDebug(`Collaborative sync pull failed: ${e instanceof Error ? e.message : String(e)}`)
       } finally {
         syncPullInFlightRef.current = false
       }

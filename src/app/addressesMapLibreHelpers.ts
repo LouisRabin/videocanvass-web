@@ -4,6 +4,7 @@ import L from 'leaflet'
 
 import type { Location, Track, TrackPoint } from '../lib/types'
 import { statusColor } from '../lib/types'
+import { formatAddressLineForMapList } from './casePageHelpers'
 
 export const CARTO_VOYAGER_STYLE = 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json'
 
@@ -50,7 +51,7 @@ export function resolveCaseMapBasemapStyle(id: VcCaseMapBasemapId): string | Sty
   }
 }
 
-/** Must match `CasePage.tsx`; see `HANDOFF.md` (Address & footprint retrieval). */
+/** Must match `CasePage.tsx`; see `docs/HANDOFF.md` (Address & footprint retrieval). */
 export const VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS = 480
 export const VIEWPORT_OUTLINE_PRELOAD_BOUNDS_PAD = 0.14
 export const VIEWPORT_OUTLINE_PRELOAD_MAX = 24
@@ -236,7 +237,8 @@ export function buildTrackWaypointClusterCollection(
     for (let i = 0; i < pts.length; i++) {
       const p = pts[i]!
       const stepNum = i + 1
-      const wptLabel = (p.addressText?.trim() || `Step ${stepNum}`).slice(0, 80)
+      const rawLabel = p.addressText?.trim() || `Step ${stepNum}`
+      const wptLabel = formatAddressLineForMapList(rawLabel).slice(0, 80)
       features.push({
         type: 'Feature',
         properties: { pid: p.id, color: base, stepNum, trackId: track.id, wptLabel },

@@ -42,7 +42,7 @@ test.describe('CasePage stability checks', () => {
     await enterFirstCase(page)
 
     await openViewTools(page)
-    await expect(page.getByRole('button', { name: 'List view' }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'List View' }).first()).toBeVisible()
 
     await page.getByRole('button', { name: 'Filters' }).first().click()
     await expect(page.getByText(/Result \(\d+ total\)/).first()).toBeVisible()
@@ -51,7 +51,7 @@ test.describe('CasePage stability checks', () => {
     await expect(page.getByRole('button', { name: 'New Track' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Photos' }).first().click()
-    await expect(page.getByRole('button', { name: 'Add photo' }).last()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Add Photo' }).last()).toBeVisible()
   })
 
   test('toolbar/search layout remains usable across three viewport heights', async ({ page }) => {
@@ -62,7 +62,7 @@ test.describe('CasePage stability checks', () => {
       await openViewTools(page)
       await page.getByRole('button', { name: 'Filters' }).first().click()
       await openViewTools(page)
-      await expect(page.getByRole('button', { name: 'List view' }).first()).toBeVisible()
+      await expect(page.getByRole('button', { name: 'List View' }).first()).toBeVisible()
       await expect.poll(async () => {
         return page.evaluate(() => {
           const overflows = Array.from(document.querySelectorAll('input, textarea')).some((el) => {
@@ -89,7 +89,7 @@ test.describe('CasePage stability checks', () => {
 
     // Toggle within the dock should remain clickable and not be swallowed by outside-dismiss.
     await page.getByRole('button', { name: 'Views' }).first().click()
-    await expect(page.getByRole('button', { name: 'List view' }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'List View' }).first()).toBeVisible()
 
     await closeToggle.click()
     await expect(openToggle).toBeVisible()
@@ -102,7 +102,7 @@ test.describe('CasePage stability checks', () => {
 
     // Layering contract: map detail overlay sits above map content and remains interactive.
     await openViewTools(page)
-    await page.getByRole('button', { name: 'List view' }).first().click()
+    await page.getByRole('button', { name: 'List View' }).first().click()
     await page.getByRole('button', { name: 'Close list view' }).click()
     const expandNotes = page.getByRole('button', { name: 'Expand notes and details' }).first()
     if (await expandNotes.isVisible().catch(() => false)) {
@@ -116,11 +116,11 @@ test.describe('CasePage stability checks', () => {
     await enterFirstCase(page)
 
     await openViewTools(page)
-    await page.getByRole('button', { name: 'List view' }).first().click()
+    await page.getByRole('button', { name: 'List View' }).first().click()
     await expect(page.getByRole('button', { name: 'Close list view' })).toBeVisible()
     await page.getByRole('button', { name: 'Close list view' }).click()
     await openViewTools(page)
-    await expect(page.getByRole('button', { name: 'List view' }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'List View' }).first()).toBeVisible()
 
     await page.getByRole('button', { name: 'Subject tracking' }).first().click()
     await page.getByRole('button', { name: 'Video canvassing' }).first().click()

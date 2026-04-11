@@ -18,7 +18,10 @@ import {
   manualOffsetHasInput,
   parseDateTimeLocal,
 } from './dvrTimeMath'
-import { formatAppDateTime, formatTimeThenDate } from '../lib/timeFormat'
+import {
+  formatAppDateTimeNoSeconds,
+  formatTimeThenDateNoSeconds,
+} from '../lib/timeFormat'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 
 const btn: CSSProperties = {
@@ -451,7 +454,7 @@ export function DvrSingleDateTimePicker(props: {
   const ymdSelected = (day: number) => `${cy}-${pad2(cmi + 1)}-${pad2(day)}`
 
   const ts = props.value.trim() ? parseDateTimeLocal(props.value) : null
-  const summary = ts != null ? formatAppDateTime(ts) : null
+  const summary = ts != null ? formatAppDateTimeNoSeconds(ts) : null
   const spinnerLook = true
 
   const openBtnStyle: CSSProperties = {
@@ -742,7 +745,7 @@ type Props = {
 export function ProbativeDvrFlowModals(props: Props) {
   const open = props.step != null
   const title =
-    props.step === 'calc' ? 'DVR time calculator' : 'Probative footage — time check'
+    props.step === 'calc' ? 'DVR time calculator' : 'Probative Footage — time check'
 
   const handleModalClose = useCallback(() => {
     props.onDismiss()
@@ -824,7 +827,7 @@ export function DvrCalculatorStep(props: {
   }
   const [resultPreview, setResultPreview] = useState<null | ResultPreview>(null)
 
-  const deviceNowStr = useMemo(() => formatAppDateTime(nowTick), [nowTick])
+  const deviceNowStr = useMemo(() => formatAppDateTimeNoSeconds(nowTick), [nowTick])
 
   const resetFields = useCallback(() => {
     setManualDir('slow')
@@ -897,7 +900,7 @@ export function DvrCalculatorStep(props: {
     let notePlain = line1Plain
     if (incidentMs != null) {
       const dvrSearch = incidentRealToDvrDisplay(incidentMs, driftMs)
-      dvrIncidentTimeFirstDate = formatTimeThenDate(dvrSearch)
+      dvrIncidentTimeFirstDate = formatTimeThenDateNoSeconds(dvrSearch)
       notePlain = `${line1Plain}\nDVR incident time: ${dvrIncidentTimeFirstDate}`
     }
 

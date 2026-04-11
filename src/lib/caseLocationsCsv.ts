@@ -1,52 +1,29 @@
-import type { CanvassStatus, Location } from './types'
+import type { Location } from './types'
+import { statusLabel } from './types'
+import { csvEscape, safeFileSlug } from './exportCsvUtils'
 
-function csvEscape(value: string): string {
-  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
-  return value
-}
+const ADDRESS_EXPORT_HEADER = ['addressText', 'status', 'lat', 'lon', 'notes', 'updatedAt', 'id'] as const
 
-function statusLabel(s: CanvassStatus): string {
-  switch (s) {
-    case 'noCameras':
-      return 'noCameras'
-    case 'camerasNoAnswer':
-      return 'camerasNoAnswer'
-    case 'notProbativeFootage':
-      return 'notProbativeFootage'
-    case 'probativeFootage':
-      return 'probativeFootage'
-    default:
-      return String(s)
+/** Rows for CSV / Excel (header + one row per location). */
+export function buildCaseLocationsExportRows(locations: Location[]): string[][] {
+  const rows: string[][] = [ADDRESS_EXPORT_HEADER.slice() as string[]]
+  for (const l of locations) {
+    rows.push([
+      l.addressText ?? '',
+      statusLabel(l.status),
+      String(l.lat),
+      String(l.lon),
+      l.notes ?? '',
+      String(l.updatedAt ?? l.createdAt),
+      l.id,
+    ])
   }
-}
-
-function safeFileSlug(label: string): string {
-  return (
-    label
-      .trim()
-      .replace(/[^\w\-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60) || 'case'
-  )
+  return rows
 }
 
 /** Download canvass locations as CSV (no server; UTF-8). */
 export function downloadCaseLocationsCsv(caseLabel: string, locations: Location[]): void {
-  const header = ['addressText', 'status', 'lat', 'lon', 'notes', 'updatedAt', 'id'] as const
-  const lines = [header.join(',')]
-  for (const l of locations) {
-    lines.push(
-      [
-        csvEscape(l.addressText ?? ''),
-        csvEscape(statusLabel(l.status)),
-        csvEscape(String(l.lat)),
-        csvEscape(String(l.lon)),
-        csvEscape(l.notes ?? ''),
-        csvEscape(String(l.updatedAt ?? l.createdAt)),
-        csvEscape(l.id),
-      ].join(','),
-    )
-  }
+  const lines = buildCaseLocationsExportRows(locations).map((row) => row.map(csvEscape).join(','))
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

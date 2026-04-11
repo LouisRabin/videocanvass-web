@@ -19,7 +19,7 @@ export function haversineMeters(aLat: number, aLon: number, bLat: number, bLon: 
 
 export type TrackSimplifyPreset = 'off' | 'moderate' | 'aggressive'
 
-export function decimationEpsilonMeters(preset: TrackSimplifyPreset): number {
+function decimationEpsilonMeters(preset: TrackSimplifyPreset): number {
   if (preset === 'off') return 0
   if (preset === 'moderate') return 28
   return 75
@@ -66,7 +66,7 @@ export function decimateTrackPointIds(
   return ids
 }
 
-export type DwellSegment = {
+type DwellSegment = {
   /** 1-based step index along sorted path (same as map step chip for that track). */
   startStepNum: number
   endStepNum: number
