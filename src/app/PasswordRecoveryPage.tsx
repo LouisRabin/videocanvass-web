@@ -85,8 +85,17 @@ export function PasswordRecoveryPage(props: Props) {
   }
 
   return (
-    <Layout title="VideoCanvass" subtitle="Set a new password">
-      <div style={vcAuthMainCenterWrap}>
+    <Layout mainScroll="hidden" title="VideoCanvass" subtitle="Set a new password">
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          width: '100%',
+          overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+      <div style={{ ...vcAuthMainCenterWrap, minHeight: 'min(100%, calc(100dvh - var(--vc-login-main-offset)))' }}>
         <div style={card}>
           <form
             style={{ display: 'grid', gap: 14 }}
@@ -128,6 +137,7 @@ export function PasswordRecoveryPage(props: Props) {
             Cancel and sign out
           </button>
         </div>
+      </div>
       </div>
     </Layout>
   )

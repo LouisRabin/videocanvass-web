@@ -713,6 +713,7 @@ export function CasesPage(props: {
   return (
     <>
     <Layout
+      mainScroll="hidden"
       title="Cases"
       subtitle={
         <span
@@ -755,7 +756,18 @@ export function CasesPage(props: {
       {!ready ? (
         <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
       ) : (
-        <div style={{ minWidth: 0, maxWidth: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
+        <div
+          style={{
+            minWidth: 0,
+            maxWidth: '100%',
+            overflowX: 'hidden',
+            boxSizing: 'border-box',
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           {TOUR_UI_ENABLED && showCasesTourBanner ? (
             <div
               style={{
@@ -769,6 +781,7 @@ export function CasesPage(props: {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 color: vcGlassFgDarkReadable,
+                flexShrink: 0,
               }}
             >
               <span style={{ fontSize: 14, fontWeight: 600 }}>New here? Take a quick tour of the case list.</span>
@@ -807,6 +820,7 @@ export function CasesPage(props: {
               justifyContent: 'space-between',
               rowGap: 8,
               minWidth: 0,
+              flexShrink: 0,
             }}
           >
             <div
@@ -885,6 +899,15 @@ export function CasesPage(props: {
             </div>
           </div>
 
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+              overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
           <Modal
             title="Create case"
             open={showNewCaseForm}
@@ -1334,6 +1357,7 @@ export function CasesPage(props: {
               ))}
             </div>
           )}
+          </div>
         </div>
       )}
     </Layout>

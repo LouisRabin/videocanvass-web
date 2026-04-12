@@ -18,8 +18,14 @@ export function Layout(props: {
   children: React.ReactNode
   /** Tighter chrome padding (e.g. case map screen). */
   dense?: boolean
+  /**
+   * `auto` (default): `<main>` scrolls (standard pages).
+   * `hidden`: page owns vertical scrolling (e.g. cases list body, login centering).
+   */
+  mainScroll?: 'auto' | 'hidden'
 }) {
   const dense = props.dense === true
+  const mainScroll = props.mainScroll ?? 'auto'
   const narrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
   const headerPad = dense
     ? 'var(--vc-pad-header-dense-y) var(--vc-pad-header-dense-x)'
@@ -193,7 +199,7 @@ export function Layout(props: {
   )
 
   return (
-    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className="vc-app-shell">
       <header
         style={{
           position: 'sticky',
@@ -266,8 +272,8 @@ export function Layout(props: {
           display: 'flex',
           flexDirection: 'column',
           overflowX: 'hidden',
-          overflowY: 'auto',
-          WebkitOverflowScrolling: 'touch',
+          overflowY: mainScroll === 'hidden' ? 'hidden' : 'auto',
+          WebkitOverflowScrolling: mainScroll === 'hidden' ? undefined : 'touch',
           boxSizing: 'border-box',
         }}
       >

@@ -35,6 +35,12 @@
   --vc-pad-main-dense-y: clamp(4px, 1vw, 6px);
   --vc-pad-main-dense-x: clamp(6px, 1.25vw, 10px);
 
+  /**
+   * Space to subtract from the viewport when vertically centering auth below `Layout`’s header.
+   * Scales with small viewport height so Mini / Plus / split-screen keep sensible proportions.
+   */
+  --vc-login-main-offset: clamp(5.25rem, 10svh + 3.25rem, 11rem);
+
   /* Liquid glass (see src/lib/vcLiquidGlass.ts — keep blur in sync). */
   --vc-liquid-glass-blur: blur(22px) saturate(1.45);
   --vc-glass-fg-on-panel: #f8fafc;
@@ -43,15 +49,21 @@
   --vc-page-backdrop-accent: #3b4f6a;
 }
 
-html,
-body {
+html {
   height: 100%;
   overflow-x: hidden;
-  max-width: 100vw;
 }
 
 body {
   margin: 0;
+  height: 100%;
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  max-width: 100vw;
+  display: flex;
+  flex-direction: column;
   font-size: var(--vc-fs-base);
   background: linear-gradient(
     165deg,
@@ -70,8 +82,27 @@ body {
 }
 
 #root {
-  min-height: 100vh;
-  min-height: 100dvh;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+/**
+ * Root column under `Layout`: fills whatever space the browser gives (safe-area-aware body, split view, etc.).
+ * Prefer flex over a raw `100vh` height so inner `min-height: 0` regions scroll correctly on iOS.
+ */
+.vc-app-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 /* Set on document.documentElement from App (useMediaQuery). */

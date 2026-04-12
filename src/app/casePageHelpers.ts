@@ -50,12 +50,24 @@ export function formatLatLonForStepUi(lat: number, lon: number): string {
   return `${lat.toFixed(5)}, ${lon.toFixed(5)}`
 }
 
+/** Geocode / map placeholder: bare `lat, lon` decimals (Photon fallback label, pasted coords, etc.). */
+function looksLikeDecimalLatLonPair(text: string): boolean {
+  const t = text.trim()
+  const m = /^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/.exec(t)
+  if (!m) return false
+  const a = Number(m[1])
+  const b = Number(m[2])
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false
+  return Math.abs(a) <= 90 && Math.abs(b) <= 180
+}
+
 /** Map-tap placeholder before reverse geocode; also used to decide when to keep resolving in the background. */
 export function isProvisionalCanvassLabel(text: string | undefined | null): boolean {
   const t = (text ?? '').trim()
   if (!t) return false
   if (/^lat\s+-?\d+(?:\.\d+)?\s*,\s*lon\s+-?\d+(?:\.\d+)?$/i.test(t)) return true
   if (/^lat\s*-?\d+/i.test(t)) return true
+  if (looksLikeDecimalLatLonPair(t)) return true
   return false
 }
 

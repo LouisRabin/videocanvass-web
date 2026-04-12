@@ -2412,7 +2412,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     position: 'absolute',
     left: 'max(14px, env(safe-area-inset-left, 0px))',
     right: 'max(14px, env(safe-area-inset-right, 0px))',
-    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 10px + ${narrowMapBottomChromeHeightPx}px + clamp(16px, 3.5vw, 28px))`,
+    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 10px + ${narrowMapBottomChromeHeightPx}px + clamp(22px, 4vw, 36px))`,
     zIndex: 44,
     pointerEvents: 'auto',
     isolation: 'isolate',
@@ -3323,7 +3323,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   })
 
   /** Match floating map top chrome — safe-area insets align with workspace padding. */
-  const narrowMapTopChromeInsetTopStr = 'max(6px, env(safe-area-inset-top, 0px))'
+  const narrowMapTopChromeInsetTopStr = 'max(4px, env(safe-area-inset-top, 0px))'
   const narrowMapTopChromeInsetLeftStr = 'max(10px, env(safe-area-inset-left, 0px))'
   const narrowMapTopChromeInsetRightStr = 'max(10px, env(safe-area-inset-right, 0px))'
 
@@ -4364,7 +4364,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 10px)`,
+          bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + max(10px, env(safe-area-inset-bottom, 0px)) + 18px)`,
           zIndex: 45,
           pointerEvents: 'none',
           display: 'flex',
@@ -4872,7 +4872,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                           <div
                             style={{
                               position: 'absolute',
-                              top: `calc(max(6px, env(safe-area-inset-top, 0px)) + ${narrowMapTopRowHeightPx}px + 8px)`,
+                              top: `calc(max(4px, env(safe-area-inset-top, 0px)) + ${narrowMapTopRowHeightPx}px + 4px)`,
                               left: 'max(10px, env(safe-area-inset-left, 0px))',
                               zIndex: 1,
                               width:

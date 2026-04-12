@@ -71,13 +71,23 @@ export function LoginPage() {
 
   if (!relationalBackendEnabled() || !supabase) {
     return (
-      <Layout title="VideoCanvass" subtitle="Configuration error">
-        <div style={vcAuthMainCenterWrap}>
+      <Layout mainScroll="hidden" title="VideoCanvass" subtitle="Configuration error">
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            width: '100%',
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
+        <div style={{ ...vcAuthMainCenterWrap, minHeight: 'min(100%, calc(100dvh - var(--vc-login-main-offset)))' }}>
           <div style={{ ...vcLiquidGlassInnerSurface, maxWidth: 480, width: '100%', padding: 16, borderRadius: 14, color: '#92400e' }}>
             Sign-in needs <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> baked into the build (same names in Vercel).
             If those are set but you still see this, set <code>VITE_VC_RELATIONAL_BACKEND=true</code> explicitly or remove a conflicting value, then redeploy.
             For demo sign-in with Supabase vars present, use <code>VITE_VC_RELATIONAL_BACKEND=false</code>.
           </div>
+        </div>
         </div>
       </Layout>
     )
@@ -152,10 +162,20 @@ export function LoginPage() {
 
   return (
     <Layout
+      mainScroll="hidden"
       title="VideoCanvass"
       subtitle={mode === 'forgot_password' ? 'Reset your password' : 'Sign in to your workspace'}
     >
-      <div style={vcAuthMainCenterWrap}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          width: '100%',
+          overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+      <div style={{ ...vcAuthMainCenterWrap, minHeight: 'min(100%, calc(100dvh - var(--vc-login-main-offset)))' }}>
         <div style={card}>
           <form
             style={{ display: 'grid', gap: 14 }}
@@ -284,6 +304,7 @@ export function LoginPage() {
             </button>
           )}
         </div>
+      </div>
       </div>
     </Layout>
   )
