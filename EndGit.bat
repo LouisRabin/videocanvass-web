@@ -14,7 +14,27 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [1/5] Staging all changes...
+echo [0/6] Capacitor native bundle ^(optional^)
+echo   ios/App/App/public and config files are gitignored - they are NOT pushed.
+echo   Run sync here so THIS machine has a fresh web build + ios/android copies before you commit.
+echo   On Mac after pull, run:  npm run cap:sync   ^(same reason^)
+echo.
+choice /c YN /m "Run npm run cap:sync now (npm run build + copy to ios/android)?"
+if errorlevel 2 goto skip_capsync
+if errorlevel 1 (
+  call npm run cap:sync
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] npm run cap:sync failed. Fix the error, then run EndGit again or continue without sync.
+    pause
+    exit /b 1
+  )
+  echo [OK] cap:sync finished.
+)
+:skip_capsync
+
+echo.
+echo [1/6] Staging all changes...
 git add .
 if errorlevel 1 (
   echo.
@@ -32,7 +52,7 @@ if "%MSG%"=="" (
 )
 
 echo.
-echo [2/5] Committing...
+echo [2/6] Committing...
 git commit -m "%MSG%"
 if errorlevel 1 (
   echo.
@@ -43,7 +63,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/5] Pushing branch...
+echo [3/6] Pushing branch...
 git push
 if errorlevel 1 (
   echo.
@@ -53,11 +73,11 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/5] Final status:
+echo [4/6] Final status:
 git status
 
 echo.
-echo [5/5] Optional version tag
+echo [5/6] Optional version tag
 echo   Tags a snapshot of this exact commit on GitHub so you can restore it later
 echo   ^(e.g. after more pushes^). Use a simple name like address-working-v1 — no spaces is safest.
 echo.
@@ -82,6 +102,11 @@ if "!TAGNAME!"=="" (
   )
   echo [OK] Tag "!TAGNAME!" is on GitHub. Restore later with: git checkout "!TAGNAME!"
 )
+
+echo.
+echo [6/6] Reminder for Xcode / Mac after pull
+echo   ios/App/App/public is NOT in Git. On the Mac run:  npm run cap:sync
+echo   before building in Xcode ^(see docs/MOBILE_RELEASE.md^).
 
 echo.
 echo [DONE] Work saved to GitHub.
