@@ -55,6 +55,8 @@ node scripts/cap-copy-web.cjs
 
 This mirrors config in [scripts/cap-copy-web.cjs](../scripts/cap-copy-web.cjs) (`appId`, `webDir`). After changing [capacitor.config.ts](../capacitor.config.ts), keep that script’s `config` object aligned or prefer `cap sync` when it works.
 
+**Before the first Xcode build** on a fresh clone (or any machine where `ios/App/App/public` is missing), run **`npm run cap:sync`** so **`public`** (web bundle) and **`config.xml`** are generated under `ios/App/App/` — both are gitignored and are required by the Xcode project’s resource list. If the Capacitor CLI works on that machine, **`npm run cap:sync:cli`** is an alternative.
+
 ## 3. Open native IDEs
 
 ```bash

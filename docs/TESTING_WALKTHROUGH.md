@@ -14,6 +14,8 @@ Microsoft OneDrive can cause **`npx cap`** to crash with `UNKNOWN: unknown error
 
 Use **`npm run cap:sync:cli`** (`npx cap sync`) only on a machine where it works, for example after adding a **native plugin** (rare).
 
+**Xcode (iOS):** run **`npm run cap:sync`** before opening the project the first time so **`ios/App/App/public`** and **`config.xml`** exist (gitignored; the copy script creates them). Without them, Xcode reports missing `public` / `config.xml`.
+
 **Tips if anything under OneDrive misbehaves**
 
 1. **Right‑click the project folder → Always keep on this device**, wait until sync finishes.  
