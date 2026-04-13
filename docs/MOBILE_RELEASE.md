@@ -57,6 +57,16 @@ This mirrors config in [scripts/cap-copy-web.cjs](../scripts/cap-copy-web.cjs) (
 
 **Before the first Xcode build** on a fresh clone (or any machine where `ios/App/App/public` is missing), run **`npm run cap:sync`** so **`public`** (web bundle) and **`config.xml`** are generated under `ios/App/App/` — both are gitignored and are required by the Xcode project’s resource list. If the Capacitor CLI works on that machine, **`npm run cap:sync:cli`** is an alternative.
 
+### 2.1 Git / GitHub: what is (and is not) in the repo
+
+- **Ignored under `ios/`** (see [`ios/.gitignore`](../ios/.gitignore)): synced web assets (`App/App/public`), generated `capacitor.config.json` / `config.xml`, build products, `Pods`, `xcuserdata`, and **`capacitor-cordova-ios-plugins`**. Those folders change often; they are meant to be **recreated locally** with `npm run cap:sync` or `npm run cap:sync:cli`, not committed.
+- **Tracked under `ios/`**: Xcode project, Swift sources, assets, plist / privacy manifest, SPM package files, etc. Anything **new** here (files Xcode or you add) must be **`git add` + commit** or collaborators and CI will never see it.
+
+**Before you push** (especially after adding plugins, SPM packages, or new native files):
+
+1. Run your usual sync (`npm run cap:sync` or `npm run cap:sync:cli` / `cap:sync:ios` on a Mac when the CLI works).
+2. From the repo root: **`npm run verify:ios-git`** — exits with an error if there are untracked (non-ignored) files under `ios/` or uncommitted edits to tracked `ios/` files. Fix by committing those paths.
+
 ## 3. Open native IDEs
 
 ```bash
