@@ -60,6 +60,8 @@ body {
   min-height: 100vh;
   min-height: 100svh;
   min-height: 100dvh;
+  /** iOS Safari: fills the visible viewport when dynamic toolbar height differs from `vh`/`dvh` alone. */
+  min-height: -webkit-fill-available;
   overflow-x: hidden;
   max-width: 100vw;
   display: flex;

@@ -19,6 +19,8 @@ Full steps: [docs/TESTING_WALKTHROUGH.md](docs/TESTING_WALKTHROUGH.md).
 
 For native plugin changes or if you prefer the official tool: **`npm run cap:sync:cli`** (`npx cap sync`) on a machine where the Capacitor CLI runs cleanly.
 
+**iOS / Xcode (archive, TestFlight, device):** short checklist in [`docs/XCODE_BUILD.md`](docs/XCODE_BUILD.md) — build web, sync assets, open the workspace, archive.
+
 ## For developers
 
 - **Optional local helpers (not part of build):** root `*.bat` (dev server, tunnels, git shortcuts) and [`MacGit/`](MacGit/) scripts for cross-machine workflows.

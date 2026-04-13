@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -163,7 +164,7 @@ import {
   vcLiquidGlassPanelDense,
 } from '../lib/vcLiquidGlass'
 
-function CaseBackToListButton(props: { onBack: () => void }) {
+const CaseBackToListButton = memo(function CaseBackToListButton(props: { onBack: () => void }) {
   return (
     <button
       type="button"
@@ -185,7 +186,7 @@ function CaseBackToListButton(props: { onBack: () => void }) {
       Cases
     </button>
   )
-}
+})
 
 /** Longer than AddressesMapLibre SINGLE_TAP_DEFER_MS (270) so open + deferred map tap don't dismiss the dock. */
 const MAP_TOOLS_DOCK_OUTSIDE_GRACE_MS = 350

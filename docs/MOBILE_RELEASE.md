@@ -113,6 +113,8 @@ Run on a **physical device** when possible (WebView + keyboard + GPS differ from
 
 If something works in **mobile browser** but fails in the **app**, compare origin/CORS, mixed content, and CSP; confirm the failing build used the latest `dist/` copy.
 
+**Performance (optional):** [`IOS_PROFILING_CHECKLIST.md`](IOS_PROFILING_CHECKLIST.md) — Safari Web Inspector on a device to find JS/layout hotspots before large refactors.
+
 ## 7. Android build: `Unable to delete directory` / `AccessDeniedException` (Windows)
 
 Gradle must delete and recreate folders under `android/app/build/` and under `node_modules/@capacitor/android/.../build/`. On **Windows**, **OneDrive** (or Dropbox, antivirus real-time scan) often **keeps files open** or briefly locks them, so `mergeDebugAssets` / `mergeLibDexDebug` fails with *Unable to delete directory*.

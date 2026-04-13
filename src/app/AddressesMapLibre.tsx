@@ -29,6 +29,20 @@ import {
 const MAP_LONG_PRESS_MS = 550
 const MAP_LONG_PRESS_MOVE_PX2 = 64
 
+/** Skip viewport preload / resize work while the WebView is backgrounded (battery + pointless queue work). */
+function mapHeavyWorkPaused(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
+function mapContainerHasSize(map: GlMap): boolean {
+  try {
+    const r = map.getContainer().getBoundingClientRect()
+    return r.width >= 2 && r.height >= 2
+  } catch {
+    return false
+  }
+}
+
 /**
  * MapLibre's compact attribution initializes with `maplibregl-compact-show`, which shows full text.
  * Strip it so only the "i" chip shows until the user toggles (same as MapLibre's own collapse state).
@@ -202,7 +216,10 @@ const TrackTimeLabelsMapLibre = memo(function TrackTimeLabelsMapLibre(props: {
   useEffect(() => {
     const map = mapRefFromCtx?.getMap()
     if (!map) return
-    const bump = () => setMoveTick((n) => n + 1)
+    const bump = () => {
+      if (mapHeavyWorkPaused()) return
+      setMoveTick((n) => n + 1)
+    }
     bump()
     map.on('moveend', bump)
     map.on('zoomend', bump)
@@ -637,6 +654,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
   function AddressesMapLibreInner(props, ref) {
     const { vectorRingLookupRef } = props
     const mapRef = useRef<MapRef>(null)
+    const mapShellRef = useRef<HTMLDivElement>(null)
     const didFitRef = useRef(false)
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const propsRef = useRef(props)
@@ -911,9 +929,10 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     }, [props.showVisitHeatmap, props.visitHeatmapGeojson])
 
     const flushPreload = useCallback(() => {
+      if (mapHeavyWorkPaused()) return
       const p = propsRef.current
       const map = mapRef.current?.getMap()
-      if (!map) return
+      if (!map || !mapContainerHasSize(map)) return
       const mb = map.getBounds()
       const lb = L.latLngBounds(L.latLng(mb.getSouth(), mb.getWest()), L.latLng(mb.getNorth(), mb.getEast()))
       if (!lb.isValid()) return
@@ -1046,9 +1065,66 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     }, [schedulePreload, syncMapContainerPointerBlock, onStyledataPointerBlockHandler])
 
     const syncZoomAndPreload = useCallback(() => {
+      if (mapHeavyWorkPaused()) return
       const map = mapRef.current?.getMap()
-      if (map) setMapZoom(map.getZoom())
+      if (!map || !mapContainerHasSize(map)) return
+      setMapZoom(map.getZoom())
       schedulePreload()
+    }, [schedulePreload])
+
+    useEffect(() => {
+      const onVis = () => {
+        if (mapHeavyWorkPaused()) {
+          if (debounceRef.current) {
+            clearTimeout(debounceRef.current)
+            debounceRef.current = null
+          }
+          return
+        }
+        requestAnimationFrame(() => {
+          const map = mapRef.current?.getMap()
+          if (!map || !mapContainerHasSize(map)) return
+          try {
+            map.resize()
+          } catch {
+            /* ignore */
+          }
+          setMapZoom(map.getZoom())
+          schedulePreload()
+        })
+      }
+      document.addEventListener('visibilitychange', onVis)
+      return () => document.removeEventListener('visibilitychange', onVis)
+    }, [schedulePreload])
+
+    useEffect(() => {
+      const shell = mapShellRef.current
+      if (!shell || typeof ResizeObserver === 'undefined') return
+      let raf: number | null = null
+      const run = () => {
+        if (mapHeavyWorkPaused()) return
+        const map = mapRef.current?.getMap()
+        if (!map || !mapContainerHasSize(map)) return
+        try {
+          map.resize()
+        } catch {
+          /* ignore */
+        }
+        setMapZoom(map.getZoom())
+        schedulePreload()
+      }
+      const ro = new ResizeObserver(() => {
+        if (raf != null) cancelAnimationFrame(raf)
+        raf = requestAnimationFrame(() => {
+          raf = null
+          run()
+        })
+      })
+      ro.observe(shell)
+      return () => {
+        ro.disconnect()
+        if (raf != null) cancelAnimationFrame(raf)
+      }
     }, [schedulePreload])
 
     useEffect(() => {
@@ -1466,6 +1542,17 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const mapHandlersOn = !props.blockMapCanvasPointerEvents
 
     return (
+      <div
+        ref={mapShellRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          minWidth: 0,
+          minHeight: 0,
+          position: 'relative',
+          boxSizing: 'border-box',
+        }}
+      >
       <MapGL
         ref={mapRef}
         initialViewState={initialViewState}
@@ -1649,6 +1736,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           blockMapCanvasPointerEvents={props.blockMapCanvasPointerEvents}
         />
       </MapGL>
+      </div>
     )
   },
 )

@@ -16,6 +16,7 @@
     "preview": "vite preview",
     "cap:sync": "npm run build && node scripts/cap-copy-web.cjs",
     "cap:sync:cli": "npm run build && npx cap sync",
+    "cap:sync:ios": "npm run build && npx cap sync ios",
     "cap:open": "npx cap open ios",
     "cap:open:android": "npx cap open android",
     "appetize:android": "powershell -ExecutionPolicy Bypass -File scripts/build-android-appetize.ps1",
