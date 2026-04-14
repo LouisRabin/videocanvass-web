@@ -199,16 +199,17 @@ const ADDR_MAP_INTERACTION_FREEZE_MS = 450
 /** Default inset below map canvas (attribution / breathing room). */
 const MAP_CANVAS_BOTTOM_RESERVE = 'clamp(8px, 1.2vw, 14px)'
 /**
- * Narrow map top (hamburger + address pill). Small floor for WKWebView; keep modest so mobile web + app match.
+ * Narrow map top (hamburger + address pill). `body` already has `env(safe-area-inset-*)` padding (`index.css`),
+ * so overlays use a fixed inset from the map card — doubling safe-area here pushed iOS chrome too far down.
  */
-const NARROW_MAP_TOP_CHROME_INSET = 'max(10px, calc(env(safe-area-inset-top, 0px) + 6px))'
-/** Wide map top slab — same safe-area pattern with a slightly smaller minimum. */
-const WIDE_MAP_TOP_CHROME_INSET = 'max(10px, calc(env(safe-area-inset-top, 0px) + 8px))'
+const NARROW_MAP_TOP_CHROME_INSET = '10px'
+/** Wide map top slab: same rule as narrow (no second safe-area pass). */
+const WIDE_MAP_TOP_CHROME_INSET = '10px'
 /**
  * Bottom edge for narrow-map floats (basemap chip + Video/Subject bar): one shared offset so their baselines line up.
- * (Previously the mode bar used +18px / max(10,safe) and sat visibly higher than the 44×44 basemap.)
+ * Safe-area is on `body` already; only reserve map attribution + a small margin above it.
  */
-const MAP_FLOAT_BOTTOM_INSET = `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 8px)`
+const MAP_FLOAT_BOTTOM_INSET = `calc(${MAP_CANVAS_BOTTOM_RESERVE} + 10px)`
 const MAP_BASEMAP_STORAGE_KEY = 'vc-case-map-basemap'
 
 function readStoredCaseMapBasemap(): VcCaseMapBasemapId {
@@ -2450,9 +2451,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   /** Narrow: sibling of map layer (clears bottom mode bar). */
   const mapSelectionPillWrapStyle: CSSProperties = {
     position: 'absolute',
-    left: 'max(14px, env(safe-area-inset-left, 0px))',
-    right: 'max(14px, env(safe-area-inset-right, 0px))',
-    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 10px + ${narrowMapBottomChromeHeightPx}px + clamp(22px, 4vw, 36px))`,
+    left: '14px',
+    right: '14px',
+    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + 10px + ${narrowMapBottomChromeHeightPx}px + clamp(22px, 4vw, 36px))`,
     zIndex: 44,
     pointerEvents: 'auto',
     isolation: 'isolate',
@@ -2472,8 +2473,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
    */
   const mapSelectionPillWrapStyleWebInMapLayer: CSSProperties = {
     position: 'absolute',
-    left: `calc(max(10px, env(safe-area-inset-left, 0px)) + 44px + clamp(12px, 2.8vw, 24px))`,
-    right: 'max(10px, env(safe-area-inset-right, 0px))',
+    left: `calc(10px + 44px + clamp(12px, 2.8vw, 24px))`,
+    right: '10px',
     bottom: MAP_FLOAT_BOTTOM_INSET,
     zIndex: 46,
     display: 'flex',
@@ -3362,13 +3363,13 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     color: isNarrow ? '#111827' : active ? '#f8fafc' : '#cbd5e1',
   })
 
-  /** Match floating map top chrome — safe-area insets align with workspace padding. */
+  /** Match floating map top chrome — `body` safe-area already applied; fixed gutters on the map card. */
   const narrowMapTopChromeInsetTopStr = NARROW_MAP_TOP_CHROME_INSET
-  const narrowMapTopChromeInsetLeftStr = 'max(10px, env(safe-area-inset-left, 0px))'
-  const narrowMapTopChromeInsetRightStr = 'max(10px, env(safe-area-inset-right, 0px))'
+  const narrowMapTopChromeInsetLeftStr = '10px'
+  const narrowMapTopChromeInsetRightStr = '10px'
 
   /** Left inset for map top chrome (zoom controls removed). */
-  const narrowMapTopReserveLeft = 'max(10px, env(safe-area-inset-left, 0px))'
+  const narrowMapTopReserveLeft = '10px'
 
   /**
    * Narrow map top: one liquid-glass pill (matches web map top slab) with ☰, address search, and track chips in one row.
@@ -4393,8 +4394,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
    * Mobile map bottom mode bar: clear 44×44 basemap chip on the left only. Mirroring that reserve on both
    * sides made the shell too narrow on small phones so “Subject tracking” overflowed the glass.
    */
-  const narrowMapBottomModesPadLeft = `calc(max(10px, env(safe-area-inset-left, 0px)) + 44px + clamp(8px, 2.5vw, 14px))`
-  const narrowMapBottomModesPadRight = `calc(max(10px, env(safe-area-inset-right, 0px)) + clamp(8px, 2.5vw, 14px))`
+  const narrowMapBottomModesPadLeft = `calc(10px + 44px + clamp(8px, 2.5vw, 14px))`
+  const narrowMapBottomModesPadRight = `calc(10px + clamp(8px, 2.5vw, 14px))`
 
   const mapNarrowBottomModesChrome =
     isNarrow && !probativePlacementSession && showMapInMapColumn && !showAddressesListBottomSheet ? (
@@ -4760,8 +4761,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     paddingLeft:
                       narrowMapTopShowsFloatingAddress && showMapInMapColumn
                         ? `calc(${narrowMapTopReserveLeft} + ${webWideMapDockPillWidthPx}px + 10px)`
-                        : 'max(10px, env(safe-area-inset-left, 0px))',
-                    paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+                        : '10px',
+                    paddingRight: '10px',
                     boxSizing: 'border-box',
                     display: 'flex',
                     flexDirection: 'row',
@@ -4913,7 +4914,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                             style={{
                               position: 'absolute',
                               top: `calc(${NARROW_MAP_TOP_CHROME_INSET} + ${narrowMapTopRowHeightPx}px + 4px)`,
-                              left: 'max(10px, env(safe-area-inset-left, 0px))',
+                              left: '10px',
                               zIndex: 1,
                               width:
                                 mapLeftToolSection === 'filters'
@@ -5127,7 +5128,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       title={`Basemap: ${caseBasemapAriaLabel(mapBasemap)} — click to cycle (streets → satellite → dark)`}
                       style={{
                         position: 'absolute',
-                        left: 'max(10px, env(safe-area-inset-left, 0px))',
+                        left: '10px',
                         bottom: MAP_FLOAT_BOTTOM_INSET,
                         zIndex: 44,
                         ...mapLayersGlassChipFaceStyle,
@@ -5221,9 +5222,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       flexDirection: 'row',
                       justifyContent: 'center',
                       alignItems: 'flex-end',
-                      paddingLeft: 'max(10px, env(safe-area-inset-left, 0px))',
-                      paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
-                      paddingBottom: 'max(8px, env(safe-area-inset-bottom, 0px))',
+                      paddingLeft: '10px',
+                      paddingRight: '10px',
+                      paddingBottom: '10px',
                       boxSizing: 'border-box',
                       pointerEvents: 'none',
                     }}
