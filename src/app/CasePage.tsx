@@ -198,6 +198,17 @@ const ADDR_DISMISS_GRACE_MS = 360
 const ADDR_MAP_INTERACTION_FREEZE_MS = 450
 /** Default inset below map canvas (attribution / breathing room). */
 const MAP_CANVAS_BOTTOM_RESERVE = 'clamp(8px, 1.2vw, 14px)'
+/**
+ * Narrow map top (hamburger + address pill). Small floor for WKWebView; keep modest so mobile web + app match.
+ */
+const NARROW_MAP_TOP_CHROME_INSET = 'max(10px, calc(env(safe-area-inset-top, 0px) + 6px))'
+/** Wide map top slab — same safe-area pattern with a slightly smaller minimum. */
+const WIDE_MAP_TOP_CHROME_INSET = 'max(10px, calc(env(safe-area-inset-top, 0px) + 8px))'
+/**
+ * Bottom edge for narrow-map floats (basemap chip + Video/Subject bar): one shared offset so their baselines line up.
+ * (Previously the mode bar used +18px / max(10,safe) and sat visibly higher than the 44×44 basemap.)
+ */
+const MAP_FLOAT_BOTTOM_INSET = `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 8px)`
 const MAP_BASEMAP_STORAGE_KEY = 'vc-case-map-basemap'
 
 function readStoredCaseMapBasemap(): VcCaseMapBasemapId {
@@ -1383,6 +1394,32 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     }
   }, [locations, props.caseId, updateLocation])
 
+  /**
+   * Saved pins picked from the map (including footprint polygon hits) skip `onEnsureFootprint` once an outline
+   * exists — so coordinate-only labels never got another reverse pass. Re-run geocode on each explicit map pick.
+   */
+  const tryResolveProvisionalAddressOnMapPick = useCallback(
+    (locationId: string) => {
+      const loc = locationsRef.current.find((l) => l.id === locationId)
+      if (!loc || !isProvisionalCanvassLabel(loc.addressText)) return
+      const id = loc.id
+      const lat0 = loc.lat
+      const lon0 = loc.lon
+      void (async () => {
+        const signal =
+          typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+            ? AbortSignal.timeout(12_000)
+            : undefined
+        const resolved = await reverseGeocodeAddressText(lat0, lon0, signal).catch(() => null)
+        if (!resolved?.trim() || isProvisionalCanvassLabel(resolved)) return
+        const still = locationsRef.current.find((l) => l.id === id)
+        if (!still || !isProvisionalCanvassLabel(still.addressText)) return
+        void updateLocation(actorId, id, { addressText: resolved.trim() })
+      })()
+    },
+    [actorId, updateLocation],
+  )
+
   const enqueueOutlineForLocation = useCallback(
     (locationId: string, lat: number, lon: number, addressText?: string | null, vectorTileBuildingRing?: LatLon[] | null) => {
       if (outlineDoneRef.current.has(locationId)) {
@@ -2239,13 +2276,14 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setWorkspaceViewMode('map')
       setSelectedId(l.id)
       setLocationDetailOpen(true)
+      tryResolveProvisionalAddressOnMapPick(l.id)
       closeMapToolsDock()
       window.setTimeout(() => {
         const m = mapRef.current
         if (m) m.flyTo(l.lat, l.lon, Math.max(m.getZoom(), 16), { duration: 0.55 })
       }, 50)
     },
-    [closeMapToolsDock, setWorkspaceCaseTab, setWorkspaceViewMode],
+    [closeMapToolsDock, setWorkspaceCaseTab, setWorkspaceViewMode, tryResolveProvisionalAddressOnMapPick],
   )
 
   const canManipulateTrackPointFn = useCallback(
@@ -2287,9 +2325,10 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
       setSelectedId(locationId)
       setLocationDetailOpen(true)
       setAddressMapModalOpen(true)
+      tryResolveProvisionalAddressOnMapPick(locationId)
       closeMapToolsDock()
     },
-    [locations, setWorkspaceCaseTab, setWorkspaceViewMode, closeMapToolsDock],
+    [locations, setWorkspaceCaseTab, setWorkspaceViewMode, closeMapToolsDock, tryResolveProvisionalAddressOnMapPick],
   )
   const onTrackPointDragEnd = useCallback(
     (pointId: string, lat: number, lon: number) => {
@@ -2435,7 +2474,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     position: 'absolute',
     left: `calc(max(10px, env(safe-area-inset-left, 0px)) + 44px + clamp(12px, 2.8vw, 24px))`,
     right: 'max(10px, env(safe-area-inset-right, 0px))',
-    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 8px)`,
+    bottom: MAP_FLOAT_BOTTOM_INSET,
     zIndex: 46,
     display: 'flex',
     justifyContent: 'center',
@@ -3324,7 +3363,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   })
 
   /** Match floating map top chrome — safe-area insets align with workspace padding. */
-  const narrowMapTopChromeInsetTopStr = 'max(4px, env(safe-area-inset-top, 0px))'
+  const narrowMapTopChromeInsetTopStr = NARROW_MAP_TOP_CHROME_INSET
   const narrowMapTopChromeInsetLeftStr = 'max(10px, env(safe-area-inset-left, 0px))'
   const narrowMapTopChromeInsetRightStr = 'max(10px, env(safe-area-inset-right, 0px))'
 
@@ -4365,7 +4404,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + max(10px, env(safe-area-inset-bottom, 0px)) + 18px)`,
+          bottom: MAP_FLOAT_BOTTOM_INSET,
           zIndex: 45,
           pointerEvents: 'none',
           display: 'flex',
@@ -4714,7 +4753,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                 <div
                   style={{
                     position: 'absolute',
-                    top: 'max(6px, env(safe-area-inset-top, 0px))',
+                    top: WIDE_MAP_TOP_CHROME_INSET,
                     left: 0,
                     right: 0,
                     zIndex: 45,
@@ -4873,7 +4912,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                           <div
                             style={{
                               position: 'absolute',
-                              top: `calc(max(4px, env(safe-area-inset-top, 0px)) + ${narrowMapTopRowHeightPx}px + 4px)`,
+                              top: `calc(${NARROW_MAP_TOP_CHROME_INSET} + ${narrowMapTopRowHeightPx}px + 4px)`,
                               left: 'max(10px, env(safe-area-inset-left, 0px))',
                               zIndex: 1,
                               width:
@@ -4965,6 +5004,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onSelectLocation={(id) => {
                       if (addrSearchBlocksMapInteraction || mapLeftToolDockOpen) return
                       onMapLocationPress(id)
+                      tryResolveProvisionalAddressOnMapPick(id)
                     }}
                     onEnsureFootprint={enqueueOutlineForLocation}
                     addrSearchBlocksMapClicks={addrSearchMapShieldActive}
@@ -5088,7 +5128,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       style={{
                         position: 'absolute',
                         left: 'max(10px, env(safe-area-inset-left, 0px))',
-                        bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + env(safe-area-inset-bottom, 0px) + 8px)`,
+                        bottom: MAP_FLOAT_BOTTOM_INSET,
                         zIndex: 44,
                         ...mapLayersGlassChipFaceStyle,
                         cursor: 'pointer',
