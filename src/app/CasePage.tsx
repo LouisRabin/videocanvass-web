@@ -206,10 +206,15 @@ const NARROW_MAP_TOP_CHROME_INSET = '10px'
 /** Wide map top slab: same rule as narrow (no second safe-area pass). */
 const WIDE_MAP_TOP_CHROME_INSET = '10px'
 /**
- * Bottom edge for narrow-map floats (basemap chip + Video/Subject bar): one shared offset so their baselines line up.
+ * Bottom edge for narrow-map floats (Video/Subject bar): parent is the full map card, so include attribution reserve.
  * Safe-area is on `body` already; only reserve map attribution + a small margin above it.
  */
 const MAP_FLOAT_BOTTOM_INSET = `calc(${MAP_CANVAS_BOTTOM_RESERVE} + 10px)`
+/**
+ * Floats anchored inside the map stack layer whose parent already sets `bottom: MAP_CANVAS_BOTTOM_RESERVE`.
+ * Using {@link MAP_FLOAT_BOTTOM_INSET} there double-counts the reserve and pushes UI toward the map center.
+ */
+const MAP_FLOAT_BOTTOM_INSET_IN_STACK = '10px'
 const MAP_BASEMAP_STORAGE_KEY = 'vc-case-map-basemap'
 
 function readStoredCaseMapBasemap(): VcCaseMapBasemapId {
@@ -2453,7 +2458,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     position: 'absolute',
     left: '14px',
     right: '14px',
-    bottom: `calc(${MAP_CANVAS_BOTTOM_RESERVE} + 10px + ${narrowMapBottomChromeHeightPx}px + clamp(22px, 4vw, 36px))`,
+    bottom: `calc(${MAP_FLOAT_BOTTOM_INSET_IN_STACK} + ${narrowMapBottomChromeHeightPx}px + clamp(22px, 4vw, 36px))`,
     zIndex: 44,
     pointerEvents: 'auto',
     isolation: 'isolate',
@@ -2475,7 +2480,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
     position: 'absolute',
     left: `calc(10px + 44px + clamp(12px, 2.8vw, 24px))`,
     right: '10px',
-    bottom: MAP_FLOAT_BOTTOM_INSET,
+    bottom: MAP_FLOAT_BOTTOM_INSET_IN_STACK,
     zIndex: 46,
     display: 'flex',
     justifyContent: 'center',
@@ -5129,7 +5134,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       style={{
                         position: 'absolute',
                         left: '10px',
-                        bottom: MAP_FLOAT_BOTTOM_INSET,
+                        bottom: MAP_FLOAT_BOTTOM_INSET_IN_STACK,
                         zIndex: 44,
                         ...mapLayersGlassChipFaceStyle,
                         cursor: 'pointer',
