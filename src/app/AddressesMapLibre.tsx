@@ -476,7 +476,10 @@ function collectCanvassLayerLocationsAtPointOrdered(
   return ordered
 }
 
-/** Top-most canvass feature at the pixel only (no screen/geo pools, footprint disambiguation, or `findHit`). */
+/**
+ * Top-most canvass feature at the pixel only (no screen/geo pools, footprint disambiguation, or `findHit`).
+ * Pin/circle layers win over building fills at the same pixel — taps there select an existing location, not “add new”.
+ */
 function resolveCanvassTapLocation(
   map: GlMap | null | undefined,
   point: { x: number; y: number },

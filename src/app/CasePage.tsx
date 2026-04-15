@@ -5028,7 +5028,17 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     onCanvassAddAddressResolved={(result) => {
                       setCanvassMapResultQueue((q) => {
                         const i = q.findIndex((x) => x.mode === 'new' && samePendingPin(x, result))
-                        if (i < 0) return q
+                        if (i < 0) {
+                          if (import.meta.env.DEV) {
+                            console.warn(
+                              '[VideoCanvass] onCanvassAddAddressResolved: no pending row matched lat/lon (check tap vs pin hit order)',
+                              result,
+                              'newRows',
+                              q.filter((x) => x.mode === 'new').map((x) => ({ lat: x.lat, lon: x.lon })),
+                            )
+                          }
+                          return q
+                        }
                         const cur = q[i]!
                         if (cur.mode !== 'new') return q
                         const text = result.addressText.trim()

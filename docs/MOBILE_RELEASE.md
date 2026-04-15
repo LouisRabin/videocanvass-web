@@ -41,6 +41,21 @@ For **store / device** native builds, set **`VITE_APP_SERVER_ORIGIN`** and **`VI
 - **[`ios/App/App/PrivacyInfo.xcprivacy`](../ios/App/App/PrivacyInfo.xcprivacy)** — bundled with the app target; declares no tracking. After **Archive**, if App Store Connect or Xcode flags **required-reason APIs** from a dependency, extend this file or follow the SDK vendor’s manifest guidance.
 - **`Info.plist`** — `NSPhotoLibraryUsageDescription` and `NSCameraUsageDescription` for case **image** attachments (`<input type="file" accept="image/*">`). **`UIRequiredDeviceCapabilities`** uses **`arm64`** (64-bit only).
 
+### 1.4 iOS: Is Apple “blocking” addresses after a footprint / map tap?
+
+**Usually no.** App Review does not disable geocode at runtime, and there is **no** separate iOS entitlement required for the app to **`fetch`** **`https://your-site/api/geocode/photon-reverse`** or **`nominatim-reverse`** from the Capacitor WebView.
+
+[`ios/App/App/Info.plist`](../ios/App/App/Info.plist) has **location** and **photo/camera** usage strings only—no custom **`NSAppTransportSecurity`** exceptions. Default **ATS** allows **HTTPS** to a valid public certificate.
+
+Reverse geocode in the client uses **HTTP to your deployed origin** (see [`src/lib/reverseGeocodeAddressTextStable.ts`](../src/lib/reverseGeocodeAddressTextStable.ts) and [`src/lib/appServerOrigin.ts`](../src/lib/appServerOrigin.ts)), not **`CLGeocoder`**, so **missing Location permission** does not explain a failure of that proxy path.
+
+**Typical real causes** (same as narrow web, not Apple-specific):
+
+1. **`VITE_APP_SERVER_ORIGIN` missing in the native bundle** — fix with `.env.production` on the Mac that runs `npm run build`, then `cap:sync` (see §1.1).
+2. **Server errors** — 403/500, TLS, DNS. Check **Safari → Develop →** *device* **→** WebView **Network** for `photon-reverse` / `nominatim-reverse`; run **`npm run verify:geocode-proxies -- https://your-public-site.com`** from the repo.
+3. **Strict CORS** on `/api/*` — allow the WebView origin pattern if you lock down headers (§1.1).
+4. **Tap hit-testing** — tap may select an **existing pin** instead of opening the “add new” flow ([`AddressesMapLibre.tsx`](../src/app/AddressesMapLibre.tsx) `resolveCanvassTapLocation`). In **dev**, a console warning exists if `onCanvassAddAddressResolved` cannot match a queue row ([`CasePage.tsx`](../src/app/CasePage.tsx)).
+
 ## 2. Copy/sync into native projects
 
 **Preferred (runs Capacitor CLI):**

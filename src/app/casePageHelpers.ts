@@ -41,8 +41,14 @@ export function newCanvassMapResultSessionKey(): string {
     : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+/**
+ * Match pending map-add rows to geocode callbacks. Uses 6 decimal places so tiny float drift
+ * (e.g. MapLibre lngLat vs stored queue coords) does not break `onCanvassAddAddressResolved` updates.
+ * Aligned with `pendingQueueGeoKeysRef` in CasePage (`lat.toFixed(6),lon.toFixed(6)`).
+ */
 export function samePendingPin(a: { lat: number; lon: number }, b: { lat: number; lon: number }) {
-  return a.lat === b.lat && a.lon === b.lon
+  const key = (lat: number, lon: number) => `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`
+  return key(a.lat, a.lon) === key(b.lat, b.lon)
 }
 
 /** Compact lat, lon for step headers, map chips, and notes context (five decimal places). */
