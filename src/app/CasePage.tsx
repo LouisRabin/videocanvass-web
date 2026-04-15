@@ -2449,9 +2449,16 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
    * - selection pill z-index stays above map content (markers/paths) but below modal dialogs.
    * - outside-dismiss treats the pill wrapper (`caseMapDetailOverlayRef`) as an interactive zone.
    */
-  /** Flush map canvas to card bottom on wide map views — removes idle white strip from bottom inset. */
+  /**
+   * Flush map canvas to card bottom — removes the idle frosted strip under the WebGL layer.
+   * Wide map tabs always use full bleed; narrow did not historically, which reads as a small empty “container”
+   * on phones (especially iOS) above the home indicator / mode bar.
+   */
   const wideMapUsesFullBleedMapCanvas = !isNarrow && (caseTab === 'tracking' || caseTab === 'addresses')
-  const mapStackBottom: CSSProperties['bottom'] = wideMapUsesFullBleedMapCanvas ? 0 : MAP_CANVAS_BOTTOM_RESERVE
+  const narrowMapUsesFullBleedMapCanvas =
+    isNarrow && (caseTab === 'tracking' || caseTab === 'addresses') && !showAddressesListBottomSheet
+  const mapStackBottom: CSSProperties['bottom'] =
+    wideMapUsesFullBleedMapCanvas || narrowMapUsesFullBleedMapCanvas ? 0 : MAP_CANVAS_BOTTOM_RESERVE
   /** Floating on map near page/card bottom with comfortable inset (above narrow mode bar when present). */
   /** Narrow: sibling of map layer (clears bottom mode bar). */
   const mapSelectionPillWrapStyle: CSSProperties = {
