@@ -1,0 +1,2 @@
+# macOS double-click shell must keep LF so the shebang works after checkout on Mac.
+ios/RunIosPrep.command text eol=lf

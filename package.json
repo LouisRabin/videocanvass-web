@@ -20,6 +20,7 @@
     "cap:open": "npx cap open ios",
     "cap:open:android": "npx cap open android",
     "verify:ios-git": "node scripts/verify-ios-git.cjs",
+    "verify:geocode-proxies": "node scripts/verify-geocode-proxies.mjs",
     "appetize:android": "powershell -ExecutionPolicy Bypass -File scripts/build-android-appetize.ps1",
     "appetize:ios": "bash scripts/build-ios-simulator-appetize.sh",
     "test:unit": "vitest run",

@@ -12,7 +12,7 @@ Goal: ship the **same** Vite `dist/` that the web app uses, inside the Capacitor
 
 From the **repo root** (`videocanvass-web`):
 
-1. **Production client env** — set the same `VITE_*` values you use on Vercel (at minimum `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_VC_RELATIONAL_BACKEND`, and `VITE_APP_SERVER_ORIGIN` pointing at your live site so `/api/*` geocode routes work in the app). Easiest: a local `.env.production` or export vars in the shell **before** step 2.
+1. **Production client env** — set the same `VITE_*` values you use on Vercel (at minimum `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_VC_RELATIONAL_BACKEND`, and **`VITE_APP_SERVER_ORIGIN`** pointing at your live site so `/api/geocode/*` works in the Capacitor WebView). **Vercel’s Environment Variables UI does not apply to `npm run build` on your Mac** — copy from the dashboard into a local **`.env.production`** (see [`.env.production.example`](../.env.production.example)), or export vars in the shell **before** step 2.
 2. **Build web assets:**  
    `npm run build`
 3. **Copy into the iOS project** (pick one):
@@ -45,3 +45,15 @@ Or open manually: **`ios/App/App.xcodeproj`**.
 ## 6. Performance profiling (optional)
 
 Use [`IOS_PROFILING_CHECKLIST.md`](IOS_PROFILING_CHECKLIST.md) with Safari **Develop** → device WebView to capture where CPU time goes before larger refactors.
+
+## 7. Verify geocode / address resolution (map tap → street address)
+
+**Hosted production (no phone):** from the repo root, hit the same `/api/geocode/*` routes the app uses after a map tap:
+
+```bash
+npm run verify:geocode-proxies -- https://www.your-deployed-site.com
+```
+
+**iOS still shows `Lat …, Lon …`:** attach **Safari → Develop →** *your simulator or device* **→** *VideoCanvass* (WKWebView). In the **Console**, search for **`VITE_APP_SERVER_ORIGIN is unset`** ([`src/lib/appServerOrigin.ts`](../src/lib/appServerOrigin.ts)). In the **Network** tab, confirm requests go to **`https://your-site.com/api/geocode/photon-reverse`** (not `capacitor://` alone). With **`VITE_VC_DEBUG=true`** in the build, the fixed footer shows **`api_origin_host=…`** or an empty-origin warning ([`src/lib/buildDebug.ts`](../src/lib/buildDebug.ts)).
+
+See also [`docs/MOBILE_RELEASE.md`](MOBILE_RELEASE.md) §1.1 (`VITE_APP_SERVER_ORIGIN`).

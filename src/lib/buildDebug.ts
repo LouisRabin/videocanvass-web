@@ -1,4 +1,5 @@
 import { relationalBackendEnabled, relationalBackendEnvRaw, relationalBackendFlagParsed } from './backendMode'
+import { getAppServerOrigin } from './appServerOrigin'
 import { hasSupabaseConfig } from './supabase'
 
 export function vcDebugEnabled(): boolean {
@@ -19,5 +20,14 @@ export function vcBuildDebugSummary(): string {
   }
   const rawFlag = relationalBackendEnvRaw()
   const flagNote = rawFlag === '' ? 'empty' : 'set'
-  return `relational=${rel} rel_flag=${relationalBackendFlagParsed()} rel_flag_raw=${flagNote} supabase_host=${host} has_supabase_config=${hasSupabaseConfig}`
+  const apiOrigin = (() => {
+    try {
+      const o = getAppServerOrigin().trim()
+      if (!o) return 'api_origin=(empty—Capacitor geocode needs VITE_APP_SERVER_ORIGIN)'
+      return `api_origin_host=${new URL(o).host}`
+    } catch {
+      return 'api_origin=(invalid)'
+    }
+  })()
+  return `relational=${rel} rel_flag=${relationalBackendFlagParsed()} rel_flag_raw=${flagNote} supabase_host=${host} has_supabase_config=${hasSupabaseConfig} ${apiOrigin}`
 }

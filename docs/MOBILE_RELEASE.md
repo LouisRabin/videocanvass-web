@@ -20,6 +20,8 @@ Set at **build time** (same machine/CI as `npm run build` → `cap:sync`):
 
 Implementation: [`src/lib/appServerOrigin.ts`](../src/lib/appServerOrigin.ts). **Hosted web** builds can omit this variable; the client keeps using `window.location.origin`.
 
+To confirm your **deployed** site exposes the geocode proxies (Photon + Nominatim reverse), run from the repo root: **`npm run verify:geocode-proxies -- https://your-public-site.com`** (see [`package.json`](../package.json) script `verify:geocode-proxies`).
+
 If you add strict **CORS** on `/api/*` later, allow the Capacitor WebView origin pattern as needed.
 
 ### 1.1b `VITE_VC_SITE_URL` (native password reset `redirectTo`)
