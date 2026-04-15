@@ -1,10 +1,13 @@
+import { handleGeocodeOptions, withGeocodeCors } from './_cors.js'
 import { NOMINATIM_USER_AGENT } from './_proxyHeaders.js'
 
 export const config = { runtime: 'edge' }
 
 export default async function handler(request: Request): Promise<Response> {
+  const preflight = handleGeocodeOptions(request)
+  if (preflight) return preflight
   if (request.method !== 'GET') {
-    return new Response('Method Not Allowed', { status: 405 })
+    return withGeocodeCors(new Response('Method Not Allowed', { status: 405 }))
   }
   const incoming = new URL(request.url)
   const target = new URL('https://nominatim.openstreetmap.org/search')
@@ -18,5 +21,5 @@ export default async function handler(request: Request): Promise<Response> {
   })
   const body = await upstream.arrayBuffer()
   const ct = upstream.headers.get('Content-Type') ?? 'application/json'
-  return new Response(body, { status: upstream.status, headers: { 'Content-Type': ct } })
+  return withGeocodeCors(new Response(body, { status: upstream.status, headers: { 'Content-Type': ct } }))
 }

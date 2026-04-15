@@ -52,12 +52,15 @@ async function check(name, url) {
       jsonOk = false
     }
   }
-  const ok = res.ok && jsonOk
+  const acao = res.headers.get('access-control-allow-origin')
+  const corsOk = !!acao
+  const ok = res.ok && jsonOk && corsOk
   const status = `${res.status} ${res.statusText}`
   if (!ok) {
-    console.error(`[FAIL] ${name}\n  GET ${url}\n  ${status}\n  body (first 200 chars): ${text.slice(0, 200)}`)
+    const corsHint = !corsOk ? '\n  missing Access-Control-Allow-Origin (Capacitor WebView CORS will fail)' : ''
+    console.error(`[FAIL] ${name}\n  GET ${url}\n  ${status}${corsHint}\n  body (first 200 chars): ${text.slice(0, 200)}`)
   } else {
-    console.log(`[OK] ${name} — ${status}`)
+    console.log(`[OK] ${name} — ${status} — ACAO: ${acao}`)
   }
   return ok
 }
