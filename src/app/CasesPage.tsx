@@ -16,7 +16,6 @@ import { relationalBackendEnabled } from '../lib/backendMode'
 import { supabase } from '../lib/supabase'
 import { appUserFromVcProfileRow, type VcProfileRow } from '../lib/relational/sync'
 import { useTargetMode } from '../lib/targetMode'
-import { MfaEnrollmentModal } from './MfaEnrollmentModal'
 import { useTour } from './tour/TourContext'
 import { SHOW_TOUR_FIRST_RUN_PROMPT, TOUR_UI_ENABLED } from './tour/tourFlags'
 import { readTourFlag, tourCasesDoneKey, TOUR_CASES_PROMPT_DISMISSED_KEY, writeTourFlag } from './tour/tourStorage'
@@ -519,7 +518,6 @@ export function CasesPage(props: {
   onLogout: () => void
   onOpenAdminGlobal?: () => void
 }) {
-  const [mfaSecurityOpen, setMfaSecurityOpen] = useState(false)
   const tourTargetMode = useTargetMode()
   const { startTour, tourOpen } = useTour()
   const [showCasesTourBanner, setShowCasesTourBanner] = useState(false)
@@ -711,7 +709,6 @@ export function CasesPage(props: {
   )
 
   return (
-    <>
     <Layout
       mainScroll="hidden"
       title="Cases"
@@ -740,11 +737,6 @@ export function CasesPage(props: {
           {props.onOpenAdminGlobal ? (
             <button type="button" onClick={props.onOpenAdminGlobal} style={vcGlassHeaderBtn}>
               Global results
-            </button>
-          ) : null}
-          {relationalBackendEnabled() ? (
-            <button type="button" onClick={() => setMfaSecurityOpen(true)} style={vcGlassHeaderBtn}>
-              Security / 2FA
             </button>
           ) : null}
           <button onClick={props.onLogout} style={vcGlassHeaderBtn}>
@@ -1361,8 +1353,6 @@ export function CasesPage(props: {
         </div>
       )}
     </Layout>
-    <MfaEnrollmentModal open={mfaSecurityOpen} onClose={() => setMfaSecurityOpen(false)} onFactorsChanged={() => {}} />
-    </>
   )
 }
 

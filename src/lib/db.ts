@@ -580,6 +580,43 @@ async function loadLocalDataBounded(ms: number): Promise<AppData | null> {
   }
 }
 
+function normUuidKey(s: string): string {
+  return s.trim().toLowerCase()
+}
+
+/** True when IndexedDB payload plausibly belongs to the signed-in user (avoids flashing another account after switch). */
+function localIndexedDbCacheMatchesSession(data: AppData, sessionUserId: string): boolean {
+  const sid = normUuidKey(sessionUserId)
+  if (!sid) return false
+  if (data.users.some((u) => normUuidKey(u.id) === sid)) return true
+  if (data.cases.some((c) => normUuidKey(c.ownerUserId) === sid)) return true
+  if (data.caseCollaborators.some((cc) => normUuidKey(cc.userId) === sid)) return true
+  return false
+}
+
+const RELATIONAL_LOCAL_CACHE_FIRST_MS = 3200
+
+/**
+ * Relational mode: return normalized local cache quickly when session matches stored rows.
+ * Used for first paint; caller should merge remote shortly after (`pullAndMergeWithLocal` / `loadData`).
+ */
+export async function tryRelationalLocalCacheForSession(): Promise<AppData | null> {
+  if (!relationalBackendEnabled() || !supabase) return null
+  const sessionOrTimeout = await Promise.race([
+    getUsableSessionOrSignOut(supabase).then((s) => ({ tag: 'ok' as const, s })),
+    new Promise<{ tag: 'timeout' }>((resolve) => {
+      setTimeout(() => resolve({ tag: 'timeout' }), RELATIONAL_SESSION_READY_MS)
+    }),
+  ])
+  if (sessionOrTimeout.tag === 'timeout' || !sessionOrTimeout.s?.user?.id) return null
+  const uid = sessionOrTimeout.s.user.id
+  const local = await loadLocalDataBounded(RELATIONAL_LOCAL_CACHE_FIRST_MS)
+  if (!local) return null
+  const normalized = normalizeAppData(local)
+  if (!localIndexedDbCacheMatchesSession(normalized, uid)) return null
+  return normalized
+}
+
 /** Server row `updated_at` for change detection (avoids downloading full payload every poll when unchanged). */
 export async function fetchRemotePayloadUpdatedAt(): Promise<string | null> {
   if (relationalBackendEnabled()) return null

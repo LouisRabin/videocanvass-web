@@ -60,6 +60,8 @@ export const VIEWPORT_OUTLINE_PRELOAD_MAX = 24
 export const MAP_DETAIL_MIN_ZOOM = 14
 /** Opening the case map on the last selected canvass pin or track step (localStorage). */
 export const MAP_RESUME_FOCUS_ZOOM = 17
+/** Cap scroll / gesture zoom so basemap tiles are not stretched past reliable coverage. */
+export const VC_MAP_MAX_ZOOM = 19
 
 export function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
   const ds = a.sequence - b.sequence

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import MapGL, { Layer, NavigationControl, Source } from 'react-map-gl/maplibre'
 import type { FeatureCollection } from 'geojson'
 import { Layout } from './Layout'
-import { CARTO_VOYAGER_STYLE } from './addressesMapLibreHelpers'
+import { CARTO_VOYAGER_STYLE, VC_MAP_MAX_ZOOM } from './addressesMapLibreHelpers'
 import { relationalBackendEnabled } from '../lib/backendMode'
 import { supabase } from '../lib/supabase'
 import {
@@ -210,6 +210,7 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
               key={`${rows.length}:${rows[0]?.id ?? ''}`}
               initialViewState={mapInitialViewState}
               mapStyle={CARTO_VOYAGER_STYLE}
+              maxZoom={VC_MAP_MAX_ZOOM}
               style={{ width: '100%', height: '100%' }}
             >
               <NavigationControl position="top-left" showCompass={false} />

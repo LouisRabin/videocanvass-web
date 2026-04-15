@@ -7,6 +7,7 @@ import {
   normalizeAppData,
   pullAndMergeWithLocal,
   saveData,
+  tryRelationalLocalCacheForSession,
   writeLocalDataCache,
 } from './db'
 import { relationalBackendEnabled } from './backendMode'
@@ -237,36 +238,83 @@ export function StoreProvider(props: { children: React.ReactNode }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
+      let usedLocalFirst = false
       try {
-        const loaded = await new Promise<AppData>((resolve, reject) => {
-          const t = setTimeout(() => {
-            reject(new Error(`Store bootstrap timed out after ${STORE_BOOTSTRAP_TIMEOUT_MS}ms`))
-          }, STORE_BOOTSTRAP_TIMEOUT_MS)
-          loadData()
-            .then((v) => {
-              clearTimeout(t)
-              resolve(v)
-            })
-            .catch((e) => {
-              clearTimeout(t)
-              reject(e)
-            })
-        })
-        const d = ensurePocUsers(loaded)
-        if (!alive) return
-        dataRef.current = d
-        setData(d)
-        // Avoid blind startup writes that can accidentally overwrite shared cloud
-        // state if a transient load/parsing issue occurred.
-        const usersWereSeeded = loaded.users.length === 0 && d.users.length > 0
-        if (usersWereSeeded) {
-          try {
-            const canonical = await saveData(d)
-            if (!alive) return
-            dataRef.current = canonical
-            setData(canonical)
-          } catch (e) {
-            console.warn('Initial POC seed save failed:', e)
+        if (relationalBackendEnabled()) {
+          const early = await tryRelationalLocalCacheForSession()
+          if (alive && early) {
+            usedLocalFirst = true
+            let d = ensurePocUsers(early)
+            dataRef.current = d
+            setData(d)
+            const usersWereSeeded = early.users.length === 0 && d.users.length > 0
+            if (usersWereSeeded) {
+              try {
+                const canonical = await saveData(d)
+                if (!alive) return
+                dataRef.current = canonical
+                setData(canonical)
+                d = canonical
+              } catch (e) {
+                console.warn('Initial POC seed save failed:', e)
+              }
+            }
+            void (async () => {
+              try {
+                const merged = await pullAndMergeWithLocal(dataRef.current)
+                if (!alive) return
+                if (merged) {
+                  const next = ensurePocUsers(merged)
+                  dataRef.current = next
+                  setData(next)
+                  await writeLocalDataCache(next)
+                  setSyncStatus({ mode: 'supabase_ok' })
+                  return
+                }
+                const fresh = await loadData()
+                if (!alive) return
+                const next = ensurePocUsers(fresh)
+                dataRef.current = next
+                setData(next)
+                await writeLocalDataCache(next)
+              } catch (e) {
+                console.warn('Relational background bootstrap merge failed:', e)
+              }
+            })()
+          }
+        }
+
+        if (!usedLocalFirst) {
+          const loaded = await new Promise<AppData>((resolve, reject) => {
+            const t = setTimeout(() => {
+              reject(new Error(`Store bootstrap timed out after ${STORE_BOOTSTRAP_TIMEOUT_MS}ms`))
+            }, STORE_BOOTSTRAP_TIMEOUT_MS)
+            loadData()
+              .then((v) => {
+                clearTimeout(t)
+                resolve(v)
+              })
+              .catch((e) => {
+                clearTimeout(t)
+                reject(e)
+              })
+          })
+          const d = ensurePocUsers(loaded)
+          if (!alive) return
+          dataRef.current = d
+          setData(d)
+          // Avoid blind startup writes that can accidentally overwrite shared cloud
+          // state if a transient load/parsing issue occurred.
+          const usersWereSeeded = loaded.users.length === 0 && d.users.length > 0
+          if (usersWereSeeded) {
+            try {
+              const canonical = await saveData(d)
+              if (!alive) return
+              dataRef.current = canonical
+              setData(canonical)
+            } catch (e) {
+              console.warn('Initial POC seed save failed:', e)
+            }
           }
         }
       } catch (e) {

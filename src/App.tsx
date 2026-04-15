@@ -92,19 +92,17 @@ function readNavRouteFromStorage(userId: string, allowAdminGlobal: boolean): App
   return { name: 'cases' }
 }
 
+function VcStartupMark() {
+  return (
+    <div className="vc-startup-mark-wrap" role="status" aria-busy="true" aria-label="Starting application">
+      <div className="vc-startup-mark" aria-hidden />
+    </div>
+  )
+}
+
 const routeSuspenseFallback = (
-  <div
-    style={{
-      flex: 1,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      color: vcGlassFgMutedOnPanel,
-      fontWeight: 700,
-      fontSize: 14,
-    }}
-  >
-    Loading…
+  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    <VcStartupMark />
   </div>
 )
 
@@ -319,10 +317,40 @@ function SessionGate() {
     [data.users, mockUserId],
   )
 
+  useEffect(() => {
+    if (!ready) return
+    if (relationalBackendEnabled()) {
+      if (!authResolved || !sessionUserId || awaitingPasswordReset) return
+      if (mfaGate !== 'off') return
+    } else if (!mockUserId) {
+      return
+    }
+    let idleId: number | undefined
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(
+        () => {
+          void import('./app/CasePage')
+        },
+        { timeout: 2500 },
+      )
+    } else {
+      timeoutId = window.setTimeout(() => {
+        void import('./app/CasePage')
+      }, 450)
+    }
+    return () => {
+      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timeoutId != null) clearTimeout(timeoutId)
+    }
+  }, [ready, authResolved, sessionUserId, mockUserId, awaitingPasswordReset, mfaGate])
+
   if (!ready) {
     return (
       <Layout title="VideoCanvass">
-        <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
+        <VcStartupMark />
       </Layout>
     )
   }
@@ -331,7 +359,7 @@ function SessionGate() {
     if (!authResolved) {
       return (
         <Layout title="VideoCanvass">
-          <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
+          <VcStartupMark />
         </Layout>
       )
     }
@@ -354,7 +382,7 @@ function SessionGate() {
     if (mfaGate === 'checking') {
       return (
         <Layout title="VideoCanvass" subtitle="Checking security…">
-          <div style={{ color: vcGlassFgMutedOnPanel }}>Loading…</div>
+          <VcStartupMark />
         </Layout>
       )
     }
@@ -396,7 +424,7 @@ function SessionGate() {
     if (!relationalUser) {
       return (
         <Layout title="VideoCanvass">
-          <div style={{ color: vcGlassFgMutedOnPanel }}>Loading profile…</div>
+          <VcStartupMark />
         </Layout>
       )
     }

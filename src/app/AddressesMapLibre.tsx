@@ -71,6 +71,7 @@ import {
   MAP_DETAIL_MIN_ZOOM,
   MAP_RESUME_FOCUS_ZOOM,
   sortTrackPointsStable,
+  VC_MAP_MAX_ZOOM,
   VIEWPORT_OUTLINE_PRELOAD_BOUNDS_PAD,
   VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS,
   VIEWPORT_OUTLINE_PRELOAD_MAX,
@@ -772,7 +773,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       flyTo(lat, lon, zoom, opts) {
         const map = mapRef.current?.getMap()
         if (!map) return
-        map.flyTo({ center: [lon, lat], zoom, duration: (opts?.duration ?? 0.6) * 1000 })
+        const z = Math.min(zoom, VC_MAP_MAX_ZOOM)
+        map.flyTo({ center: [lon, lat], zoom: z, duration: (opts?.duration ?? 0.6) * 1000 })
       },
       fitBounds(bounds) {
         const map = mapRef.current?.getMap()
@@ -1050,7 +1052,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
             if (!m) return
             m.flyTo({
               center: [pos.coords.longitude, pos.coords.latitude],
-              zoom: Math.max(m.getZoom(), 16),
+              zoom: Math.min(Math.max(m.getZoom(), 16), VC_MAP_MAX_ZOOM),
               duration: 600,
             })
             setMapZoom(m.getZoom())
@@ -1444,7 +1446,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
               const curZ = map.getZoom()
               map.easeTo({
                 center: [e.lngLat.lng, e.lngLat.lat],
-                zoom: Math.min(curZ + 1.25, 22),
+                zoom: Math.min(curZ + 1.25, VC_MAP_MAX_ZOOM),
                 duration: 240,
               })
             }
@@ -1455,7 +1457,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
             const curZ = map.getZoom()
             map.easeTo({
               center: [e.lngLat.lng, e.lngLat.lat],
-              zoom: Math.min(curZ + 1.25, 22),
+              zoom: Math.min(curZ + 1.25, VC_MAP_MAX_ZOOM),
               duration: 240,
             })
           }
@@ -1560,6 +1562,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         ref={mapRef}
         initialViewState={initialViewState}
         mapStyle={mapStyle}
+        maxZoom={VC_MAP_MAX_ZOOM}
         /** Required for PDF export: default WebGL clears the drawing buffer after compositing, so `toDataURL` is often blank. */
         canvasContextAttributes={{ preserveDrawingBuffer: true }}
         style={{ width: '100%', height: '100%' }}

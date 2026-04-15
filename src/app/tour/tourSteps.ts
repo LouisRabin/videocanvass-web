@@ -40,7 +40,7 @@ const CASES_STEPS: TourStepDef[] = [
   {
     id: 'cases-actions',
     title: 'Toolbar actions',
-    body: 'Open global results (if available), adjust security / 2FA, or sign out from the top-right. Create a new case from + New beside Status under the case list tabs.',
+    body: 'Open global results (if available) or sign out from the top-right. Create a new case from + New beside Status under the case list tabs.',
     target: VC_TOUR.casesActions,
     placement: 'bottom',
     variants: ['both'],
