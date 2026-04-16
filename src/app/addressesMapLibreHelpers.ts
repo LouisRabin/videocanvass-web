@@ -1,4 +1,4 @@
-import type { StyleSpecification } from 'maplibre-gl'
+import type { Map as GlMap, StyleSpecification } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Position } from 'geojson'
 import L from 'leaflet'
 
@@ -58,10 +58,35 @@ export const VIEWPORT_OUTLINE_PRELOAD_MAX = 24
 
 /** At zoom &lt; this: React track waypoint markers and time chips are hidden (WebGL route pins still draw). */
 export const MAP_DETAIL_MIN_ZOOM = 14
+/** GeoJSON clustering is computed up to this zoom (exclusive of `MAP_DETAIL_MIN_ZOOM`). */
+export const MAP_CLUSTER_MAX_ZOOM = MAP_DETAIL_MIN_ZOOM - 1
+/** Screen pixels — Carto-scale case maps; tweak for denser/sparser clumps. */
+export const MAP_CLUSTER_RADIUS = 56
 /** Opening the case map on the last selected canvass pin or track step (localStorage). */
 export const MAP_RESUME_FOCUS_ZOOM = 17
 /** Cap scroll / gesture zoom so basemap tiles are not stretched past reliable coverage. */
 export const VC_MAP_MAX_ZOOM = 19
+
+/**
+ * Carto GL stacks `building` + `building-top` (roof highlight). `building-top` uses a zoom-based
+ * `fill-translate` in **screen pixels** so it never quite matches GeoJSON footprints from the same
+ * tiles. We zero that translate everywhere it exists, and on **Voyager** we hide `building-top`
+ * entirely so the visible mass is the untranslated `building` fill (same ring as saved outlines).
+ * Dark Matter needs `building-top` (the base `building` fill is transparent at high zoom).
+ */
+export function patchCartoBuildingTopFootprintAlignment(map: GlMap) {
+  try {
+    if (!map.isStyleLoaded()) return
+    if (!map.getLayer('building-top')) return
+    const styleName = map.getStyle()?.name
+    const isVoyager = styleName === 'Voyager'
+
+    map.setPaintProperty('building-top', 'fill-translate', [0, 0])
+    map.setLayoutProperty('building-top', 'visibility', isVoyager ? 'none' : 'visible')
+  } catch {
+    /* non-Carto style or paint schema change */
+  }
+}
 
 export function sortTrackPointsStable(a: TrackPoint, b: TrackPoint): number {
   const ds = a.sequence - b.sequence
@@ -154,10 +179,10 @@ export function buildCanvassCollection(
           id: l.id,
           kind: 'footprint',
           fill: c,
-          fillOpacity: sel ? 0.72 : 0.38,
+          fillOpacity: sel ? 0.76 : 0.48,
           line: sel ? c : '#ffffff',
-          lineWidth: sel ? 3.5 : 2,
-          lineOpacity: sel ? 0.95 : 0.75,
+          lineWidth: sel ? 3 : 1.25,
+          lineOpacity: sel ? 0.95 : 0.62,
         },
         geometry: { type: 'Polygon', coordinates: [ring] },
       })
@@ -185,6 +210,46 @@ export function buildCanvassCollection(
         lineOpacity: sel ? 0.95 : 0,
       },
       geometry: { type: 'Polygon', coordinates: [ring] },
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
+function footprintBBoxCenterLonLat(footprint: NonNullable<Location['footprint']>): { lat: number; lon: number } {
+  let minLat = footprint[0]![0]
+  let maxLat = minLat
+  let minLon = footprint[0]![1]
+  let maxLon = minLon
+  for (const [la, lo] of footprint) {
+    minLat = Math.min(minLat, la)
+    maxLat = Math.max(maxLat, la)
+    minLon = Math.min(minLon, lo)
+    maxLon = Math.max(maxLon, lo)
+  }
+  return { lat: (minLat + maxLat) / 2, lon: (minLon + maxLon) / 2 }
+}
+
+/** One point per canvass pin for MapLibre `cluster` (centroid when a footprint exists). */
+export function buildAddressClusterPointCollection(
+  mapPins: Location[],
+  selectedId: string | null,
+): FeatureCollection {
+  const features: FeatureCollection['features'] = []
+  for (const l of mapPins) {
+    const sel = l.id === selectedId
+    const c = statusColor(l.status)
+    const { lat, lon } =
+      l.footprint && l.footprint.length >= 3 ? footprintBBoxCenterLonLat(l.footprint) : { lat: l.lat, lon: l.lon }
+    features.push({
+      type: 'Feature',
+      id: l.id,
+      properties: {
+        id: l.id,
+        color: c,
+        radius: sel ? 8 : 5.5,
+        strokeW: sel ? 2.5 : 2,
+      },
+      geometry: { type: 'Point', coordinates: [lon, lat] },
     })
   }
   return { type: 'FeatureCollection', features }

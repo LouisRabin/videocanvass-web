@@ -21,3 +21,15 @@ export function useMediaQuery(query: string): boolean {
 
   return matches
 }
+
+/**
+ * iPhone / Android UA, iPad (any UA), and iPadOS “desktop” Safari (Macintosh + touch points).
+ * Used so map UI does not rely only on {@link MOBILE_BREAKPOINT_QUERY} (iPad landscape is often &gt; 768px).
+ */
+export function shouldHideMaplibreAttributionForTouchUi(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent
+  if (/iphone|ipod|ipad|android/i.test(ua)) return true
+  if (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return true
+  return false
+}

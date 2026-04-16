@@ -1,11 +1,6 @@
-import React, { useMemo, useState } from 'react'
+import React from 'react'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
-import { useSyncStatus } from '../lib/syncStatus'
-import { relationalBackendEnabled } from '../lib/backendMode'
 import { vcGlassFgMutedOnPanel, vcGlassFgOnPanel, vcLiquidGlassAppHeader } from '../lib/vcLiquidGlass'
-import { vcBuildDebugSummary } from '../lib/buildDebug'
-import { SHARED_WORKSPACE_ID } from '../lib/supabase'
-import { Modal } from './Modal'
 
 export function Layout(props: {
   title?: React.ReactNode
@@ -33,35 +28,6 @@ export function Layout(props: {
   const mainPad = dense
     ? 'var(--vc-pad-main-dense-y) var(--vc-pad-main-dense-x)'
     : 'var(--vc-pad-main-y) var(--vc-pad-main-x)'
-  const sync = useSyncStatus()
-  const [syncDiagOpen, setSyncDiagOpen] = useState(false)
-
-  const syncLabel = sync.mode === 'supabase_ok' ? 'Sync: OK' : sync.mode === 'local_fallback' ? 'Sync: issue' : 'Sync: starting'
-  const syncTitleDetail = sync.message.trim() ? ` — ${sync.message}` : ''
-  const syncButtonTitle = `${syncLabel}${syncTitleDetail} — click for diagnostics`
-
-  const syncDotColor =
-    sync.mode === 'supabase_ok' ? '#16a34a' : sync.mode === 'local_fallback' ? '#d97706' : '#6b7280'
-
-  const diagnosticsText = useMemo(() => {
-    const relational = relationalBackendEnabled()
-    return JSON.stringify(
-      {
-        mode: sync.mode,
-        message: sync.message.trim() || null,
-        lastError: sync.lastError,
-        pendingRemoteSaves: sync.pendingRemoteSaves,
-        relationalBackend: relational,
-        updatedAtIso: new Date(sync.updatedAt).toISOString(),
-        sharedWorkspaceId: SHARED_WORKSPACE_ID,
-        build: vcBuildDebugSummary(),
-        debugLog: sync.debugLines,
-      },
-      null,
-      2,
-    )
-  }, [sync])
-
   const titleAlign = props.titleAlign ?? 'start'
   const centerTitle = titleAlign === 'center'
   const headerChrome = (
@@ -76,82 +42,6 @@ export function Layout(props: {
       }}
     >
       {props.right}
-      <button
-        type="button"
-        title={syncButtonTitle}
-        aria-label={`${syncLabel}. ${sync.message.trim() || 'No status message.'} Open sync diagnostics.`}
-        aria-expanded={syncDiagOpen}
-        onClick={() => setSyncDiagOpen(true)}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 'clamp(22px, 5.5vw, 26px)',
-          height: 'clamp(22px, 5.5vw, 26px)',
-          padding: 0,
-          border: '1px solid rgba(255,255,255,0.28)',
-          borderRadius: 999,
-          background: 'rgba(255,255,255,0.12)',
-          cursor: 'pointer',
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: 999,
-            background: syncDotColor,
-            boxShadow: `0 0 0 2px ${syncDotColor}33`,
-          }}
-        />
-      </button>
-      <Modal
-        title="Sync diagnostics"
-        ariaLabel="Sync diagnostics"
-        open={syncDiagOpen}
-        onClose={() => setSyncDiagOpen(false)}
-        wide
-      >
-        <p style={{ margin: '0 0 10px', fontSize: 13, lineHeight: 1.45, opacity: 0.92 }}>
-          Copy this block when reporting sync or database issues. It does not include API keys.
-        </p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-          <button
-            type="button"
-            onClick={() => void navigator.clipboard?.writeText(diagnosticsText)}
-            style={{
-              border: '1px solid rgba(255,255,255,0.35)',
-              borderRadius: 10,
-              padding: '8px 12px',
-              background: 'rgba(255,255,255,0.12)',
-              color: '#f8fafc',
-              cursor: 'pointer',
-              fontWeight: 700,
-              fontSize: 13,
-            }}
-          >
-            Copy to clipboard
-          </button>
-        </div>
-        <pre
-          style={{
-            margin: 0,
-            padding: 12,
-            borderRadius: 10,
-            background: 'rgba(15,23,42,0.55)',
-            border: '1px solid rgba(255,255,255,0.12)',
-            fontSize: 11,
-            lineHeight: 1.4,
-            overflow: 'auto',
-            maxHeight: 'min(52vh, 420px)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {diagnosticsText}
-        </pre>
-      </Modal>
     </div>
   )
 

@@ -4,7 +4,7 @@ import type { LatLon } from './types'
 /** Carto Voyager GL style — building extrusion / fill layers. */
 export const CARTO_VECTOR_BUILDING_LAYER_IDS = ['building', 'building-top'] as const
 
-function pointInPolygonLatLon(point: LatLon, polygon: LatLon[]): boolean {
+export function pointInPolygonLatLon(point: LatLon, polygon: LatLon[]): boolean {
   const [py, px] = point
   let inside = false
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -16,7 +16,7 @@ function pointInPolygonLatLon(point: LatLon, polygon: LatLon[]): boolean {
   return inside
 }
 
-function ringAreaSqMetersApprox(ring: LatLon[]): number {
+export function ringAreaSqMetersApprox(ring: LatLon[]): number {
   if (ring.length < 3) return Number.POSITIVE_INFINITY
   let avgLat = 0
   for (const [la] of ring) avgLat += la

@@ -203,3 +203,8 @@ button {
   box-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
   animation: vc-startup-pulse 1.15s ease-in-out infinite;
 }
+
+/* MapLibre compact attribution (“i”) — hide on touch-first UIs when parent opts in (see `shouldHideMaplibreAttributionForTouchUi`). */
+[data-vc-hide-map-attribution='true'] .maplibregl-ctrl-attrib {
+  display: none !important;
+}

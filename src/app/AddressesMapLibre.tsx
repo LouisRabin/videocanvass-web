@@ -22,6 +22,8 @@ import { reverseGeocodeAddressText } from '../lib/geocode'
 import {
   buildingFootprintRingFromRenderedFeatures,
   CARTO_VECTOR_BUILDING_LAYER_IDS,
+  pointInPolygonLatLon,
+  ringAreaSqMetersApprox,
 } from '../lib/vectorTileBuilding'
 
 // See docs/CODEMAP.md; geocode/footprint policy in docs/HANDOFF.md.
@@ -62,12 +64,15 @@ function collapseMaplibreAttributionToCompactChip(map: GlMap) {
  */
 
 import {
+  buildAddressClusterPointCollection,
   buildCanvassCollection,
   buildPinCollection,
   buildTrackWaypointClusterCollection,
   buildTracksData,
   extendBoundsWithLocations,
   extendBoundsWithPathPoints,
+  MAP_CLUSTER_MAX_ZOOM,
+  MAP_CLUSTER_RADIUS,
   MAP_DETAIL_MIN_ZOOM,
   MAP_RESUME_FOCUS_ZOOM,
   sortTrackPointsStable,
@@ -75,6 +80,7 @@ import {
   VIEWPORT_OUTLINE_PRELOAD_BOUNDS_PAD,
   VIEWPORT_OUTLINE_PRELOAD_DEBOUNCE_MS,
   VIEWPORT_OUTLINE_PRELOAD_MAX,
+  patchCartoBuildingTopFootprintAlignment,
   resolveCaseMapBasemapStyle,
   type VcCaseMapBasemapId,
 } from './addressesMapLibreHelpers'
@@ -108,9 +114,21 @@ export type UnifiedCaseMapHandle = {
 }
 
 /** Layer ids owned by this map for export visibility toggling (ignore if missing in style). */
-const EXPORT_CANVASS_LAYERS = ['canvass-fill', 'canvass-outline', 'canvass-pin-circles'] as const
+const EXPORT_CANVASS_LAYERS = [
+  'canvass-fill',
+  'canvass-outline',
+  'canvass-pin-circles',
+  'canvass-clusters',
+  'canvass-cluster-count',
+  'canvass-cluster-unclustered',
+] as const
 const EXPORT_TRACK_LINE_LAYERS = ['travel-line-layer-subject', 'travel-line-layer-coordinate'] as const
-const EXPORT_TRACK_POINT_LAYERS = ['track-wpts-unclustered', 'track-wpts-stepnum'] as const
+const EXPORT_TRACK_POINT_LAYERS = [
+  'track-wpts-unclustered',
+  'track-wpts-stepnum',
+  'track-wpts-clusters',
+  'track-wpts-cluster-count',
+] as const
 const EXPORT_HEAT_LAYER = 'visit-heat-layer'
 
 const EXPORT_ALL_TOGGLE_LAYERS = [
@@ -135,6 +153,77 @@ function trySetLayerVisibility(map: GlMap, layerId: string, visibility: 'visible
   } catch {
     /* layer may not exist (heatmap off, etc.) */
   }
+}
+
+/** MapLibre GeoJSON source with clustering (method optional for older typings). */
+type GeoJsonClusterSourceLike = {
+  getClusterExpansionZoom?: (clusterId: number) => Promise<number>
+}
+
+/**
+ * Low-zoom: tap a merged cluster → ease to expansion zoom so individual pins/footprints can be picked.
+ * Returns true when a cluster was hit (consumes the click).
+ */
+function tryHandleClusterClickZoom(map: GlMap, e: MapLayerMouseEvent): boolean {
+  if (map.getZoom() >= MAP_DETAIL_MIN_ZOOM) return false
+  let feats: ReturnType<GlMap['queryRenderedFeatures']>
+  try {
+    feats = map.queryRenderedFeatures([e.point.x, e.point.y], {
+      layers: ['canvass-clusters', 'track-wpts-clusters'],
+    })
+  } catch {
+    return false
+  }
+  const top = feats[0] as
+    | {
+        properties?: Record<string, unknown>
+        geometry?: { type?: string; coordinates?: [number, number] }
+        layer?: { id?: string }
+      }
+    | undefined
+  if (!top?.properties) return false
+  const cidRaw = top.properties.cluster_id
+  const clusterId = typeof cidRaw === 'number' ? cidRaw : typeof cidRaw === 'string' ? Number(cidRaw) : NaN
+  if (!Number.isFinite(clusterId)) return false
+
+  const layerId = top.layer?.id ?? ''
+  const sourceId = layerId.startsWith('canvass-') ? 'canvass-cluster-src' : 'track-wpts-cluster-src'
+  const coords = top.geometry?.coordinates
+  if (!coords || coords.length < 2) return false
+
+  const src = map.getSource(sourceId) as GeoJsonClusterSourceLike | undefined
+  const exp = src?.getClusterExpansionZoom?.(clusterId)
+  const bump = () => {
+    try {
+      map.easeTo({
+        center: coords,
+        zoom: Math.min(map.getZoom() + 2, VC_MAP_MAX_ZOOM),
+        duration: 320,
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+  if (exp) {
+    void exp
+      .then((z) => {
+        if (Number.isFinite(z)) {
+          try {
+            map.easeTo({
+              center: coords,
+              zoom: Math.min(z + 0.25, VC_MAP_MAX_ZOOM),
+              duration: 380,
+            })
+          } catch {
+            bump()
+          }
+        } else bump()
+      })
+      .catch(() => bump())
+  } else {
+    bump()
+  }
+  return true
 }
 
 function waitMapIdle(map: GlMap, timeoutMs: number): Promise<void> {
@@ -457,7 +546,12 @@ function collectCanvassLayerLocationsAtPointOrdered(
   let feats: unknown[]
   try {
     feats = map.queryRenderedFeatures(pt, {
-      layers: ['canvass-fill', 'canvass-outline', 'canvass-pin-circles'],
+      layers: [
+        'canvass-pin-circles',
+        'canvass-outline',
+        'canvass-fill',
+        'canvass-cluster-unclustered',
+      ],
     })
   } catch {
     return ordered
@@ -477,19 +571,83 @@ function collectCanvassLayerLocationsAtPointOrdered(
   return ordered
 }
 
+function closedFootprintRingForHitTest(fp: NonNullable<Location['footprint']>): LatLon[] {
+  if (fp.length < 3) return fp as LatLon[]
+  const a = fp[0]!
+  const b = fp[fp.length - 1]!
+  if (a[0] === b[0] && a[1] === b[1]) return fp as LatLon[]
+  return [...(fp as LatLon[]), a]
+}
+
+/** All visible pins whose saved footprint contains the tap (WGS84). */
+function locationsWithFootprintContainingLngLat(
+  mapPins: Location[],
+  lngLat: { lat: number; lng: number },
+): Location[] {
+  const pt: LatLon = [lngLat.lat, lngLat.lng]
+  const out: Location[] = []
+  for (const l of mapPins) {
+    if (!l.footprint || l.footprint.length < 3) continue
+    if (pointInPolygonLatLon(pt, closedFootprintRingForHitTest(l.footprint))) out.push(l)
+  }
+  return out
+}
+
 /**
- * Top-most canvass feature at the pixel only (no screen/geo pools, footprint disambiguation, or `findHit`).
- * Pin/circle layers win over building fills at the same pixel — taps there select an existing location, not “add new”.
+ * Prefer geography over WebGL stack: stacked footprints may not all appear in
+ * `queryRenderedFeatures` at one pixel. Among pins whose footprint contains the tap, return the
+ * only match, or the **smallest** ring if several overlap.
+ */
+function pickSingleLocationFromFootprintContainingLngLat(
+  mapPins: Location[],
+  lngLat: { lat: number; lng: number },
+): Location | null {
+  const containing = locationsWithFootprintContainingLngLat(mapPins, lngLat)
+  if (containing.length === 0) return null
+  if (containing.length === 1) return containing[0]!
+  containing.sort((a, b) => ringAreaSqMetersApprox(a.footprint!) - ringAreaSqMetersApprox(b.footprint!))
+  return containing[0]!
+}
+
+/**
+ * When several canvass polygons overlap at a pixel, `queryRenderedFeatures` order is paint/stack
+ * order — not geography. Prefer the footprint that **contains** the click lng/lat; if several
+ * (bad overlaps), prefer the **smallest** parcel by ring area.
+ */
+function pickCanvassLocationFromRenderedHits(
+  paintOrderCandidates: Location[],
+  lngLat: { lat: number; lng: number },
+): Location | null {
+  if (!paintOrderCandidates.length) return null
+  const pt: LatLon = [lngLat.lat, lngLat.lng]
+  const withFp = paintOrderCandidates.filter((l) => l.footprint && l.footprint.length >= 3)
+  const containing = withFp.filter((l) => pointInPolygonLatLon(pt, closedFootprintRingForHitTest(l.footprint!)))
+  if (containing.length === 1) return containing[0]!
+  if (containing.length > 1) {
+    containing.sort(
+      (a, b) => ringAreaSqMetersApprox(a.footprint!) - ringAreaSqMetersApprox(b.footprint!),
+    )
+    return containing[0]!
+  }
+  return paintOrderCandidates[0]!
+}
+
+/**
+ * Canvass tap: **geo-first** over all `mapPins` with footprints (stacked buildings), then
+ * `queryRenderedFeatures` + `pickCanvassLocationFromRenderedHits` for pins/bounds-only hits.
  */
 function resolveCanvassTapLocation(
   map: GlMap | null | undefined,
   point: { x: number; y: number },
   mapPins: Location[],
   locations: Location[],
+  lngLat: { lat: number; lng: number },
 ): Location | null {
   if (!map) return null
+  const geoPick = pickSingleLocationFromFootprintContainingLngLat(mapPins, lngLat)
+  if (geoPick) return geoPick
   const ordered = collectCanvassLayerLocationsAtPointOrdered(map, point, mapPins, locations)
-  return ordered[0] ?? null
+  return pickCanvassLocationFromRenderedHits(ordered, lngLat)
 }
 
 type AddressesMapLibreProps = {
@@ -577,10 +735,17 @@ type AddressesMapLibreProps = {
   visitHeatmapGeojson?: FeatureCollection | null
   showVisitHeatmap?: boolean
   basemap: VcCaseMapBasemapId
+  /** When false, MapLibre attribution (“i”) is hidden — used on narrow phones to free corner space. */
+  showAttributionControl?: boolean
 }
 
 const TRACK_HIT_LAYERS = ['track-wpts-stepnum', 'track-wpts-unclustered'] as const
-const CANVASS_HIT_LAYERS = ['canvass-pin-circles', 'canvass-outline', 'canvass-fill'] as const
+const CANVASS_HIT_LAYERS = [
+  'canvass-pin-circles',
+  'canvass-outline',
+  'canvass-fill',
+  'canvass-cluster-unclustered',
+] as const
 
 function pickTrackPointIdAtPixel(map: GlMap, point: { x: number; y: number }): string | null {
   let feats: ReturnType<GlMap['queryRenderedFeatures']>
@@ -603,6 +768,7 @@ function resolveFeatureHitAtPoint(
   map: GlMap,
   point: { x: number; y: number },
   p: AddressesMapLibreProps,
+  lngLat: { lat: number; lng: number },
 ): { kind: 'track'; id: string } | { kind: 'loc'; id: string } | null {
   const pointPx: [number, number] = [point.x, point.y]
   const wantTrack = p.caseTab === 'tracking' || p.placementClickAddsTrackPoint
@@ -619,7 +785,16 @@ function resolveFeatureHitAtPoint(
   } catch {
     return null
   }
-  if (!feats?.length) return null
+  if (!feats?.length) {
+    if (wantLoc) {
+      const geoPick = pickSingleLocationFromFootprintContainingLngLat(p.mapPins, lngLat)
+      if (geoPick) return { kind: 'loc', id: geoPick.id }
+    }
+    return null
+  }
+
+  const canvassCandidates: Location[] = []
+  const canvassSeen = new Set<string>()
 
   for (const f of feats) {
     const layerId = (f as { layer?: { id?: string } }).layer?.id ?? ''
@@ -634,13 +809,28 @@ function resolveFeatureHitAtPoint(
     }
     if (
       wantLoc &&
-      (layerId === 'canvass-pin-circles' || layerId === 'canvass-outline' || layerId === 'canvass-fill')
+      (layerId === 'canvass-pin-circles' ||
+        layerId === 'canvass-outline' ||
+        layerId === 'canvass-fill' ||
+        layerId === 'canvass-cluster-unclustered')
     ) {
       const raw = f.properties?.id
       const sid = typeof raw === 'string' ? raw : raw != null && typeof raw !== 'object' ? String(raw) : ''
       if (!sid) continue
       const loc = p.mapPins.find((l) => l.id === sid) ?? p.locations.find((l) => l.id === sid)
-      if (loc) return { kind: 'loc', id: loc.id }
+      if (loc && !canvassSeen.has(loc.id)) {
+        canvassSeen.add(loc.id)
+        canvassCandidates.push(loc)
+      }
+    }
+  }
+
+  if (wantLoc) {
+    const geoPick = pickSingleLocationFromFootprintContainingLngLat(p.mapPins, lngLat)
+    if (geoPick) return { kind: 'loc', id: geoPick.id }
+    if (canvassCandidates.length) {
+      const picked = pickCanvassLocationFromRenderedHits(canvassCandidates, lngLat)
+      if (picked) return { kind: 'loc', id: picked.id }
     }
   }
   return null
@@ -651,7 +841,7 @@ function resolveDoubleTapDeepLink(
   e: MapLayerMouseEvent,
   p: AddressesMapLibreProps,
 ): { kind: 'track'; id: string } | { kind: 'loc'; id: string } | null {
-  return resolveFeatureHitAtPoint(map, e.point, p)
+  return resolveFeatureHitAtPoint(map, e.point, p, e.lngLat)
 }
 
 const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, AddressesMapLibreProps>(
@@ -712,6 +902,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     useEffect(() => {
       const map = mapRef.current?.getMap()
       if (!map) return
+      if (props.showAttributionControl === false) return
       const run = () => collapseMaplibreAttributionToCompactChip(map)
       run()
       const t = window.setTimeout(run, 80)
@@ -720,7 +911,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         window.clearTimeout(t)
         window.clearTimeout(t2)
       }
-    }, [mapStyle])
+    }, [mapStyle, props.showAttributionControl])
 
     const canvassFc = useMemo(
       () => buildCanvassCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
@@ -730,6 +921,11 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const pinsFc = useMemo(
       () => buildPinCollection(props.mapPins, props.selectedId, props.footprintLoadingIds),
       [props.mapPins, props.selectedId, props.footprintLoadingIds],
+    )
+
+    const addressClusterFc = useMemo(
+      () => buildAddressClusterPointCollection(props.mapPins, props.selectedId),
+      [props.mapPins, props.selectedId],
     )
 
     const outlineLoadingPins = useMemo(() => {
@@ -765,6 +961,9 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
     const [mapZoom, setMapZoom] = useState(15)
     const showDetailOverlays = mapZoom >= MAP_DETAIL_MIN_ZOOM
+    const lowZoomClusterUi = mapZoom < MAP_DETAIL_MIN_ZOOM
+    const detailOverlayVisibility: 'visible' | 'none' = lowZoomClusterUi ? 'none' : 'visible'
+    const clusterOverlayVisibility: 'visible' | 'none' = lowZoomClusterUi ? 'visible' : 'none'
     /** During PDF export “addresses only” snapshot: hide DOM track markers/labels (lines stay WebGL). */
     const [exportHideDomTrackDecor, setExportHideDomTrackDecor] = useState(false)
     const showTrackDomOverlays = showDetailOverlays && !exportHideDomTrackDecor
@@ -856,9 +1055,16 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           const showC = mode === 'full' || mode === 'addresses'
           const showT = mode === 'full' || mode === 'tracks'
           const showHeat = mode === 'full' || mode === 'addresses'
-          for (const id of EXPORT_CANVASS_LAYERS) trySetLayerVisibility(map, id, showC ? 'visible' : 'none')
+          const low = map.getZoom() < MAP_DETAIL_MIN_ZOOM
+          const canvassDetailIds = ['canvass-fill', 'canvass-outline', 'canvass-pin-circles'] as const
+          const canvassClusterIds = ['canvass-clusters', 'canvass-cluster-count', 'canvass-cluster-unclustered'] as const
+          const trackDetailIds = ['track-wpts-unclustered', 'track-wpts-stepnum'] as const
+          const trackClusterIds = ['track-wpts-clusters', 'track-wpts-cluster-count'] as const
+          for (const id of canvassDetailIds) trySetLayerVisibility(map, id, showC && !low ? 'visible' : 'none')
+          for (const id of canvassClusterIds) trySetLayerVisibility(map, id, showC && low ? 'visible' : 'none')
           for (const id of EXPORT_TRACK_LINE_LAYERS) trySetLayerVisibility(map, id, showT ? 'visible' : 'none')
-          for (const id of EXPORT_TRACK_POINT_LAYERS) trySetLayerVisibility(map, id, showT ? 'visible' : 'none')
+          for (const id of trackDetailIds) trySetLayerVisibility(map, id, showT && !low ? 'visible' : 'none')
+          for (const id of trackClusterIds) trySetLayerVisibility(map, id, showT && low ? 'visible' : 'none')
           trySetLayerVisibility(map, EXPORT_HEAT_LAYER, showHeat ? 'visible' : 'none')
         }
         let dataUrl: string | null = null
@@ -880,6 +1086,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
             { padding: 48, duration: 0 },
           )
           await waitMapIdle(map, 8000)
+          applyMode(opts.mode)
           await raf2()
           try {
             dataUrl = map.getCanvas().toDataURL('image/png')
@@ -996,6 +1203,8 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     }, [props.blockMapCanvasPointerEvents, syncMapContainerPointerBlock])
 
     const onStyledataPointerBlockHandler = useCallback(() => {
+      const map = mapRef.current?.getMap()
+      if (map) patchCartoBuildingTopFootprintAlignment(map)
       if (propsRef.current.blockMapCanvasPointerEvents) syncMapContainerPointerBlock()
     }, [syncMapContainerPointerBlock])
 
@@ -1008,11 +1217,16 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
     const onLoad = useCallback(() => {
       const map0 = mapRef.current?.getMap()
       if (map0) {
+        patchCartoBuildingTopFootprintAlignment(map0)
+        queueMicrotask(() => patchCartoBuildingTopFootprintAlignment(map0))
+        requestAnimationFrame(() => patchCartoBuildingTopFootprintAlignment(map0))
         map0.off('styledata', onStyledataPointerBlockHandler)
         map0.on('styledata', onStyledataPointerBlockHandler)
-        queueMicrotask(() => {
-          requestAnimationFrame(() => collapseMaplibreAttributionToCompactChip(map0))
-        })
+        if (propsRef.current.showAttributionControl !== false) {
+          queueMicrotask(() => {
+            requestAnimationFrame(() => collapseMaplibreAttributionToCompactChip(map0))
+          })
+        }
       }
       queueMicrotask(() => syncMapContainerPointerBlock())
       if (didFitRef.current) return
@@ -1075,6 +1289,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
       if (!map || !mapContainerHasSize(map)) return
       setMapZoom(map.getZoom())
       schedulePreload()
+      patchCartoBuildingTopFootprintAlignment(map)
     }, [schedulePreload])
 
     useEffect(() => {
@@ -1221,7 +1436,11 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
               return
             }
 
-            const hit = resolveFeatureHitAtPoint(map, downPt, cur)
+            const lngLatAtDown = map.unproject([downPt.x, downPt.y])
+            const hit = resolveFeatureHitAtPoint(map, downPt, cur, {
+              lat: lngLatAtDown.lat,
+              lng: lngLatAtDown.lng,
+            })
             const selAddr = cur.selectedId ?? null
             const selTrack = cur.selectedTrackPointId ?? null
 
@@ -1349,6 +1568,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         if (performance.now() < (p.mapInteractionFreezeUntilRef?.current ?? 0)) return
         if (p.addrSearchBlocksMapClicks) return
         const map = mapRef.current?.getMap()
+        if (map && tryHandleClusterClickZoom(map, e)) return
         const lat = e.lngLat.lat
         const lon = e.lngLat.lng
         const ti = p.trackingInteraction
@@ -1375,7 +1595,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         }
 
         const preferGeom = p.caseTab === 'addresses' && !p.placementClickAddsTrackPoint
-        const hitLoc = preferGeom ? resolveCanvassTapLocation(map, e.point, p.mapPins, p.locations) : null
+        const hitLoc = preferGeom ? resolveCanvassTapLocation(map, e.point, p.mapPins, p.locations, e.lngLat) : null
         if (hitLoc) {
           p.onSelectLocation(hitLoc.id)
           if (!hitLoc.footprint || hitLoc.footprint.length < 3) {
@@ -1465,7 +1685,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         }
 
         if (map && p.caseTab === 'addresses' && p.selectedId && !p.placementClickAddsTrackPoint) {
-          const tapHit = resolveCanvassTapLocation(map, e.point, p.mapPins, p.locations)
+          const tapHit = resolveCanvassTapLocation(map, e.point, p.mapPins, p.locations, e.lngLat)
           const reTapSelected = tapHit?.id === p.selectedId
           if (reTapSelected) {
             const sel = p.selectedId
@@ -1546,9 +1766,12 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
 
     const mapHandlersOn = !props.blockMapCanvasPointerEvents
 
+    const hideAttrib = props.showAttributionControl === false
+
     return (
       <div
         ref={mapShellRef}
+        data-vc-hide-map-attribution={hideAttrib ? 'true' : undefined}
         style={{
           width: '100%',
           height: '100%',
@@ -1574,7 +1797,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
         keyboard={mapHandlersOn}
         touchZoomRotate={mapHandlersOn}
         touchPitch={mapHandlersOn}
-        attributionControl={{ compact: true }}
+        attributionControl={props.showAttributionControl === false ? false : { compact: true }}
         onClick={mapHandlersOn ? onClick : undefined}
         onLoad={onLoad}
         onMoveEnd={syncZoomAndPreload}
@@ -1609,10 +1832,63 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           </Source>
         ) : null}
 
+        <Source
+          id="canvass-cluster-src"
+          type="geojson"
+          data={addressClusterFc}
+          {...({
+            cluster: true,
+            clusterMaxZoom: MAP_CLUSTER_MAX_ZOOM,
+            clusterRadius: MAP_CLUSTER_RADIUS,
+          } as Record<string, unknown>)}
+        >
+          <Layer
+            id="canvass-clusters"
+            type="circle"
+            filter={['has', 'point_count']}
+            layout={{ visibility: clusterOverlayVisibility }}
+            paint={{
+              'circle-color': 'rgba(59,130,246,0.55)',
+              'circle-stroke-width': 2,
+              'circle-stroke-color': '#ffffff',
+              'circle-radius': ['step', ['get', 'point_count'], 18, 10, 22, 24, 28],
+            }}
+          />
+          <Layer
+            id="canvass-cluster-count"
+            type="symbol"
+            filter={['has', 'point_count']}
+            layout={{
+              visibility: clusterOverlayVisibility,
+              'text-field': ['to-string', ['get', 'point_count']],
+              'text-size': 12,
+            }}
+            paint={{
+              'text-color': '#ffffff',
+              'text-halo-color': 'rgba(15,23,42,0.55)',
+              'text-halo-width': 1.25,
+            }}
+          />
+          <Layer
+            id="canvass-cluster-unclustered"
+            type="circle"
+            filter={['!', ['has', 'point_count']]}
+            layout={{ visibility: clusterOverlayVisibility }}
+            paint={{
+              'circle-radius': ['get', 'radius'],
+              'circle-color': ['get', 'color'],
+              'circle-stroke-width': ['get', 'strokeW'],
+              'circle-stroke-color': '#ffffff',
+              'circle-opacity': 0.95,
+            }}
+          />
+        </Source>
+
         <Source id="canvass-geo" type="geojson" data={canvassFc}>
           <Layer
             id="canvass-fill"
             type="fill"
+            layout={{ visibility: detailOverlayVisibility }}
             paint={{
               'fill-color': ['get', 'fill'],
               'fill-opacity': ['get', 'fillOpacity'],
@@ -1621,6 +1897,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           <Layer
             id="canvass-outline"
             type="line"
+            layout={{ visibility: detailOverlayVisibility, 'line-join': 'round', 'line-cap': 'round' }}
             paint={{
               'line-color': ['get', 'line'],
               'line-width': ['get', 'lineWidth'],
@@ -1633,6 +1910,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           <Layer
             id="canvass-pin-circles"
             type="circle"
+            layout={{ visibility: detailOverlayVisibility }}
             paint={{
               'circle-radius': ['get', 'radius'],
               'circle-color': ['get', 'color'],
@@ -1688,10 +1966,48 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           />
         </Source>
 
-        <Source id="track-wpts-cluster-src" type="geojson" data={trackWptClusterFc}>
+        <Source
+          id="track-wpts-cluster-src"
+          type="geojson"
+          data={trackWptClusterFc}
+          {...({
+            cluster: true,
+            clusterMaxZoom: MAP_CLUSTER_MAX_ZOOM,
+            clusterRadius: MAP_CLUSTER_RADIUS,
+          } as Record<string, unknown>)}
+        >
+          <Layer
+            id="track-wpts-clusters"
+            type="circle"
+            filter={['has', 'point_count']}
+            layout={{ visibility: clusterOverlayVisibility }}
+            paint={{
+              'circle-color': ['get', 'color'],
+              'circle-stroke-width': 2,
+              'circle-stroke-color': '#ffffff',
+              'circle-opacity': 0.92,
+              'circle-radius': ['step', ['get', 'point_count'], 16, 8, 20, 20, 26],
+            }}
+          />
+          <Layer
+            id="track-wpts-cluster-count"
+            type="symbol"
+            filter={['has', 'point_count']}
+            layout={{
+              visibility: clusterOverlayVisibility,
+              'text-field': ['to-string', ['get', 'point_count']],
+              'text-size': 11,
+            }}
+            paint={{
+              'text-color': '#ffffff',
+              'text-halo-color': 'rgba(15,23,42,0.55)',
+              'text-halo-width': 1.2,
+            }}
+          />
           <Layer
             id="track-wpts-unclustered"
             type="circle"
+            filter={['!', ['has', 'point_count']]}
             paint={{
               'circle-color': ['get', 'color'],
               'circle-radius': 11,
@@ -1703,6 +2019,7 @@ const AddressesMapLibreInner = forwardRef<UnifiedCaseMapHandle | null, Addresses
           <Layer
             id="track-wpts-stepnum"
             type="symbol"
+            filter={['!', ['has', 'point_count']]}
             layout={{
               'text-field': ['to-string', ['get', 'stepNum']],
               'text-size': 11,

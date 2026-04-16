@@ -4,6 +4,11 @@ import type { FeatureCollection } from 'geojson'
 import { Layout } from './Layout'
 import { CARTO_VOYAGER_STYLE, VC_MAP_MAX_ZOOM } from './addressesMapLibreHelpers'
 import { relationalBackendEnabled } from '../lib/backendMode'
+import {
+  MOBILE_BREAKPOINT_QUERY,
+  shouldHideMaplibreAttributionForTouchUi,
+  useMediaQuery,
+} from '../lib/useMediaQuery'
 import { supabase } from '../lib/supabase'
 import {
   vcGlassFgDarkReadable,
@@ -27,6 +32,8 @@ type GlobalRow = {
 }
 
 export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
+  const isNarrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
+  const hideMaplibreAttribution = isNarrow || shouldHideMaplibreAttributionForTouchUi()
   const [rows, setRows] = useState<GlobalRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -197,6 +204,7 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
             Visit density (global submissions)
           </div>
           <div
+            data-vc-hide-map-attribution={hideMaplibreAttribution ? 'true' : undefined}
             style={{
               height: 'min(420px, 55vh)',
               minHeight: 240,
@@ -212,6 +220,7 @@ export function GlobalCanvassAdminPage(props: { onBack: () => void }) {
               mapStyle={CARTO_VOYAGER_STYLE}
               maxZoom={VC_MAP_MAX_ZOOM}
               style={{ width: '100%', height: '100%' }}
+              attributionControl={hideMaplibreAttribution ? false : { compact: true }}
             >
               <NavigationControl position="top-left" showCompass={false} />
               <Source id="global-visit-heat" type="geojson" data={globalHeatmapFc}>

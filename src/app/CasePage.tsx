@@ -51,7 +51,11 @@ import {
 } from '../lib/mobilePlatform'
 import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
 import { useTargetMode } from '../lib/targetMode'
-import { COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
+import {
+  COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY,
+  shouldHideMaplibreAttributionForTouchUi,
+  useMediaQuery,
+} from '../lib/useMediaQuery'
 
 /**
  * Case workspace (single case): high-level map of this file for maintainers.
@@ -215,6 +219,8 @@ const MAP_FLOAT_BOTTOM_INSET = `calc(${MAP_CANVAS_BOTTOM_RESERVE} + 10px)`
  * Using {@link MAP_FLOAT_BOTTOM_INSET} there double-counts the reserve and pushes UI toward the map center.
  */
 const MAP_FLOAT_BOTTOM_INSET_IN_STACK = '10px'
+/** Narrow map only: raise basemap slightly so its 44px tile centers with the canvass/tracking glass strip. */
+const MAP_NARROW_BASEMAP_BOTTOM_IN_STACK = 'calc(10px + clamp(4px, 0.85vw, 9px))'
 const MAP_BASEMAP_STORAGE_KEY = 'vc-case-map-basemap'
 
 function readStoredCaseMapBasemap(): VcCaseMapBasemapId {
@@ -336,6 +342,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
   const [photoViewerIndex, setPhotoViewerIndex] = useState<number | null>(null)
   const targetMode = useTargetMode()
   const isNarrow = targetMode === 'mobile'
+  const hideMaplibreAttribution =
+    isNarrow || shouldHideMaplibreAttributionForTouchUi()
   const isCompactWebMapTop = useMediaQuery(COMPACT_WEB_MAP_TOP_BREAKPOINT_QUERY) && !isNarrow
   const { startTour, tourOpen } = useTour()
   const mobileOS = useMemo(() => (targetMode === 'mobile' ? getMobileOS() : null), [targetMode])
@@ -4417,7 +4425,8 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: MAP_FLOAT_BOTTOM_INSET,
+          /** Same baseline as basemap chip (`MAP_FLOAT_BOTTOM_INSET_IN_STACK`); `MAP_FLOAT_BOTTOM_INSET` sat the bar a full canvas-reserve higher. */
+          bottom: MAP_FLOAT_BOTTOM_INSET_IN_STACK,
           zIndex: 45,
           pointerEvents: 'none',
           display: 'flex',
@@ -4449,8 +4458,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
               display: 'flex',
               flexDirection: 'row',
               flexWrap: 'wrap',
-              alignItems: 'stretch',
+              alignItems: 'center',
               gap: 0,
+              minHeight: 44,
               width: '100%',
               maxWidth: '100%',
               minWidth: 0,
@@ -5085,6 +5095,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                     visitHeatmapGeojson={visitHeatmapGeojson}
                     showVisitHeatmap={canUseVisitHeatmap && visitHeatmapOn && caseTab === 'addresses'}
                     basemap={mapBasemap}
+                    showAttributionControl={!hideMaplibreAttribution}
                   />
                     {mapLeftToolDockOpen && !probativePlacementSession ? (
                       <div
@@ -5151,7 +5162,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                       style={{
                         position: 'absolute',
                         left: '10px',
-                        bottom: MAP_FLOAT_BOTTOM_INSET_IN_STACK,
+                        bottom: isNarrow ? MAP_NARROW_BASEMAP_BOTTOM_IN_STACK : MAP_FLOAT_BOTTOM_INSET_IN_STACK,
                         zIndex: 44,
                         ...mapLayersGlassChipFaceStyle,
                         cursor: 'pointer',
