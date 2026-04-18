@@ -44,9 +44,11 @@ if errorlevel 1 (
 )
 
 echo.
-echo Tip: You must type a commit message. Pressing Enter with an empty line cancels ^(by design^).
-set /p MSG=Enter commit message (leave blank to cancel): 
-if "%MSG%"=="" (
+echo Tip: Type a short commit message, then Enter. ^(Enter alone cancels - same as always.^)
+set "MSG="
+rem Parentheses in the prompt MUST be ^(^) or CMD treats them as a block and set /p never fills MSG.
+set /p MSG=Enter commit message ^(leave blank to cancel^): 
+if "!MSG!"=="" (
   echo [CANCELLED] No commit message entered.
   pause
   exit /b 0
@@ -54,7 +56,7 @@ if "%MSG%"=="" (
 
 echo.
 echo [2/6] Committing...
-git commit -m "%MSG%"
+git commit -m "!MSG!"
 if errorlevel 1 (
   echo.
   echo [INFO] Nothing to commit, or commit failed.
@@ -65,10 +67,20 @@ if errorlevel 1 (
 
 echo.
 echo [3/6] Pushing branch...
-git push
+set "GITBR="
+for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "GITBR=%%B"
+if "!GITBR!"=="" (
+  echo.
+  echo [ERROR] No current branch name ^(detached HEAD?^). Checkout a branch, then push manually.
+  pause
+  exit /b 1
+)
+echo   Remote: origin · Branch: !GITBR!
+rem First push on a clone often has no upstream - plain git push fails. -u sets tracking once.
+git push -u origin !GITBR!
 if errorlevel 1 (
   echo.
-  echo [ERROR] git push failed.
+  echo [ERROR] git push failed ^(network, auth, or remote name not "origin"^).
   pause
   exit /b 1
 )
@@ -80,7 +92,7 @@ git status
 echo.
 echo [5/6] Optional version tag
 echo   Tags a snapshot of this exact commit on GitHub so you can restore it later
-echo   ^(e.g. after more pushes^). Use a simple name like address-working-v1 — no spaces is safest.
+echo   ^(e.g. after more pushes^). Use a simple name like address-working-v1 - no spaces is safest.
 echo.
 set /p TAGNAME=Version tag name ^(leave blank to skip^): 
 if "!TAGNAME!"=="" (
@@ -90,7 +102,7 @@ if "!TAGNAME!"=="" (
   echo Creating annotated tag "!TAGNAME!"...
   git tag -a "!TAGNAME!" -m "EndGit snapshot: !TAGNAME!"
   if errorlevel 1 (
-    echo [ERROR] git tag failed. That name may already exist — pick another or delete the old tag.
+    echo [ERROR] git tag failed. That name may already exist - pick another or delete the old tag.
     pause
     exit /b 1
   )
