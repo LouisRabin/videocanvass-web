@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { relationalBackendEnabled } from '../lib/backendMode'
 import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
-import { ensureMobileProximityLocationPrefsOn } from '../lib/mobileProximityLocationPrefs'
+import {
+  ensureMobileProximityLocationPrefsOn,
+  publishMobileTeamDiscoveryLocation,
+} from '../lib/mobileProximityLocationPrefs'
 import { isMobileProximityClient } from '../lib/mobilePlatform'
 import { supabase } from '../lib/supabase'
 import { useStore } from '../lib/store'
@@ -34,10 +37,15 @@ function savePromptedSet(s: Set<string>) {
   }
 }
 
+type ProximityInviteListenerProps = {
+  /** After a successful join + remote reconcile, navigate to the case (e.g. Router setRoute). */
+  onProximityCaseJoined?: (caseId: string) => void
+}
+
 /**
  * Mobile (native + mobile web): while the document is visible, poll for active proximity invites and offer to join.
  */
-export function ProximityInviteListener() {
+export function ProximityInviteListener(props: ProximityInviteListenerProps) {
   const { reconcileWithRemote } = useStore()
   const [invite, setInvite] = useState<{
     caseId: string
@@ -74,6 +82,9 @@ export function ProximityInviteListener() {
 
     const lat = pos.position.coords.latitude
     const lng = pos.position.coords.longitude
+    const acc = pos.position.coords.accuracy
+
+    await publishMobileTeamDiscoveryLocation(lat, lng, acc ?? null)
 
     const { data: rows, error } = await supabase.rpc('vc_active_proximity_invites_at', {
       p_lat: lat,
@@ -129,8 +140,9 @@ export function ProximityInviteListener() {
 
   const onJoin = async () => {
     if (!invite || !supabase) return
+    const joinedCaseId = invite.caseId
     const { data, error } = await supabase.rpc('vc_accept_proximity_case_invite', {
-      p_case_id: invite.caseId,
+      p_case_id: joinedCaseId,
       p_lat: invite.lat,
       p_lng: invite.lng,
     })
@@ -141,6 +153,12 @@ export function ProximityInviteListener() {
     }
     if (data === true) {
       await reconcileWithRemote()
+      const open = props.onProximityCaseJoined
+      if (open) {
+        window.setTimeout(() => {
+          open(joinedCaseId)
+        }, 0)
+      }
     }
   }
 

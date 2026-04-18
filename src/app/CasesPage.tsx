@@ -14,7 +14,10 @@ import {
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 import { relationalBackendEnabled } from '../lib/backendMode'
 import { isMobileProximityClient } from '../lib/mobilePlatform'
-import { ensureMobileProximityLocationPrefsOn } from '../lib/mobileProximityLocationPrefs'
+import {
+  ensureMobileProximityLocationPrefsOn,
+  publishMobileTeamDiscoveryLocation,
+} from '../lib/mobileProximityLocationPrefs'
 import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
 import { supabase } from '../lib/supabase'
 import { appUserFromVcProfileRow, type VcProfileRow } from '../lib/relational/sync'
@@ -514,7 +517,9 @@ function TeamMembersModalBody(props: {
           >
             <span style={{ fontWeight: 800, fontSize: 13 }}>Nearby (this device)</span>
             <p style={{ margin: 0, fontSize: 12, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
-              Find teammates who have team location sharing enabled. Uses your current position.
+              Find teammates who have team location sharing enabled. Uses your current position versus theirs on the
+              server. Other staff must use the app on a phone (or tablet browser) with location allowed so their
+              coordinates refresh periodically; owners and people already on this case are never listed.
             </p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
               <span style={{ fontSize: 12, fontWeight: 700 }}>Radius (m)</span>
@@ -551,19 +556,7 @@ function TeamMembersModalBody(props: {
                     const lat = pos.position.coords.latitude
                     const lng = pos.position.coords.longitude
                     const acc = pos.position.coords.accuracy
-                    const { data: pref } = await supabase
-                      .from('vc_profile_location_prefs')
-                      .select('proximity_invite_listen')
-                      .maybeSingle()
-                    const listen =
-                      ((pref as { proximity_invite_listen?: boolean } | null)?.proximity_invite_listen) ?? true
-                    await supabase.rpc('vc_update_my_location_prefs', {
-                      p_team_discovery_sharing: true,
-                      p_proximity_invite_listen: listen,
-                      p_lat: lat,
-                      p_lng: lng,
-                      p_accuracy_m: acc ?? null,
-                    })
+                    await publishMobileTeamDiscoveryLocation(lat, lng, acc ?? null)
                     const { data, error } = await supabase.rpc('vc_nearby_profiles_team_discovery', {
                       p_case_id: props.caseId,
                       p_lat: lat,
@@ -822,8 +815,9 @@ export function CasesPage(props: {
   const onManualProximityInviteJoin = useCallback(async () => {
     const m = manualInviteModal
     if (!m || !supabase) return
+    const joinedCaseId = m.caseId
     const { data, error } = await supabase.rpc('vc_accept_proximity_case_invite', {
-      p_case_id: m.caseId,
+      p_case_id: joinedCaseId,
       p_lat: m.lat,
       p_lng: m.lng,
     })
@@ -835,8 +829,11 @@ export function CasesPage(props: {
     }
     if (data === true) {
       await reconcileWithRemote()
+      window.setTimeout(() => {
+        props.onOpenCase(joinedCaseId)
+      }, 0)
     }
-  }, [manualInviteModal, reconcileWithRemote])
+  }, [manualInviteModal, reconcileWithRemote, props.onOpenCase])
 
   async function onCreateCaseFromForm() {
     const caseName = newCaseName.trim()

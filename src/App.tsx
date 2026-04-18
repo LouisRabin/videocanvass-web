@@ -375,18 +375,15 @@ function SessionGate() {
       return <VcSessionLoadingShell message="Loading profile…" />
     }
     const relationalRouter = (
-      <>
-        <ProximityInviteListener />
-        <Router
-          currentUser={relationalUser}
-          onLogout={async () => {
-            if (supabase) await supabase.auth.signOut()
-            applySession(null)
-            setMfaGate('off')
-          }}
-          allowAdminGlobal={relationalUser.appRole === 'admin'}
-        />
-      </>
+      <Router
+        currentUser={relationalUser}
+        onLogout={async () => {
+          if (supabase) await supabase.auth.signOut()
+          applySession(null)
+          setMfaGate('off')
+        }}
+        allowAdminGlobal={relationalUser.appRole === 'admin'}
+      />
     )
     return TOUR_UI_ENABLED ? <TourProvider>{relationalRouter}</TourProvider> : relationalRouter
   }
@@ -684,10 +681,15 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
     return data.cases.find((c) => c.id === route.id && hasCaseAccess(data, c.id, props.currentUser.id)) ?? null
   }, [data, route, props.currentUser.id])
 
+  const proximityInviteListener = (
+    <ProximityInviteListener onProximityCaseJoined={(caseId) => setRoute({ name: 'case', id: caseId })} />
+  )
+
   if (route.name === 'admin_global') {
     return (
       <>
         {idleWarningModal}
+        {proximityInviteListener}
         <Suspense fallback={<RouteSuspenseFallback />}>
           <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
         </Suspense>
@@ -699,6 +701,7 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
     return (
       <>
         {idleWarningModal}
+        {proximityInviteListener}
         <CasesPage
           onOpenCase={(id) => setRoute({ name: 'case', id })}
           currentUser={props.currentUser}
@@ -713,6 +716,7 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
     return (
       <>
         {idleWarningModal}
+        {proximityInviteListener}
         <Layout
           title="Case not found"
           right={
@@ -730,6 +734,7 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
   return (
     <>
       {idleWarningModal}
+      {proximityInviteListener}
       <Suspense fallback={<RouteSuspenseFallback />}>
         <CasePage caseId={currentCase.id} currentUser={props.currentUser} onBack={() => setRoute({ name: 'cases' })} />
       </Suspense>
