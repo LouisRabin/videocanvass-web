@@ -35,6 +35,8 @@ xCodeToken.txt
 !.vscode/extensions.json
 .idea
 .DS_Store
+# macOS AppleDouble sidecar files (e.g. from USB / archives); never commit
+._*
 *.suo
 *.ntvs*
 *.njsproj

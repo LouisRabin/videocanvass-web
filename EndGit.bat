@@ -44,6 +44,7 @@ if errorlevel 1 (
 )
 
 echo.
+echo Tip: You must type a commit message. Pressing Enter with an empty line cancels ^(by design^).
 set /p MSG=Enter commit message (leave blank to cancel): 
 if "%MSG%"=="" (
   echo [CANCELLED] No commit message entered.

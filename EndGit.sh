@@ -43,6 +43,7 @@ echo "[1/6] Staging all changes..."
 git add .
 
 echo ""
+echo "Tip: You must type a commit message. Empty input cancels (by design)."
 read -r -p "Enter commit message (leave blank to cancel): " MSG
 if [[ -z "${MSG}" ]]; then
   echo "[CANCELLED] No commit message entered."
