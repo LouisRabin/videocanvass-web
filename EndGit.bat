@@ -19,9 +19,12 @@ echo   ios/App/App/public and config files are gitignored - they are NOT pushed.
 echo   Run sync here so THIS machine has a fresh web build + ios/android copies before you commit.
 echo   On Mac after pull, run:  npm run cap:sync   ^(same reason^)
 echo.
-choice /c YN /m "Run npm run cap:sync now (npm run build + copy to ios/android)?"
-if errorlevel 2 goto skip_capsync
-if errorlevel 1 (
+echo Run npm run cap:sync now ^(build + copy to ios/android^)?
+set "VC_CAPSYNC="
+rem Read from CON so stdin is not whatever npm/choice left on the buffer.
+set /p VC_CAPSYNC=Type Y or N then Enter [y/N]: <CON
+set "VC_1=!VC_CAPSYNC:~0,1!"
+if /i "!VC_1!"=="Y" (
   call npm run cap:sync
   if errorlevel 1 (
     echo.
@@ -30,8 +33,9 @@ if errorlevel 1 (
     exit /b 1
   )
   echo [OK] cap:sync finished.
+) else (
+  echo [SKIP] cap:sync not run.
 )
-:skip_capsync
 
 echo.
 echo [1/6] Staging all changes...
@@ -44,11 +48,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo Tip: Type a short commit message, then Enter. ^(Enter alone cancels - same as always.^)
-set "MSG="
-rem Parentheses in the prompt MUST be ^(^) or CMD treats them as a block and set /p never fills MSG.
-set /p MSG=Enter commit message ^(leave blank to cancel^): 
-if "!MSG!"=="" (
+echo Tip: Type a short commit message on the line below, then press Enter.
+echo       Leave the line empty to cancel ^(no commit, no push^).
+echo.
+set "VC_COMMIT_MSG="
+rem ^<CON forces the real console; avoids set /p seeing a drained or piped stdin after npm/choice.
+set /p VC_COMMIT_MSG=Commit message: <CON
+if "!VC_COMMIT_MSG!"=="" (
   echo [CANCELLED] No commit message entered.
   pause
   exit /b 0
@@ -56,7 +62,7 @@ if "!MSG!"=="" (
 
 echo.
 echo [2/6] Committing...
-git commit -m "!MSG!"
+git commit -m "!VC_COMMIT_MSG!"
 if errorlevel 1 (
   echo.
   echo [INFO] Nothing to commit, or commit failed.
@@ -75,7 +81,7 @@ if "!GITBR!"=="" (
   pause
   exit /b 1
 )
-echo   Remote: origin · Branch: !GITBR!
+echo   Remote: origin - Branch: !GITBR!
 rem First push on a clone often has no upstream - plain git push fails. -u sets tracking once.
 git push -u origin !GITBR!
 if errorlevel 1 (
@@ -94,7 +100,9 @@ echo [5/6] Optional version tag
 echo   Tags a snapshot of this exact commit on GitHub so you can restore it later
 echo   ^(e.g. after more pushes^). Use a simple name like address-working-v1 - no spaces is safest.
 echo.
-set /p TAGNAME=Version tag name ^(leave blank to skip^): 
+echo Version tag ^(leave blank to skip^):
+set "TAGNAME="
+set /p TAGNAME=Tag name: <CON
 if "!TAGNAME!"=="" (
   echo [SKIP] No tag created.
 ) else (
