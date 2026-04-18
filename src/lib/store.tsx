@@ -549,8 +549,45 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         ...current,
         cases: [c, ...current.cases],
       }
-      await persist(next)
+
+      // Relational `persist` debounces cloud saves (~320ms) and returns immediately, so `await persist`
+      // does not wait for `vc_cases`. Proximity RPC requires the case row to exist first — flush now.
       if (relationalBackendEnabled() && supabase && input.proximityInvite) {
+        const optimistic = normalizeAppData(next)
+        dataRef.current = optimistic
+        setData(optimistic)
+        void writeLocalDataCache(optimistic)
+        if (relationalSaveTimerRef.current) {
+          clearTimeout(relationalSaveTimerRef.current)
+          relationalSaveTimerRef.current = null
+        }
+        if (!relationalSaveBumpRef.current) {
+          relationalSaveBumpRef.current = true
+          adjustPendingRemoteSaves(1)
+        }
+        try {
+          await withTimeout(
+            commitOptimisticToRemote(optimistic),
+            REMOTE_COMMIT_TIMEOUT_MS,
+            'Cloud save',
+          )
+          if (hasSupabaseConfig && supabase) {
+            const t = await fetchRemotePayloadUpdatedAt()
+            if (t) lastRemoteUpdatedAtRef.current = t
+          }
+        } catch (e) {
+          console.warn('Remote commit (createCase + proximity) failed:', e)
+          if (e instanceof Error && e.message.includes('timed out')) {
+            setSyncStatus({
+              mode: 'local_fallback',
+              message: 'Cloud save timed out; working locally. Retry when online.',
+            })
+          }
+        } finally {
+          relationalSaveBumpRef.current = false
+          adjustPendingRemoteSaves(-1)
+        }
+
         const pi = input.proximityInvite
         const { error } = await supabase.rpc('vc_register_case_proximity_invite', {
           p_case_id: id,
@@ -559,10 +596,12 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           p_radius_m: pi.radiusM,
         })
         if (error) console.warn('vc_register_case_proximity_invite:', error.message)
+      } else {
+        persist(next)
       }
       return id
     },
-    [persist],
+    [persist, commitOptimisticToRemote],
   )
 
   const deleteCase = useCallback(
