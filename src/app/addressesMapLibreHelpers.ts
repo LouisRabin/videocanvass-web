@@ -17,7 +17,7 @@ const CARTO_DARK_MATTER_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl
  */
 const ESRI_WORLD_IMAGERY_STYLE: StyleSpecification = {
   version: 8,
-  name: 'VideoCanvass Esri imagery',
+  name: 'Camera Canvass · Esri imagery',
   sources: {
     'esri-world-imagery': {
       type: 'raster',

@@ -60,7 +60,7 @@ export function downloadCaseTracksCsv(caseLabel: string, tracks: Track[], trackP
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `videocanvass-tracks-${safeFileSlug(caseLabel)}.csv`
+  a.download = `camera-canvass-tracks-${safeFileSlug(caseLabel)}.csv`
   a.rel = 'noopener'
   a.click()
   URL.revokeObjectURL(url)

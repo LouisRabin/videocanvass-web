@@ -565,6 +565,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           relationalSaveBumpRef.current = true
           adjustPendingRemoteSaves(1)
         }
+        let proximityCloudOk = false
         try {
           await withTimeout(
             commitOptimisticToRemote(optimistic),
@@ -575,6 +576,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
             const t = await fetchRemotePayloadUpdatedAt()
             if (t) lastRemoteUpdatedAtRef.current = t
           }
+          proximityCloudOk = true
         } catch (e) {
           console.warn('Remote commit (createCase + proximity) failed:', e)
           if (e instanceof Error && e.message.includes('timed out')) {
@@ -588,14 +590,20 @@ export function StoreProvider(props: { children: React.ReactNode }) {
           adjustPendingRemoteSaves(-1)
         }
 
-        const pi = input.proximityInvite
-        const { error } = await supabase.rpc('vc_register_case_proximity_invite', {
-          p_case_id: id,
-          p_center_lat: pi.centerLat,
-          p_center_lng: pi.centerLng,
-          p_radius_m: pi.radiusM,
-        })
-        if (error) console.warn('vc_register_case_proximity_invite:', error.message)
+        if (proximityCloudOk) {
+          const pi = input.proximityInvite
+          const { error } = await supabase.rpc('vc_register_case_proximity_invite', {
+            p_case_id: id,
+            p_center_lat: pi.centerLat,
+            p_center_lng: pi.centerLng,
+            p_radius_m: pi.radiusM,
+          })
+          if (error) console.warn('vc_register_case_proximity_invite:', error.message)
+        } else {
+          console.warn(
+            'vc_register_case_proximity_invite: skipped (case did not reach the server — fix network/sync, then create again or add invite manually).',
+          )
+        }
       } else {
         persist(next)
       }

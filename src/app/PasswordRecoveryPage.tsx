@@ -85,7 +85,7 @@ export function PasswordRecoveryPage(props: Props) {
   }
 
   return (
-    <Layout mainScroll="hidden" title="VideoCanvass" subtitle="Set a new password">
+    <Layout mainScroll="hidden" title="Camera Canvass" subtitle="Set a new password">
       <div
         style={{
           flex: 1,

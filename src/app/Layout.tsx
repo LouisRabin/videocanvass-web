@@ -186,7 +186,7 @@ export function Layout(props: {
           ...(centerTitle ? { textAlign: 'center' as const } : { textAlign: 'start' as const }),
         }}
       >
-        {props.title ?? 'VideoCanvass'}
+        {props.title ?? 'Camera Canvass'}
       </div>
       {props.subtitle ? (
         <div

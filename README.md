@@ -1,4 +1,4 @@
-# VideoCanvass (web + Capacitor)
+# Camera Canvass (web + Capacitor)
 
 ## Single working project (OneDrive only)
 

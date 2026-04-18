@@ -31,7 +31,7 @@ export function VcSessionLoadingShell(props: {
   subtitle?: string
 }) {
   return (
-    <Layout mainScroll="hidden" title="VideoCanvass" subtitle={props.subtitle}>
+    <Layout mainScroll="hidden" title="Camera Canvass" subtitle={props.subtitle}>
       <div
         style={{
           flex: 1,

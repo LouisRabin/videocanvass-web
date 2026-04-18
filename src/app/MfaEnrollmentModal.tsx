@@ -156,7 +156,7 @@ export function MfaEnrollmentModal(props: Props) {
                     try {
                       const { data, error } = await supabase.auth.mfa.enroll({
                         factorType: 'totp',
-                        friendlyName: 'VideoCanvass',
+                        friendlyName: 'Camera Canvass',
                       })
                       if (error) throw error
                       if (data.type !== 'totp' || !data.totp) throw new Error('Unexpected enroll response')

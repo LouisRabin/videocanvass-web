@@ -71,7 +71,7 @@ export function LoginPage() {
 
   if (!relationalBackendEnabled() || !supabase) {
     return (
-      <Layout mainScroll="hidden" title="VideoCanvass" subtitle="Configuration error">
+      <Layout mainScroll="hidden" title="Camera Canvass" subtitle="Configuration error">
         <div
           style={{
             flex: 1,
@@ -163,7 +163,7 @@ export function LoginPage() {
   return (
     <Layout
       mainScroll="hidden"
-      title="VideoCanvass"
+      title="Camera Canvass"
       subtitle={mode === 'forgot_password' ? 'Reset your password' : 'Sign in to your workspace'}
     >
       <div

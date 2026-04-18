@@ -19,6 +19,7 @@ import {
   publishMobileTeamDiscoveryLocation,
 } from '../lib/mobileProximityLocationPrefs'
 import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
+import { openAppLocationInSystemSettings } from '../lib/openAppLocationSettings'
 import { supabase } from '../lib/supabase'
 import { appUserFromVcProfileRow, type VcProfileRow } from '../lib/relational/sync'
 import { useTargetMode } from '../lib/targetMode'
@@ -595,23 +596,57 @@ function TeamMembersModalBody(props: {
               <div style={{ fontSize: 12, color: '#b91c1c' }}>{nearbyErr}</div>
             ) : null}
             {nearbyRows.length > 0 ? (
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+              <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: 8, fontSize: 13 }}>
                 {nearbyRows.map((row) => {
                   const u = appUserFromVcProfileRow(row)
                   const d = nearbyDistances[String(row.id)]
                   const dLabel = Number.isFinite(d) ? `~${Math.round(d)} m` : ''
+                  const name = row.display_name?.trim() || u.displayName
+                  const taxFull = (row.tax_number ?? '').trim() || '—'
                   return (
-                    <li key={row.id} style={{ marginBottom: 6 }}>
-                      <span style={{ fontWeight: 700 }}>{row.display_name?.trim() || u.displayName}</span>
-                      {dLabel ? <span style={{ color: vcGlassFgSecondaryOnContent }}> · {dLabel}</span> : null}
+                    <li
+                      key={row.id}
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '8px 10px',
+                        borderRadius: 8,
+                        border: '1px solid rgba(148, 163, 184, 0.35)',
+                        background: 'rgba(255,255,255,0.35)',
+                      }}
+                    >
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontWeight: 800 }}>{name}</span>
+                        <span style={{ color: vcGlassFgSecondaryOnContent }}> · Tax number {taxFull}</span>
+                        {dLabel ? <span style={{ color: vcGlassFgMetaOnContent }}> · {dLabel}</span> : null}
+                      </span>
                       <button
                         type="button"
-                        style={{ ...btn, marginLeft: 8, padding: '4px 8px', fontSize: 12 }}
-                        onClick={() =>
-                          void Promise.resolve(
-                            props.onAdd({ collaboratorUserId: String(row.id), collaboratorProfile: u }),
-                          ).then(clearSearchAfterAdd)
-                        }
+                        style={{ ...btn, padding: '4px 10px', fontSize: 12, flexShrink: 0 }}
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await Promise.resolve(
+                                props.onAdd({
+                                  collaboratorUserId: String(row.id),
+                                  collaboratorProfile: u,
+                                }),
+                              )
+                              const rid = String(row.id)
+                              setNearbyRows((prev) => prev.filter((r) => String(r.id) !== rid))
+                              setNearbyDistances((prev) => {
+                                if (!(rid in prev)) return prev
+                                const next = { ...prev }
+                                delete next[rid]
+                                return next
+                              })
+                            } catch {
+                              /* keep row; parent may have surfaced the error */
+                            }
+                          })()
+                        }}
                       >
                         Add
                       </button>
@@ -685,9 +720,13 @@ export function CasesPage(props: {
   const [teamModalCaseId, setTeamModalCaseId] = useState<string | null>(null)
   /** Mobile (native + mobile web): join-by-proximity when creating a case */
   const [allowProximityJoin, setAllowProximityJoin] = useState(false)
-  const [proximityRadiusM, setProximityRadiusM] = useState(400)
+  const [proximityRadiusM, setProximityRadiusM] = useState(500)
   const [proximityAnchor, setProximityAnchor] = useState<{ lat: number; lng: number } | null>(null)
-  const [proximityAnchorLoading, setProximityAnchorLoading] = useState(false)
+  /** ‘idle’ = proximity option off; otherwise result of the auto location we run when the checkbox is on. */
+  const [proximityLocationUi, setProximityLocationUi] = useState<
+    'idle' | 'loading' | 'ok' | 'error' | 'denied'
+  >('idle')
+  const [showLocationSettingsModal, setShowLocationSettingsModal] = useState(false)
   const [manualInviteCheckLoading, setManualInviteCheckLoading] = useState(false)
   const [manualInviteCheckBanner, setManualInviteCheckBanner] = useState<string | null>(null)
   const [manualInviteModal, setManualInviteModal] = useState<{
@@ -753,6 +792,33 @@ export function CasesPage(props: {
   useEffect(() => {
     if (!isMobileProximityClient() || !relationalBackendEnabled()) return
     void ensureMobileProximityLocationPrefsOn()
+  }, [])
+
+  const startProximityLocationCapture = useCallback(async () => {
+    setProximityLocationUi('loading')
+    setProximityAnchor(null)
+    setShowLocationSettingsModal(false)
+    const perm = await getGeolocationPermissionState()
+    if (perm === 'denied') {
+      setProximityLocationUi('denied')
+      setShowLocationSettingsModal(true)
+      return
+    }
+    const r = await requestCurrentPosition({ enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 })
+    if (r.ok) {
+      setProximityAnchor({
+        lat: r.position.coords.latitude,
+        lng: r.position.coords.longitude,
+      })
+      setProximityLocationUi('ok')
+      return
+    }
+    if (r.code === 'denied') {
+      setProximityLocationUi('denied')
+      setShowLocationSettingsModal(true)
+      return
+    }
+    setProximityLocationUi('error')
   }, [])
 
   const runManualProximityInviteCheck = useCallback(async () => {
@@ -854,7 +920,9 @@ export function CasesPage(props: {
     setNewCaseDescription('')
     setAllowProximityJoin(false)
     setProximityAnchor(null)
-    setProximityRadiusM(400)
+    setProximityLocationUi('idle')
+    setShowLocationSettingsModal(false)
+    setProximityRadiusM(500)
     setShowNewCaseForm(false)
     props.onOpenCase(id)
   }
@@ -1060,7 +1128,7 @@ export function CasesPage(props: {
               <div style={{ fontWeight: 900, fontSize: 13, color: vcGlassFgDarkReadable }}>Nearby invites</div>
               <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
                 Team discovery and proximity invites use your location when you search or join. We keep those on so
-                teammates can find you and you can see invites while VideoCanvass is open.
+                teammates can find you and you can see invites while Camera Canvass is open.
               </p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                 <button
@@ -1187,7 +1255,9 @@ export function CasesPage(props: {
               setNewCaseDescription('')
               setAllowProximityJoin(false)
               setProximityAnchor(null)
-              setProximityRadiusM(400)
+              setProximityLocationUi('idle')
+              setShowLocationSettingsModal(false)
+              setProximityRadiusM(500)
             }}
           >
             <div style={{ display: 'grid', gap: 10 }}>
@@ -1225,53 +1295,103 @@ export function CasesPage(props: {
                     <input
                       type="checkbox"
                       checked={allowProximityJoin}
-                      onChange={(e) => setAllowProximityJoin(e.target.checked)}
+                      onChange={(e) => {
+                        const on = e.target.checked
+                        setAllowProximityJoin(on)
+                        if (on) {
+                          void startProximityLocationCapture()
+                        } else {
+                          setProximityAnchor(null)
+                          setProximityLocationUi('idle')
+                          setShowLocationSettingsModal(false)
+                        }
+                      }}
                       style={{ marginTop: 2 }}
                     />
-                    <span>Allow join by proximity (30 minutes — others nearby can join this case)</span>
+                    <span>Allow nearby users to join this case</span>
                   </label>
                   {allowProximityJoin ? (
                     <>
-                      <div style={{ fontSize: 12, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
-                        Set the area where teammates can see the invite. Uses this device&apos;s location as the center.
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                        <span style={{ fontSize: 12, fontWeight: 700 }}>Radius (m)</span>
-                        <input
-                          type="number"
-                          min={25}
-                          max={10000}
-                          step={25}
-                          value={proximityRadiusM}
-                          onChange={(e) => setProximityRadiusM(Number(e.target.value) || 400)}
-                          style={{ ...field, maxWidth: 100 }}
-                        />
-                        <button
-                          type="button"
-                          style={btn}
-                          disabled={proximityAnchorLoading}
-                          onClick={() => {
-                            setProximityAnchorLoading(true)
-                            void requestCurrentPosition({ enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 }).then((r) => {
-                              setProximityAnchorLoading(false)
-                              if (r.ok) {
-                                setProximityAnchor({
-                                  lat: r.position.coords.latitude,
-                                  lng: r.position.coords.longitude,
-                                })
-                              }
-                            })
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 8,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            flexWrap: 'nowrap',
+                            alignItems: 'center',
+                            gap: 6,
+                            minWidth: 0,
+                            maxWidth: '100%',
                           }}
                         >
-                          {proximityAnchorLoading ? 'Getting location…' : 'Use current location'}
-                        </button>
-                      </div>
-                      {proximityAnchor ? (
-                        <div style={{ fontSize: 12, color: '#047857', fontWeight: 700 }}>
-                          Location captured. Invite active for 30 minutes after you create the case.
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              whiteSpace: 'nowrap',
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            Radius (m)
+                          </span>
+                          <input
+                            type="number"
+                            min={25}
+                            max={10000}
+                            step={25}
+                            value={proximityRadiusM}
+                            onChange={(e) => setProximityRadiusM(Number(e.target.value) || 500)}
+                            style={{ ...field, maxWidth: 100, width: 88, flex: '0 0 auto' }}
+                            aria-label="Distance in meters from your current location"
+                          />
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 500,
+                              whiteSpace: 'nowrap',
+                              lineHeight: 1.2,
+                              color: vcGlassFgDarkReadable,
+                            }}
+                          >
+                            from your current location
+                          </span>
                         </div>
-                      ) : allowProximityJoin ? (
-                        <div style={{ fontSize: 12, color: '#b45309' }}>Capture location to enable proximity join.</div>
+                        {proximityLocationUi === 'loading' ? (
+                          <span style={{ fontSize: 12, color: vcGlassFgMetaOnContent }}>Getting location…</span>
+                        ) : proximityLocationUi === 'error' || proximityLocationUi === 'denied' ? (
+                          <button
+                            type="button"
+                            style={{ ...btn, fontSize: 12, padding: '4px 10px' }}
+                            onClick={() => void startProximityLocationCapture()}
+                          >
+                            Try again
+                          </button>
+                        ) : null}
+                      </div>
+                      {proximityLocationUi === 'ok' && proximityAnchor ? (
+                        <div>
+                          <div style={{ fontSize: 12, color: '#047857', fontWeight: 800 }}>Location found</div>
+                          <div style={{ fontSize: 11, color: vcGlassFgMetaOnContent, marginTop: 2 }}>
+                            Invite is active for 30 minutes after you save this case.
+                          </div>
+                        </div>
+                      ) : null}
+                      {proximityLocationUi === 'error' ? (
+                        <div style={{ fontSize: 12, color: '#c2410c', fontWeight: 600 }}>
+                          Location can not be found, check connection
+                        </div>
+                      ) : null}
+                      {proximityLocationUi === 'denied' && !showLocationSettingsModal ? (
+                        <div style={{ fontSize: 12, color: '#c2410c', fontWeight: 600 }}>
+                          Location access is off. Use “Try again” after allowing location, or open Settings from the
+                          prompt.
+                        </div>
                       ) : null}
                     </>
                   ) : null}
@@ -1285,7 +1405,9 @@ export function CasesPage(props: {
                     setNewCaseDescription('')
                     setAllowProximityJoin(false)
                     setProximityAnchor(null)
-                    setProximityRadiusM(400)
+                    setProximityLocationUi('idle')
+                    setShowLocationSettingsModal(false)
+                    setProximityRadiusM(500)
                   }}
                   style={btn}
                 >
@@ -1303,6 +1425,41 @@ export function CasesPage(props: {
                   }
                 >
                   Save case
+                </button>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            title="Location services"
+            open={showLocationSettingsModal}
+            onClose={() => {
+              setShowLocationSettingsModal(false)
+            }}
+            zBase={85000}
+          >
+            <div style={{ ...vcLiquidGlassInnerSurface, padding: 16, borderRadius: 12, display: 'grid', gap: 12 }}>
+              <p style={{ margin: 0, color: vcGlassFgDarkReadable, lineHeight: 1.45, fontSize: 15 }}>
+                To set join-by-proximity, Camera Canvass needs your location. Open your device settings to allow
+                location access for this app, then return and tap <strong>Try again</strong>.
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowLocationSettingsModal(false)}
+                  style={{ border: '1px solid rgba(148,163,184,0.5)', borderRadius: 10, padding: '10px 14px', background: 'rgba(255,255,255,0.85)', fontWeight: 700 }}
+                >
+                  Not now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    openAppLocationInSystemSettings()
+                    setShowLocationSettingsModal(false)
+                  }}
+                  style={vcGlassBtnPrimary}
+                >
+                  Open app settings
                 </button>
               </div>
             </div>

@@ -338,7 +338,7 @@ function SessionGate() {
     }
     if (mfaGate === 'totp') {
       return (
-        <Layout title="VideoCanvass" subtitle="Two-step verification">
+        <Layout title="Camera Canvass" subtitle="Two-step verification">
           <MfaTotpChallengePanel
             onSignOut={async () => {
               if (supabase) await supabase.auth.signOut()
@@ -351,7 +351,7 @@ function SessionGate() {
     }
     if (mfaGate === 'unsupported') {
       return (
-        <Layout title="VideoCanvass" subtitle="Sign-in issue">
+        <Layout title="Camera Canvass" subtitle="Sign-in issue">
           <div style={{ ...vcLiquidGlassInnerSurface, display: 'grid', gap: 12, maxWidth: 480, padding: 16, borderRadius: 14 }}>
             <p style={{ margin: 0, color: vcGlassFgDarkReadable, lineHeight: 1.5 }}>
               Your account requires MFA, but this app only supports authenticator-app (TOTP) codes right now. Phone/SMS or WebAuthn factors cannot be used here yet.
@@ -418,7 +418,7 @@ function MockLogin(props: { users: AppUser[]; onSelectUser: (userId: string) => 
   const prodDemoMisconfig = import.meta.env.PROD && !relationalBackendEnabled()
 
   return (
-    <Layout title="VideoCanvass POC" subtitle="Mock sign-in (demo only)">
+    <Layout title="Camera Canvass POC" subtitle="Mock sign-in (demo only)">
       <div style={vcAuthMainCenterWrap}>
         {prodDemoMisconfig ? (
           <div

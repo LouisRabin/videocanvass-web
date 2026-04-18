@@ -194,7 +194,7 @@ export function buildCaseExportPdf(params: {
     doc.setFontSize(8)
     doc.setTextColor(100, 100, 100)
     doc.text(
-      `VideoCanvass · ${caseFile.caseNumber} · page ${i}/${pageCount}`,
+      `Camera Canvass · ${caseFile.caseNumber} · page ${i}/${pageCount}`,
       margin,
       doc.internal.pageSize.getHeight() - 8,
     )
@@ -205,5 +205,5 @@ export function buildCaseExportPdf(params: {
 }
 
 export function downloadCaseExportPdf(doc: jsPDF, caseLabel: string): void {
-  doc.save(`videocanvass-export-${safeFileSlug(caseLabel)}.pdf`)
+  doc.save(`camera-canvass-export-${safeFileSlug(caseLabel)}.pdf`)
 }

@@ -71,7 +71,7 @@ export function MfaTotpChallengePanel(props: Props) {
     >
       <div style={{ fontWeight: 900, fontSize: 18 }}>Two-step verification</div>
       <p style={{ margin: 0, fontSize: 14, color: '#475569', lineHeight: 1.45 }}>
-        Open your authenticator app and enter the current code for VideoCanvass.
+        Open your authenticator app and enter the current code for Camera Canvass.
       </p>
       <label style={{ display: 'grid', gap: 6 }}>
         <span style={{ fontWeight: 700, fontSize: 13 }}>Authentication code</span>

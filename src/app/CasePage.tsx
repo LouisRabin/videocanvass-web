@@ -5048,7 +5048,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
                         if (i < 0) {
                           if (import.meta.env.DEV) {
                             console.warn(
-                              '[VideoCanvass] onCanvassAddAddressResolved: no pending row matched lat/lon (check tap vs pin hit order)',
+                              '[Camera Canvass] onCanvassAddAddressResolved: no pending row matched lat/lon (check tap vs pin hit order)',
                               result,
                               'newRows',
                               q.filter((x) => x.mode === 'new').map((x) => ({ lat: x.lat, lon: x.lon })),

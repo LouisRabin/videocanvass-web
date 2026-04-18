@@ -28,7 +28,7 @@ export function downloadCaseLocationsCsv(caseLabel: string, locations: Location[
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `videocanvass-addresses-${safeFileSlug(caseLabel)}.csv`
+  a.download = `camera-canvass-addresses-${safeFileSlug(caseLabel)}.csv`
   a.rel = 'noopener'
   a.click()
   URL.revokeObjectURL(url)

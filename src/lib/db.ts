@@ -151,9 +151,9 @@ export function normalizeAppData(data: AppData): AppData {
 }
 
 localforage.config({
-  name: 'VideoCanvass',
+  name: 'Camera Canvass',
   storeName: 'vc_store',
-  description: 'Offline storage for VideoCanvass MVP',
+  description: 'Offline storage for Camera Canvass MVP',
 })
 
 async function loadSharedData(): Promise<AppData | null> {
@@ -316,7 +316,21 @@ export function appDataSyncFingerprint(d: AppData): string {
   })
 }
 
-export function mergeAppData(local: AppData, remote: AppData): AppData {
+export type MergeAppDataOptions = {
+  /**
+   * Relational: current session user id. When set, any case the server no longer returns is dropped
+   * for everyone except the case owner (so a collaborator’s “team” list loses cases the owner
+   * deleted, while the owner can still keep an unsynced new case that is not in `remote` yet).
+   * `mergeById` alone re-adds local rows missing from remote, which is wrong for server deletes.
+   */
+  relationalSessionUid?: string | null
+}
+
+export function mergeAppData(
+  local: AppData,
+  remote: AppData,
+  options?: MergeAppDataOptions,
+): AppData {
   const delCases = new Set(mergeTombstoneIds(local.deletedCaseIds, remote.deletedCaseIds))
   const delLocs = new Set(mergeTombstoneIds(local.deletedLocationIds, remote.deletedLocationIds))
   const delTracks = new Set(mergeTombstoneIds(local.deletedTrackIds, remote.deletedTrackIds))
@@ -325,6 +339,11 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
   const delCollabKeys = new Set(
     mergeTombstoneIds(local.deletedCaseCollaboratorKeys, remote.deletedCaseCollaboratorKeys),
   )
+
+  const sessionKey = options?.relationalSessionUid != null && String(options.relationalSessionUid).trim() !== ''
+    ? normUuidKey(String(options.relationalSessionUid))
+    : ''
+  const remCaseIdSet = new Set(remote.cases.map((c) => c.id))
 
   const locCases = local.cases.filter((c) => !delCases.has(c.id))
   const remCases = remote.cases.filter((c) => !delCases.has(c.id))
@@ -350,6 +369,22 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
   const locAtt = local.caseAttachments.filter((a) => !delAtt.has(a.id) && !delCases.has(a.caseId))
   const remAtt = remote.caseAttachments.filter((a) => !delAtt.has(a.id) && !delCases.has(a.caseId))
 
+  const rawMergedCases = mergeById(locCases, remCases, (x) => x.id, (x) => x.updatedAt ?? x.createdAt)
+  const casesMerged =
+    sessionKey.length > 0
+      ? rawMergedCases.filter(
+          (c) => remCaseIdSet.has(c.id) || normUuidKey(c.ownerUserId) === sessionKey,
+        )
+      : rawMergedCases
+  const purgedByServer = new Set(
+    sessionKey.length > 0
+      ? rawMergedCases
+          .filter((c) => !casesMerged.some((k) => k.id === c.id))
+          .map((c) => c.id)
+      : [],
+  )
+  const caseIdsExcluded = new Set([...delCases, ...purgedByServer])
+
   return normalizeAppData({
     version: 1,
     deletedCaseIds: [...delCases],
@@ -358,13 +393,40 @@ export function mergeAppData(local: AppData, remote: AppData): AppData {
     deletedTrackPointIds: [...delPoints],
     deletedCaseAttachmentIds: [...delAtt],
     deletedCaseCollaboratorKeys: [...delCollabKeys],
-    cases: mergeById(locCases, remCases, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
-    locations: mergeById(locLocs, remLocs, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
-    tracks: mergeById(locTracks, remTracks, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
-    trackPoints: mergeById(locPts, remPts, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
+    cases: casesMerged,
+    locations: mergeById(
+      locLocs.filter((l) => !caseIdsExcluded.has(l.caseId)),
+      remLocs.filter((l) => !caseIdsExcluded.has(l.caseId)),
+      (x) => x.id,
+      (x) => x.updatedAt ?? x.createdAt,
+    ),
+    tracks: mergeById(
+      locTracks.filter((t) => !caseIdsExcluded.has(t.caseId)),
+      remTracks.filter((t) => !caseIdsExcluded.has(t.caseId)),
+      (x) => x.id,
+      (x) => x.updatedAt ?? x.createdAt,
+    ),
+    trackPoints: mergeById(
+      locPts.filter(
+        (p) => !caseIdsExcluded.has(p.caseId) && !delPoints.has(p.id) && !delTracks.has(p.trackId),
+      ),
+      remPts.filter(
+        (p) => !caseIdsExcluded.has(p.caseId) && !delPoints.has(p.id) && !delTracks.has(p.trackId),
+      ),
+      (x) => x.id,
+      (x) => x.updatedAt ?? x.createdAt,
+    ),
     users: mergeById(local.users, remote.users, (x) => x.id, (x) => x.createdAt),
-    caseCollaborators: mergeCollaborators(locCollab, remCollab),
-    caseAttachments: mergeById(locAtt, remAtt, (x) => x.id, (x) => x.updatedAt ?? x.createdAt),
+    caseCollaborators: mergeCollaborators(
+      locCollab.filter((c) => !caseIdsExcluded.has(c.caseId)),
+      remCollab.filter((c) => !caseIdsExcluded.has(c.caseId)),
+    ),
+    caseAttachments: mergeById(
+      locAtt.filter((a) => !caseIdsExcluded.has(a.caseId)),
+      remAtt.filter((a) => !caseIdsExcluded.has(a.caseId)),
+      (x) => x.id,
+      (x) => x.updatedAt ?? x.createdAt,
+    ),
     // Populated from relational pull (`vc_user_unit_members`); treat remote as source of truth when merging.
     myUnitIds: remote.myUnitIds ?? local.myUnitIds,
   })
@@ -676,7 +738,7 @@ export async function pullAndMergeWithLocal(local: AppData): Promise<AppData | n
     })
     traceRelationalPullStep('pullAndMerge_loadAppDataFromRelational', tPull)
     if (!remote) return null
-    return mergeAppData(local, remote)
+    return mergeAppData(local, remote, { relationalSessionUid: quick.user.id })
   }
   const remote = await loadSharedData()
   if (!remote) return null

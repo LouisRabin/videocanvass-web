@@ -19,7 +19,7 @@ export function getAppServerOrigin(): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     if (import.meta.env.PROD && Capacitor.isNativePlatform()) {
       console.warn(
-        '[VideoCanvass] VITE_APP_SERVER_ORIGIN is unset. Geocode /api proxies will not work in the native app until you set it to your production web URL at build time.',
+        '[Camera Canvass] VITE_APP_SERVER_ORIGIN is unset. Geocode /api proxies will not work in the native app until you set it to your production web URL at build time.',
       )
     }
     return window.location.origin

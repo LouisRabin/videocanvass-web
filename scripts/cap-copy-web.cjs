@@ -11,7 +11,7 @@ const dist = path.join(root, 'dist')
 /** Keep aligned with root `capacitor.config.ts`. */
 const config = {
   appId: 'com.videocanvass.app',
-  appName: 'VideoCanvass',
+  appName: 'Camera Canvass',
   webDir: 'dist',
 }
 

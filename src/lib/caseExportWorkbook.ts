@@ -25,7 +25,7 @@ export async function downloadCaseAddressesTracksWorkbook(
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `videocanvass-case-${safeFileSlug(caseLabel)}.xlsx`
+  a.download = `camera-canvass-case-${safeFileSlug(caseLabel)}.xlsx`
   a.rel = 'noopener'
   a.click()
   URL.revokeObjectURL(url)

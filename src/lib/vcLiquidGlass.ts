@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 
 /**
- * VideoCanvass “liquid glass” design language (map toolbar is the reference).
+ * Camera Canvass “liquid glass” design language (map toolbar is the reference).
  *
  * - Primary chrome slabs → `vcLiquidGlassPanel` (map / dock; saturated blue glass).
  * - Nested chips on those slabs → `vcLiquidGlassPanelNestedLight` (brighter frost so interiors don’t stack muddy).

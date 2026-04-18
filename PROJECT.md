@@ -1,4 +1,4 @@
-# VideoCanvass Web — Project Handoff
+# Camera Canvass — Project Handoff
 
 This file is the “handoff” context so you can move computers and quickly continue development in a new chat.
 

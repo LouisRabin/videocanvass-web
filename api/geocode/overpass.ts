@@ -2,7 +2,7 @@ import { handleGeocodeOptions, withGeocodeCors } from './_cors.js'
 
 export const config = { runtime: 'edge' }
 
-const OVERPASS_USER_AGENT = 'VideoCanvass/1.0 (building footprint proxy)'
+const OVERPASS_USER_AGENT = 'Camera-Canvass/1.0 (building footprint proxy)'
 
 export default async function handler(request: Request): Promise<Response> {
   const preflight = handleGeocodeOptions(request)

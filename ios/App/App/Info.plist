@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>VideoCanvass</string>
+        <string>Camera Canvass</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -48,10 +48,10 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>VideoCanvass uses your location to center the map and place canvass addresses, to find nearby teammates when you choose that option, and to offer case invites when you enable proximity join.</string>
+	<string>Camera Canvass uses your location to center the map and place canvass addresses, to find nearby teammates when you choose that option, and to offer case invites when you enable proximity join.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>VideoCanvass needs photo library access so you can attach reference images to a case.</string>
+	<string>Camera Canvass needs photo library access so you can attach reference images to a case.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>VideoCanvass needs camera access when you choose to take a new photo for a case attachment.</string>
+	<string>Camera Canvass needs camera access when you choose to take a new photo for a case attachment.</string>
 </dict>
 </plist>
