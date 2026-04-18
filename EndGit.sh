@@ -60,9 +60,17 @@ fi
 
 echo ""
 echo "[3/6] Pushing branch..."
-if ! git push; then
+BR="$(git branch --show-current)"
+if [[ -z "${BR}" ]]; then
   echo ""
-  echo "[ERROR] git push failed."
+  echo "[ERROR] No current branch name (detached HEAD?). Checkout a branch, then push manually."
+  exit 1
+fi
+echo "  Remote: origin · Branch: ${BR}"
+# First push on a clone often has no upstream — plain \`git push\` fails. -u sets tracking once.
+if ! git push -u origin "${BR}"; then
+  echo ""
+  echo "[ERROR] git push failed (network, auth, or remote name not \"origin\")."
   exit 1
 fi
 
