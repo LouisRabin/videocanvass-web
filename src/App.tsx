@@ -24,10 +24,12 @@ import { useTargetMode } from './lib/targetMode'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from './lib/useMediaQuery'
 import { StoreProvider, useStore } from './lib/store'
 import { CasesPage } from './app/CasesPage'
+import { ProximityInviteListener } from './app/ProximityInviteListener'
 import { Layout } from './app/Layout'
 import { Modal } from './app/Modal'
 import { BuildDebugStrip } from './app/BuildDebugStrip'
 import { LoginPage } from './app/LoginPage'
+import { VcSessionLoadingShell } from './app/VcSessionLoadingShell'
 import { PasswordRecoveryPage } from './app/PasswordRecoveryPage'
 import { MfaTotpChallengePanel } from './app/MfaTotpChallengePanel'
 import { getPreferredTotpFactorId, sessionNeedsTotpStep } from './lib/mfaAuth'
@@ -92,19 +94,9 @@ function readNavRouteFromStorage(userId: string, allowAdminGlobal: boolean): App
   return { name: 'cases' }
 }
 
-function VcStartupMark() {
-  return (
-    <div className="vc-startup-mark-wrap" role="status" aria-busy="true" aria-label="Starting application">
-      <div className="vc-startup-mark" aria-hidden />
-    </div>
-  )
+function RouteSuspenseFallback() {
+  return <VcSessionLoadingShell message="Opening workspace…" />
 }
-
-const routeSuspenseFallback = (
-  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-    <VcStartupMark />
-  </div>
-)
 
 function App() {
   const targetMode = useTargetMode()
@@ -317,51 +309,13 @@ function SessionGate() {
     [data.users, mockUserId],
   )
 
-  useEffect(() => {
-    if (!ready) return
-    if (relationalBackendEnabled()) {
-      if (!authResolved || !sessionUserId || awaitingPasswordReset) return
-      if (mfaGate !== 'off') return
-    } else if (!mockUserId) {
-      return
-    }
-    let idleId: number | undefined
-    let timeoutId: ReturnType<typeof setTimeout> | undefined
-    if (typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(
-        () => {
-          void import('./app/CasePage')
-        },
-        { timeout: 2500 },
-      )
-    } else {
-      timeoutId = window.setTimeout(() => {
-        void import('./app/CasePage')
-      }, 450)
-    }
-    return () => {
-      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleId)
-      }
-      if (timeoutId != null) clearTimeout(timeoutId)
-    }
-  }, [ready, authResolved, sessionUserId, mockUserId, awaitingPasswordReset, mfaGate])
-
   if (!ready) {
-    return (
-      <Layout title="VideoCanvass">
-        <VcStartupMark />
-      </Layout>
-    )
+    return <VcSessionLoadingShell message="Loading your workspace…" />
   }
 
   if (relationalBackendEnabled()) {
     if (!authResolved) {
-      return (
-        <Layout title="VideoCanvass">
-          <VcStartupMark />
-        </Layout>
-      )
+      return <VcSessionLoadingShell message="Restoring session…" />
     }
     if (!sessionUserId) {
       return <LoginPage />
@@ -380,11 +334,7 @@ function SessionGate() {
       )
     }
     if (mfaGate === 'checking') {
-      return (
-        <Layout title="VideoCanvass" subtitle="Checking security…">
-          <VcStartupMark />
-        </Layout>
-      )
+      return <VcSessionLoadingShell message="Verifying sign-in…" subtitle="Checking security…" />
     }
     if (mfaGate === 'totp') {
       return (
@@ -422,22 +372,21 @@ function SessionGate() {
       )
     }
     if (!relationalUser) {
-      return (
-        <Layout title="VideoCanvass">
-          <VcStartupMark />
-        </Layout>
-      )
+      return <VcSessionLoadingShell message="Loading profile…" />
     }
     const relationalRouter = (
-      <Router
-        currentUser={relationalUser}
-        onLogout={async () => {
-          if (supabase) await supabase.auth.signOut()
-          applySession(null)
-          setMfaGate('off')
-        }}
-        allowAdminGlobal={relationalUser.appRole === 'admin'}
-      />
+      <>
+        <ProximityInviteListener />
+        <Router
+          currentUser={relationalUser}
+          onLogout={async () => {
+            if (supabase) await supabase.auth.signOut()
+            applySession(null)
+            setMfaGate('off')
+          }}
+          allowAdminGlobal={relationalUser.appRole === 'admin'}
+        />
+      </>
     )
     return TOUR_UI_ENABLED ? <TourProvider>{relationalRouter}</TourProvider> : relationalRouter
   }
@@ -739,7 +688,7 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
     return (
       <>
         {idleWarningModal}
-        <Suspense fallback={routeSuspenseFallback}>
+        <Suspense fallback={<RouteSuspenseFallback />}>
           <GlobalCanvassAdminPage onBack={() => setRoute({ name: 'cases' })} />
         </Suspense>
       </>
@@ -781,7 +730,7 @@ function Router(props: { currentUser: AppUser; onLogout: () => void; allowAdminG
   return (
     <>
       {idleWarningModal}
-      <Suspense fallback={routeSuspenseFallback}>
+      <Suspense fallback={<RouteSuspenseFallback />}>
         <CasePage caseId={currentCase.id} currentUser={props.currentUser} onBack={() => setRoute({ name: 'cases' })} />
       </Suspense>
     </>

@@ -168,43 +168,25 @@ button {
   }
 }
 
+/* Session bootstrap / lazy route: centered spinner in glass card (matches mobile login shell). */
+.vc-app-bootstrap-spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid rgba(15, 23, 42, 0.12);
+  border-top-color: rgba(30, 64, 175, 0.88);
+  box-sizing: border-box;
+  animation: vc-app-bootstrap-spin 0.8s linear infinite;
+}
+
+@keyframes vc-app-bootstrap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Case manager search on page backdrop — placeholder matches liquid-glass slate family */
 .vc-glass-search-field::placeholder {
   color: rgba(51, 65, 85, 0.78);
   font-weight: 600;
-}
-
-@keyframes vc-startup-pulse {
-  0%,
-  100% {
-    opacity: 0.28;
-    transform: scale(0.94);
-  }
-  50% {
-    opacity: 0.95;
-    transform: scale(1);
-  }
-}
-
-.vc-startup-mark-wrap {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 140px;
-  padding: 24px;
-}
-
-.vc-startup-mark {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.42), rgba(99, 102, 241, 0.32));
-  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
-  animation: vc-startup-pulse 1.15s ease-in-out infinite;
-}
-
-/* MapLibre compact attribution (“i”) — hide on touch-first UIs when parent opts in (see `shouldHideMaplibreAttributionForTouchUi`). */
-[data-vc-hide-map-attribution='true'] .maplibregl-ctrl-attrib {
-  display: none !important;
 }

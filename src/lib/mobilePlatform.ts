@@ -1,6 +1,20 @@
+import { Capacitor } from '@capacitor/core'
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from 'react'
 
 type MobileOS = 'ios' | 'android'
+
+/**
+ * True for Capacitor iOS/Android shells and for mobile browsers (phone/tablet UA).
+ * Used to gate proximity / team-location features; desktop browsers return false.
+ */
+export function isMobileProximityClient(): boolean {
+  if (typeof window === 'undefined') return false
+  if (Capacitor.isNativePlatform()) {
+    const p = Capacitor.getPlatform()
+    return p === 'ios' || p === 'android'
+  }
+  return getMobileOS() !== null
+}
 
 /**
  * Best-effort OS hint for tuning native controls. Desktop / unknown mobile UAs return null.

@@ -109,7 +109,7 @@ export function LoginPage() {
         const redirectTo = passwordRecoveryRedirectTo()
         if (!redirectTo.startsWith('http://') && !redirectTo.startsWith('https://')) {
           throw new Error(
-            'Cannot build a valid return URL. Set VITE_VC_SITE_URL to your site (e.g. https://your-app.vercel.app) and redeploy, or open the app from a normal https address.',
+            'Cannot build a valid return URL. Set VITE_VC_SITE_URL to your site (e.g. https://www.cameracanvass.com) and redeploy, or open the app from a normal https address.',
           )
         }
         const { error } = await client.auth.resetPasswordForEmail(em, {

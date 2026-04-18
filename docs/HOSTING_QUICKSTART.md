@@ -12,6 +12,8 @@ Full checklist: [DEPLOY_ENV_CHECKLIST.md](DEPLOY_ENV_CHECKLIST.md).
 | `VITE_SUPABASE_ANON_KEY` | Anon public key from Supabase → Project Settings → API |
 | `VITE_SHARED_WORKSPACE_ID` | Same as local (e.g. `nypd-poc`) when **not** using relational mode |
 | `VITE_VC_RELATIONAL_BACKEND` | `true` or `false` — **must match** Android and local |
+| `VITE_VC_SITE_URL` | Optional; public `https` origin (e.g. `https://www.cameracanvass.com`) if password-reset `redirectTo` must not rely on `window.location` |
+| `VITE_APP_SERVER_ORIGIN` | Same origin for **Capacitor** builds so `/api/geocode/*` hits your deployed web app |
 
 ## Netlify
 

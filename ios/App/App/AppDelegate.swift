@@ -40,10 +40,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
-        // Called when the app was launched with an activity, including Universal Links.
-        // Feel free to add additional processing here, but if you want the App API to support
-        // tracking app url opens, make sure to keep this call
-        return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
+        // Universal Links: mirror ApplicationDelegateProxy (see CAPApplicationDelegateProxy in Capacitor).
+        // Do not call `ApplicationDelegateProxy.shared.application(..., continue: ...)` from the app
+        // target — Swift can pick the `open url` overload and fail to compile. Avoid `CAPBridge` here
+        // because the SPM xcframework may not expose that symbol the same way as source builds.
+        if userActivity.activityType != NSUserActivityTypeBrowsingWeb || userActivity.webpageURL == nil {
+            return false
+        }
+        let url = userActivity.webpageURL
+        let payload: [String: Any] = ["url": url as Any]
+        NotificationCenter.default.post(name: .capacitorOpenUniversalLink, object: payload)
+        return true
     }
 
 }

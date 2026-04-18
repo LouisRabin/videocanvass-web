@@ -79,7 +79,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 type StoreState = {
   ready: boolean
   data: AppData
-  createCase: (input: { ownerUserId: string; caseName: string; description?: string }) => Promise<string>
+  createCase: (input: {
+    ownerUserId: string
+    caseName: string
+    description?: string
+    /** Mobile clients (native + mobile web): proximity join — register invite on server after insert (relational only). */
+    proximityInvite?: { centerLat: number; centerLng: number; radiusM: number }
+  }) => Promise<string>
+  /** Pull relational data and merge into local store (e.g. after server-side collaborator insert). */
+  reconcileWithRemote: () => Promise<void>
   deleteCase: (actorUserId: string, caseId: string) => Promise<void>
   updateCase: (
     actorUserId: string,
@@ -498,8 +506,29 @@ export function StoreProvider(props: { children: React.ReactNode }) {
     syncPullInFlightRef,
   })
 
+  const reconcileWithRemote = useCallback(async () => {
+    if (!relationalBackendEnabled() || !supabase) return
+    try {
+      const merged = await pullAndMergeWithLocal(dataRef.current)
+      if (merged) {
+        const next = ensurePocUsers(merged)
+        dataRef.current = next
+        setData(next)
+        await writeLocalDataCache(next)
+        setSyncStatus({ mode: 'supabase_ok' })
+      }
+    } catch (e) {
+      console.warn('reconcileWithRemote failed:', e)
+    }
+  }, [])
+
   const createCase = useCallback(
-    async (input: { ownerUserId: string; caseName: string; description?: string }) => {
+    async (input: {
+      ownerUserId: string
+      caseName: string
+      description?: string
+      proximityInvite?: { centerLat: number; centerLng: number; radiusM: number }
+    }) => {
       const now = Date.now()
       const id = newId('case')
       const caseName = input.caseName.trim()
@@ -521,6 +550,16 @@ export function StoreProvider(props: { children: React.ReactNode }) {
         cases: [c, ...current.cases],
       }
       await persist(next)
+      if (relationalBackendEnabled() && supabase && input.proximityInvite) {
+        const pi = input.proximityInvite
+        const { error } = await supabase.rpc('vc_register_case_proximity_invite', {
+          p_case_id: id,
+          p_center_lat: pi.centerLat,
+          p_center_lng: pi.centerLng,
+          p_radius_m: pi.radiusM,
+        })
+        if (error) console.warn('vc_register_case_proximity_invite:', error.message)
+      }
       return id
     },
     [persist],
@@ -1345,6 +1384,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       ready,
       data,
       createCase,
+      reconcileWithRemote,
       deleteCase,
       updateCase,
       addCaseAttachment,
@@ -1371,6 +1411,7 @@ export function StoreProvider(props: { children: React.ReactNode }) {
       ready,
       data,
       createCase,
+      reconcileWithRemote,
       deleteCase,
       updateCase,
       addCaseAttachment,

@@ -2,7 +2,7 @@
  * Ensures node_modules matches the project lockfile / package.json.
  * Used by npm run startdev and StartDevServer.bat on a fresh machine or after dependency changes.
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, rmSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -28,6 +28,41 @@ function needsInstall() {
     }
   }
   return false;
+}
+
+/** @esbuild/* is OS-specific; copying node_modules between Windows and Mac (e.g. OneDrive) leaves the wrong binary. */
+function esbuildNativeDirForCurrentPlatform() {
+  switch (process.platform) {
+    case 'win32':
+      if (process.arch === 'ia32') return 'win32-ia32';
+      if (process.arch === 'arm64') return 'win32-arm64';
+      return 'win32-x64';
+    case 'darwin':
+      return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+    case 'linux':
+      if (process.arch === 'arm64') return 'linux-arm64';
+      if (process.arch === 'ia32') return 'linux-ia32';
+      return 'linux-x64';
+    default:
+      return null;
+  }
+}
+
+function repairEsbuildNativePlatform() {
+  const tag = esbuildNativeDirForCurrentPlatform();
+  if (!tag) return 0;
+  if (!existsSync(join(nm, 'esbuild', 'package.json'))) return 0;
+  const hostPkg = join(nm, '@esbuild', tag);
+  if (existsSync(hostPkg)) return 0;
+  console.log(
+    `Missing @esbuild/${tag} (common when node_modules is synced from another OS). Re-installing optional native deps...`,
+  );
+  const esbuildOptionalRoot = join(nm, '@esbuild');
+  if (existsSync(esbuildOptionalRoot)) {
+    rmSync(esbuildOptionalRoot, { recursive: true, force: true });
+  }
+  const r = spawnSync(npm, ['install', '--no-audit', '--no-fund'], { stdio: 'inherit', shell: true });
+  return r.status ?? 1;
 }
 
 /** OneDrive / interrupted installs often leave package.json but no dist/ — Vite then fails to pre-bundle. */
@@ -86,6 +121,9 @@ if (needsInstall()) {
   console.log('Dependencies missing or out of date. Running npm install...');
   const result = spawnSync(npm, ['install'], { stdio: 'inherit', shell: true });
   code = result.status ?? 1;
+}
+if (code === 0) {
+  code = repairEsbuildNativePlatform();
 }
 if (code === 0) {
   code = reinstallPackagesWithMissingFiles();

@@ -13,6 +13,9 @@ import {
 } from '../lib/caseMeta'
 import { MOBILE_BREAKPOINT_QUERY, useMediaQuery } from '../lib/useMediaQuery'
 import { relationalBackendEnabled } from '../lib/backendMode'
+import { isMobileProximityClient } from '../lib/mobilePlatform'
+import { ensureMobileProximityLocationPrefsOn } from '../lib/mobileProximityLocationPrefs'
+import { getGeolocationPermissionState, requestCurrentPosition } from '../lib/geolocationRequest'
 import { supabase } from '../lib/supabase'
 import { appUserFromVcProfileRow, type VcProfileRow } from '../lib/relational/sync'
 import { useTargetMode } from '../lib/targetMode'
@@ -73,6 +76,14 @@ function TeamMembersModalBody(props: {
   onAddMany: (items: { collaboratorUserId: string; collaboratorProfile: AppUser }[]) => Promise<void> | void
   onRemove: (collaboratorUserId: string) => void
 }) {
+  const showMobileNearby = isMobileProximityClient() && relationalBackendEnabled()
+  const [nearbyRows, setNearbyRows] = useState<VcProfileRow[]>([])
+  const [nearbyLoading, setNearbyLoading] = useState(false)
+  const [nearbyErr, setNearbyErr] = useState<string | null>(null)
+  const [nearbyRadiusM, setNearbyRadiusM] = useState(500)
+  const [nearbyDistances, setNearbyDistances] = useState<Record<string, number>>({})
+  const [nearbyHadSuccessfulSearch, setNearbyHadSuccessfulSearch] = useState(false)
+
   const [searchQuery, setSearchQuery] = useState('')
   const [profileResults, setProfileResults] = useState<VcProfileRow[]>([])
   const [unitResults, setUnitResults] = useState<UnitSearchRow[]>([])
@@ -492,6 +503,135 @@ function TeamMembersModalBody(props: {
             ) : null}
           </div>
         ) : null}
+        {showMobileNearby ? (
+          <div
+            style={{
+              borderTop: '1px solid rgba(148, 163, 184, 0.35)',
+              paddingTop: 10,
+              display: 'grid',
+              gap: 8,
+            }}
+          >
+            <span style={{ fontWeight: 800, fontSize: 13 }}>Nearby (this device)</span>
+            <p style={{ margin: 0, fontSize: 12, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
+              Find teammates who have team location sharing enabled. Uses your current position.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>Radius (m)</span>
+              <input
+                type="number"
+                min={25}
+                max={2000}
+                step={25}
+                value={nearbyRadiusM}
+                onChange={(e) => setNearbyRadiusM(Number(e.target.value) || 500)}
+                style={{ ...field, maxWidth: 96 }}
+              />
+              <button
+                type="button"
+                style={btn}
+                disabled={nearbyLoading || !supabase}
+                onClick={() => {
+                  if (!supabase) return
+                  setNearbyLoading(true)
+                  setNearbyErr(null)
+                  setNearbyHadSuccessfulSearch(false)
+                  void (async () => {
+                    const pos = await requestCurrentPosition({
+                      enableHighAccuracy: true,
+                      timeout: 20_000,
+                      maximumAge: 60_000,
+                    })
+                    if (!pos.ok) {
+                      setNearbyErr('Location is required for nearby search.')
+                      setNearbyLoading(false)
+                      setNearbyHadSuccessfulSearch(false)
+                      return
+                    }
+                    const lat = pos.position.coords.latitude
+                    const lng = pos.position.coords.longitude
+                    const acc = pos.position.coords.accuracy
+                    const { data: pref } = await supabase
+                      .from('vc_profile_location_prefs')
+                      .select('proximity_invite_listen')
+                      .maybeSingle()
+                    const listen =
+                      ((pref as { proximity_invite_listen?: boolean } | null)?.proximity_invite_listen) ?? true
+                    await supabase.rpc('vc_update_my_location_prefs', {
+                      p_team_discovery_sharing: true,
+                      p_proximity_invite_listen: listen,
+                      p_lat: lat,
+                      p_lng: lng,
+                      p_accuracy_m: acc ?? null,
+                    })
+                    const { data, error } = await supabase.rpc('vc_nearby_profiles_team_discovery', {
+                      p_case_id: props.caseId,
+                      p_lat: lat,
+                      p_lng: lng,
+                      p_radius_m: nearbyRadiusM,
+                    })
+                    setNearbyLoading(false)
+                    if (error) {
+                      setNearbyErr(error.message)
+                      setNearbyRows([])
+                      setNearbyDistances({})
+                      setNearbyHadSuccessfulSearch(false)
+                      return
+                    }
+                    const rows = (data ?? []) as Array<
+                      VcProfileRow & {
+                        distance_m?: number
+                      }
+                    >
+                    const dist: Record<string, number> = {}
+                    const clean: VcProfileRow[] = rows.map((r) => {
+                      dist[String(r.id)] = typeof r.distance_m === 'number' ? r.distance_m : NaN
+                      const { distance_m: _, ...rest } = r as VcProfileRow & { distance_m?: number }
+                      return rest as VcProfileRow
+                    })
+                    setNearbyDistances(dist)
+                    setNearbyRows(clean)
+                    setNearbyHadSuccessfulSearch(true)
+                  })()
+                }}
+              >
+                {nearbyLoading ? 'Searching…' : 'Find nearby'}
+              </button>
+            </div>
+            {nearbyErr ? (
+              <div style={{ fontSize: 12, color: '#b91c1c' }}>{nearbyErr}</div>
+            ) : null}
+            {nearbyRows.length > 0 ? (
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                {nearbyRows.map((row) => {
+                  const u = appUserFromVcProfileRow(row)
+                  const d = nearbyDistances[String(row.id)]
+                  const dLabel = Number.isFinite(d) ? `~${Math.round(d)} m` : ''
+                  return (
+                    <li key={row.id} style={{ marginBottom: 6 }}>
+                      <span style={{ fontWeight: 700 }}>{row.display_name?.trim() || u.displayName}</span>
+                      {dLabel ? <span style={{ color: vcGlassFgSecondaryOnContent }}> · {dLabel}</span> : null}
+                      <button
+                        type="button"
+                        style={{ ...btn, marginLeft: 8, padding: '4px 8px', fontSize: 12 }}
+                        onClick={() =>
+                          void Promise.resolve(
+                            props.onAdd({ collaboratorUserId: String(row.id), collaboratorProfile: u }),
+                          ).then(clearSearchAfterAdd)
+                        }
+                      >
+                        Add
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : null}
+            {nearbyHadSuccessfulSearch && nearbyRows.length === 0 && !nearbyLoading ? (
+              <div style={{ fontSize: 12, color: vcGlassFgSecondaryOnContent }}>No one in range yet.</div>
+            ) : null}
+          </div>
+        ) : null}
         <button
           type="button"
           style={btnPrimary}
@@ -538,6 +678,7 @@ export function CasesPage(props: {
     addCaseCollaborator,
     addCaseCollaborators,
     removeCaseCollaborator,
+    reconcileWithRemote,
   } = useStore()
   const [listTab, setListTab] = useState<ListTab>('mine')
   const [showNewCaseForm, setShowNewCaseForm] = useState(false)
@@ -549,6 +690,21 @@ export function CasesPage(props: {
   const [newCaseName, setNewCaseName] = useState('')
   const [newCaseDescription, setNewCaseDescription] = useState('')
   const [teamModalCaseId, setTeamModalCaseId] = useState<string | null>(null)
+  /** Mobile (native + mobile web): join-by-proximity when creating a case */
+  const [allowProximityJoin, setAllowProximityJoin] = useState(false)
+  const [proximityRadiusM, setProximityRadiusM] = useState(400)
+  const [proximityAnchor, setProximityAnchor] = useState<{ lat: number; lng: number } | null>(null)
+  const [proximityAnchorLoading, setProximityAnchorLoading] = useState(false)
+  const [manualInviteCheckLoading, setManualInviteCheckLoading] = useState(false)
+  const [manualInviteCheckBanner, setManualInviteCheckBanner] = useState<string | null>(null)
+  const [manualInviteModal, setManualInviteModal] = useState<{
+    caseId: string
+    caseTitle: string
+    creatorName: string
+    lat: number
+    lng: number
+    totalNearby: number
+  } | null>(null)
   const isNarrow = useMediaQuery(MOBILE_BREAKPOINT_QUERY)
 
   const mineCases = useMemo(
@@ -601,6 +757,87 @@ export function CasesPage(props: {
     setEditingCaseId(null)
   }, [editingCaseId, draftName, draftDesc, baselineName, props.currentUser.id, updateCase])
 
+  useEffect(() => {
+    if (!isMobileProximityClient() || !relationalBackendEnabled()) return
+    void ensureMobileProximityLocationPrefsOn()
+  }, [])
+
+  const runManualProximityInviteCheck = useCallback(async () => {
+    if (!relationalBackendEnabled() || !supabase) return
+    await ensureMobileProximityLocationPrefsOn()
+    setManualInviteCheckBanner(null)
+    setManualInviteModal(null)
+    setManualInviteCheckLoading(true)
+    try {
+      const perm = await getGeolocationPermissionState()
+      if (perm === 'denied') {
+        setManualInviteCheckBanner('Location permission is off. Turn it on in settings to search for nearby invites.')
+        return
+      }
+      const pos = await requestCurrentPosition({ enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 })
+      if (!pos.ok) {
+        setManualInviteCheckBanner(
+          pos.code === 'denied'
+            ? 'Location permission is required.'
+            : 'Could not read your location. Try again outdoors or with location services on.',
+        )
+        return
+      }
+      const lat = pos.position.coords.latitude
+      const lng = pos.position.coords.longitude
+      const { data: rows, error } = await supabase.rpc('vc_active_proximity_invites_at', {
+        p_lat: lat,
+        p_lng: lng,
+      })
+      if (error) {
+        setManualInviteCheckBanner(error.message)
+        return
+      }
+      const list = (rows ?? []) as Array<{
+        case_id: string
+        case_title: string
+        creator_display_name: string
+        creator_user_id: string
+        distance_m: number
+      }>
+      if (list.length === 0) {
+        setManualInviteCheckBanner('No join-by-proximity invites near your location right now.')
+        return
+      }
+      const r = list[0]
+      if (!r) return
+      setManualInviteModal({
+        caseId: r.case_id,
+        caseTitle: r.case_title,
+        creatorName: r.creator_display_name,
+        lat,
+        lng,
+        totalNearby: list.length,
+      })
+    } finally {
+      setManualInviteCheckLoading(false)
+    }
+  }, [])
+
+  const onManualProximityInviteJoin = useCallback(async () => {
+    const m = manualInviteModal
+    if (!m || !supabase) return
+    const { data, error } = await supabase.rpc('vc_accept_proximity_case_invite', {
+      p_case_id: m.caseId,
+      p_lat: m.lat,
+      p_lng: m.lng,
+    })
+    setManualInviteModal(null)
+    if (error) {
+      console.warn('vc_accept_proximity_case_invite', error.message)
+      setManualInviteCheckBanner(error.message)
+      return
+    }
+    if (data === true) {
+      await reconcileWithRemote()
+    }
+  }, [manualInviteModal, reconcileWithRemote])
+
   async function onCreateCaseFromForm() {
     const caseName = newCaseName.trim()
     if (!caseName) return
@@ -608,9 +845,19 @@ export function CasesPage(props: {
       ownerUserId: props.currentUser.id,
       caseName,
       description: clampCaseDescription(newCaseDescription.trim()),
+      proximityInvite:
+        isMobileProximityClient() &&
+        relationalBackendEnabled() &&
+        allowProximityJoin &&
+        proximityAnchor
+          ? { centerLat: proximityAnchor.lat, centerLng: proximityAnchor.lng, radiusM: proximityRadiusM }
+          : undefined,
     })
     setNewCaseName('')
     setNewCaseDescription('')
+    setAllowProximityJoin(false)
+    setProximityAnchor(null)
+    setProximityRadiusM(400)
     setShowNewCaseForm(false)
     props.onOpenCase(id)
   }
@@ -801,6 +1048,40 @@ export function CasesPage(props: {
               </div>
             </div>
           ) : null}
+          {isMobileProximityClient() && relationalBackendEnabled() ? (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: 12,
+                borderRadius: 12,
+                ...vcLiquidGlassInnerSurface,
+                display: 'grid',
+                gap: 10,
+                maxWidth: '100%',
+              }}
+            >
+              <div style={{ fontWeight: 900, fontSize: 13, color: vcGlassFgDarkReadable }}>Nearby invites</div>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
+                Team discovery and proximity invites use your location when you search or join. We keep those on so
+                teammates can find you and you can see invites while VideoCanvass is open.
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <button
+                  type="button"
+                  style={vcGlassBtnPrimary}
+                  disabled={manualInviteCheckLoading}
+                  onClick={() => void runManualProximityInviteCheck()}
+                >
+                  {manualInviteCheckLoading ? 'Checking…' : 'Check for nearby invites'}
+                </button>
+              </div>
+              {manualInviteCheckBanner ? (
+                <div style={{ fontSize: 12, fontWeight: 600, color: vcGlassFgSecondaryOnContent, lineHeight: 1.45 }}>
+                  {manualInviteCheckBanner}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div
             data-vc-tour={VC_TOUR.casesTabsSearch}
             style={{
@@ -907,6 +1188,9 @@ export function CasesPage(props: {
               setShowNewCaseForm(false)
               setNewCaseName('')
               setNewCaseDescription('')
+              setAllowProximityJoin(false)
+              setProximityAnchor(null)
+              setProximityRadiusM(400)
             }}
           >
             <div style={{ display: 'grid', gap: 10 }}>
@@ -930,18 +1214,97 @@ export function CasesPage(props: {
                   style={newCaseDescTextarea}
                 />
               </div>
+              {isMobileProximityClient() && relationalBackendEnabled() ? (
+                <div
+                  style={{
+                    ...vcLiquidGlassInnerSurface,
+                    padding: 12,
+                    borderRadius: 12,
+                    display: 'grid',
+                    gap: 10,
+                  }}
+                >
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, fontWeight: 700, color: vcGlassFgDarkReadable, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={allowProximityJoin}
+                      onChange={(e) => setAllowProximityJoin(e.target.checked)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>Allow join by proximity (30 minutes — others nearby can join this case)</span>
+                  </label>
+                  {allowProximityJoin ? (
+                    <>
+                      <div style={{ fontSize: 12, color: vcGlassFgMetaOnContent, lineHeight: 1.45 }}>
+                        Set the area where teammates can see the invite. Uses this device&apos;s location as the center.
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, fontWeight: 700 }}>Radius (m)</span>
+                        <input
+                          type="number"
+                          min={25}
+                          max={10000}
+                          step={25}
+                          value={proximityRadiusM}
+                          onChange={(e) => setProximityRadiusM(Number(e.target.value) || 400)}
+                          style={{ ...field, maxWidth: 100 }}
+                        />
+                        <button
+                          type="button"
+                          style={btn}
+                          disabled={proximityAnchorLoading}
+                          onClick={() => {
+                            setProximityAnchorLoading(true)
+                            void requestCurrentPosition({ enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 }).then((r) => {
+                              setProximityAnchorLoading(false)
+                              if (r.ok) {
+                                setProximityAnchor({
+                                  lat: r.position.coords.latitude,
+                                  lng: r.position.coords.longitude,
+                                })
+                              }
+                            })
+                          }}
+                        >
+                          {proximityAnchorLoading ? 'Getting location…' : 'Use current location'}
+                        </button>
+                      </div>
+                      {proximityAnchor ? (
+                        <div style={{ fontSize: 12, color: '#047857', fontWeight: 700 }}>
+                          Location captured. Invite active for 30 minutes after you create the case.
+                        </div>
+                      ) : allowProximityJoin ? (
+                        <div style={{ fontSize: 12, color: '#b45309' }}>Capture location to enable proximity join.</div>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button
                   onClick={() => {
                     setShowNewCaseForm(false)
                     setNewCaseName('')
                     setNewCaseDescription('')
+                    setAllowProximityJoin(false)
+                    setProximityAnchor(null)
+                    setProximityRadiusM(400)
                   }}
                   style={btn}
                 >
                   Cancel
                 </button>
-                <button onClick={() => void onCreateCaseFromForm()} style={btnPrimary} disabled={!newCaseName.trim()}>
+                <button
+                  onClick={() => void onCreateCaseFromForm()}
+                  style={btnPrimary}
+                  disabled={
+                    !newCaseName.trim() ||
+                    (isMobileProximityClient() &&
+                      relationalBackendEnabled() &&
+                      allowProximityJoin &&
+                      !proximityAnchor)
+                  }
+                >
                   Save case
                 </button>
               </div>
@@ -971,6 +1334,49 @@ export function CasesPage(props: {
                   void removeCaseCollaborator(props.currentUser.id, { caseId: teamModalCaseId, collaboratorUserId })
                 }
               />
+            ) : null}
+          </Modal>
+
+          <Modal
+            title="Join case nearby"
+            open={manualInviteModal != null}
+            onClose={() => setManualInviteModal(null)}
+            zBase={80000}
+          >
+            {manualInviteModal ? (
+              <div style={{ ...vcLiquidGlassInnerSurface, padding: 16, borderRadius: 12, display: 'grid', gap: 12 }}>
+                {manualInviteModal.totalNearby > 1 ? (
+                  <p style={{ margin: 0, fontSize: 12, color: vcGlassFgMetaOnContent }}>
+                    Showing the nearest of {manualInviteModal.totalNearby} active invites.
+                  </p>
+                ) : null}
+                <p style={{ margin: 0, color: vcGlassFgDarkReadable, lineHeight: 1.45, fontSize: 15 }}>
+                  Join <strong>{manualInviteModal.caseTitle}</strong> created by{' '}
+                  <strong>{manualInviteModal.creatorName}</strong>?
+                </p>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => setManualInviteModal(null)}
+                    style={{
+                      border: '1px solid rgba(148,163,184,0.5)',
+                      borderRadius: 10,
+                      padding: '10px 14px',
+                      background: 'rgba(255,255,255,0.85)',
+                      fontWeight: 700,
+                    }}
+                  >
+                    Not now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onManualProximityInviteJoin()}
+                    style={{ ...vcGlassBtnPrimary, borderRadius: 10 }}
+                  >
+                    Join case
+                  </button>
+                </div>
+              </div>
             ) : null}
           </Modal>
 

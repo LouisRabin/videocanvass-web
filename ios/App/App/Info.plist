@@ -48,7 +48,7 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>VideoCanvass uses your location to center the map and place canvass addresses.</string>
+	<string>VideoCanvass uses your location to center the map and place canvass addresses, to find nearby teammates when you choose that option, and to offer case invites when you enable proximity join.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>VideoCanvass needs photo library access so you can attach reference images to a case.</string>
 	<key>NSCameraUsageDescription</key>

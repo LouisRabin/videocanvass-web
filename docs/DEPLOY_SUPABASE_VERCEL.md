@@ -13,7 +13,7 @@ In the Vercel project: **Settings → Environment Variables**
 | `VITE_VC_RELATIONAL_BACKEND` | `true` | Literal `true` (no quotes in the value field) |
 
 - Enable each variable for **Production** and **Preview** (and **Development** if you use `vercel dev`).
-- After changing variables, **redeploy** the affected deployment (especially Production for `videocanvass-web.vercel.app`).
+- After changing variables, **redeploy** the affected deployment (especially **Production** for your live domain, e.g. [https://www.cameracanvass.com](https://www.cameracanvass.com)).
 
 **Symptom if Production is missing the flag or keys:** mock “choose demo user” sign-in, long loading, or no email/password login — while a preview URL behaves differently.
 
@@ -25,25 +25,25 @@ If you send Supabase Auth mail through **Resend** from your domain, follow [**do
 
 **Authentication → URL configuration**
 
-- **Site URL:** `https://videocanvass-web.vercel.app` (or your primary custom domain)
-- **Redirect URLs:** include the production URL and any preview URLs you use, for example:
-  - `https://videocanvass-web.vercel.app/**`
-  - `https://*.vercel.app/**` (only if acceptable for your security posture)
+- **Site URL:** `https://www.cameracanvass.com` (primary production for this product)
+- **Redirect URLs:** include production and any hostnames users actually open (Vercel default, previews, local), for example:
+  - `https://www.cameracanvass.com/**`
+  - `https://*.vercel.app/**` (covers [Vercel project](https://vercel.com/louis-rabins-projects/videocanvass-web) previews; only if acceptable for your security posture)
 
 ### Password reset (“Forgot password”)
 
 The app calls `resetPasswordForEmail` with `redirectTo` set to your current origin and path (see `passwordRecoveryRedirectTo()` in `src/lib/authPasswordReset.ts`). After the user clicks the email link, Supabase redirects back with tokens in the URL hash so they can set a new password.
 
-**Important:** **`redirectTo` must be a full URL including `https://`**. If Supabase or the dashboard uses a bare hostname (e.g. `cameracanvass.com` or `videocanvass-web.vercel.app` without a scheme), the browser can end up at `https://<project>.supabase.co/your-hostname#access_token=…` and show `{"error":"requested path is invalid"}` — Supabase treats the hostname as a **path** on `*.supabase.co`. Fix:
+**Important:** **`redirectTo` must be a full URL including `https://`**. If Supabase or the dashboard uses a bare hostname (e.g. `cameracanvass.com` without a scheme), the browser can end up at `https://<project>.supabase.co/your-hostname#access_token=…` and show `{"error":"requested path is invalid"}` — Supabase treats the hostname as a **path** on `*.supabase.co`. Fix:
 
-- **Authentication → URL configuration → Site URL:** use `https://your-domain` (with `https://`), not the hostname alone.
-- **Redirect URLs:** keep using patterns like `https://your-app.vercel.app/**`.
+- **Authentication → URL configuration → Site URL:** use `https://www.cameracanvass.com` (with `https://`), not the hostname alone.
+- **Redirect URLs:** include `https://www.cameracanvass.com/**` plus any preview patterns you use.
 
-Optional: set **`VITE_VC_SITE_URL`** in Vercel to the same public origin (e.g. `https://videocanvass-web.vercel.app`) so the reset link always uses that value even if `window.location` is unusual (some embedded browsers).
+Optional: set **`VITE_VC_SITE_URL`** in Vercel to `https://www.cameracanvass.com` (no trailing path) so the reset link always uses that value even if `window.location` is unusual (some embedded browsers).
 
 1. **Redirect allow list:** Add the exact URLs users can land on after clicking the email link, e.g.:
    - `http://localhost:5173/**` (Vite dev)
-   - `https://videocanvass-web.vercel.app/**`
+   - `https://www.cameracanvass.com/**`
    - Preview URLs if you use them (`https://*.vercel.app/**` or each preview host).
 2. **Email:** Under **Authentication → Providers → Email**, keep **Confirm email** / **Secure email change** as you prefer. Password reset emails are sent by Supabase (or your custom SMTP if configured under **Project Settings → Auth**).
 3. **Template (optional):** **Authentication → Email templates → Reset password** — the repo includes a branded HTML layout at [`supabase/templates/recovery.html`](../supabase/templates/recovery.html). For **hosted** Supabase, open that file, copy the full HTML into the dashboard editor, and keep the Go variables intact (`{{ .ConfirmationURL }}`, `{{ .Email }}`). For **local** `supabase start`, it is wired in [`supabase/config.toml`](../supabase/config.toml) under `[auth.email.template.recovery]`.
@@ -70,7 +70,7 @@ Apply migrations **in this order** (SQL editor: open each file from the repo, pa
 3. [`supabase/migrations/20260407120000_vc_track_points_placement_source.sql`](../supabase/migrations/20260407120000_vc_track_points_placement_source.sql)
 4. (Optional but recommended) [`supabase/migrations/20260410120000_vc_rls_reset_grants.sql`](../supabase/migrations/20260410120000_vc_rls_reset_grants.sql) — canonical `vc_cases` policies + `GRANT`s.
 
-Alternatively, from the repo with the CLI linked to this project: `supabase db push`.
+Alternatively, from the repo with the CLI linked to this project: `supabase db push` (applies **all** migration files in `supabase/migrations/`, including any newer than the numbered list above—team search, proximity, etc.).
 
 ### Reset policies (if inserts still fail on an already-migrated DB)
 

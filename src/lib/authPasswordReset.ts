@@ -38,10 +38,10 @@ function normalizeAbsoluteAppUrl(raw: string): string | null {
 /**
  * `redirectTo` for `supabase.auth.resetPasswordForEmail`.
  * Must be listed under Supabase Dashboard → Authentication → URL configuration → **Redirect URLs**
- * (e.g. `https://your-app.vercel.app/**`).
+ * (e.g. `https://www.cameracanvass.com/**`).
  *
  * Optional **`VITE_VC_SITE_URL`**: set to your public app origin if `window.location` is wrong
- * (e.g. some WebViews). Example: `https://videocanvass-web.vercel.app`
+ * (e.g. some WebViews). Example: `https://www.cameracanvass.com`
  */
 export function passwordRecoveryRedirectTo(): string {
   const envRaw = (import.meta.env.VITE_VC_SITE_URL as string | undefined)?.trim()
@@ -60,7 +60,7 @@ export function passwordRecoveryRedirectTo(): string {
       const h = window.location.hostname
       if (h) return normalizeAbsoluteAppUrl(h) ?? `https://${h}/`
       console.warn(
-        '[auth] Cannot derive https URL for password reset; set VITE_VC_SITE_URL (e.g. https://your-app.vercel.app).',
+        '[auth] Cannot derive https URL for password reset; set VITE_VC_SITE_URL (e.g. https://www.cameracanvass.com).',
       )
       return ''
     }
