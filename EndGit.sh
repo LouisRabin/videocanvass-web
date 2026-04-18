@@ -72,6 +72,10 @@ echo "  Remote: origin · Branch: ${BR}"
 if ! git push -u origin "${BR}"; then
   echo ""
   echo "[ERROR] git push failed (network, auth, or remote name not \"origin\")."
+  echo ""
+  echo "GitHub over HTTPS: use a Personal Access Token as the password (not your GitHub account password)."
+  echo "  https://github.com/settings/tokens  (repo scope is enough for push)"
+  echo "Or switch origin to SSH (git@github.com:OWNER/REPO.git) and add an SSH key on GitHub."
   exit 1
 fi
 
