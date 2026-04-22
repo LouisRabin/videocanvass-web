@@ -14,7 +14,10 @@
  * Legacy rows with empty `createdByUserId` count as the case owner for creator checks.
  */
 
-import type { AppData, CaseAttachment, CaseFile, Location, Track, TrackPoint } from './types'
+import type { AppData, AppUser, CaseAttachment, CaseFile, Location, Track, TrackPoint } from './types'
+
+/** Display + tax for the “Notes - …” heading (creator of the address or track step). */
+export type NotesHeadingContributor = Pick<AppUser, 'displayName' | 'taxNumber'>
 
 class PermissionDeniedError extends Error {
   constructor(message = 'Permission denied') {
@@ -165,4 +168,29 @@ export function canEditCaseAttachment(data: AppData, actorUserId: string, att: C
 
 export function canDeleteCaseAttachment(data: AppData, actorUserId: string, att: CaseAttachment): boolean {
   return canEditCaseAttachment(data, actorUserId, att)
+}
+
+/** Who added this address (empty `createdByUserId` → case owner), for notes UI attribution. */
+export function notesHeadingContributorForLocation(data: AppData, loc: Location): NotesHeadingContributor | null {
+  const c = findCase(data, loc.caseId)
+  if (!c) return null
+  const uid = effectiveLocationCreatorId(loc, c.ownerUserId)
+  const u = data.users.find((x) => x.id === uid)
+  if (u) return { displayName: u.displayName, taxNumber: u.taxNumber }
+  if (uid.trim()) return { displayName: 'Unknown collaborator', taxNumber: '—' }
+  return null
+}
+
+/** Who added this tracking step (empty `createdByUserId` → case owner), for notes UI attribution. */
+export function notesHeadingContributorForTrackPoint(
+  data: AppData,
+  point: TrackPoint,
+): NotesHeadingContributor | null {
+  const c = findCase(data, point.caseId)
+  if (!c) return null
+  const uid = effectiveTrackPointCreatorId(point, c.ownerUserId)
+  const u = data.users.find((x) => x.id === uid)
+  if (u) return { displayName: u.displayName, taxNumber: u.taxNumber }
+  if (uid.trim()) return { displayName: 'Unknown collaborator', taxNumber: '—' }
+  return null
 }

@@ -32,6 +32,8 @@ import {
   canEditTrack,
   canEditTrackPoint,
   hasCaseAccess,
+  notesHeadingContributorForLocation,
+  notesHeadingContributorForTrackPoint,
 } from '../lib/casePermissions'
 import { processCaseImageFile } from '../lib/caseImageUpload'
 import type { AppUser, CanvassStatus, CaseAttachmentKind, LatLon, Location, Track, TrackPoint } from '../lib/types'
@@ -5427,7 +5429,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           layout="stack"
           embedInModal
           location={addressModalLocation}
-          notesContributor={props.currentUser}
+          notesContributor={notesHeadingContributorForLocation(data, addressModalLocation) ?? undefined}
           buildingOutlineLoading={footprintLoadingIds.has(addressModalLocation.id)}
           buildingOutlineFailed={footprintFailedIds.has(addressModalLocation.id)}
           canEdit={canEditLocation(data, actorId, addressModalLocation)}
@@ -5493,7 +5495,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           point={selectedTrackPoint}
           trackLabel={selectedTrackLabel}
           stepIndex={selectedTrackPointStepIndex}
-          notesContributor={props.currentUser}
+          notesContributor={notesHeadingContributorForTrackPoint(data, selectedTrackPoint) ?? undefined}
           canEdit={canEditTrackPoint(data, actorId, selectedTrackPoint)}
           canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
           onClose={() => setTrackMapModalOpen(false)}
@@ -5822,7 +5824,9 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             </div>
           ) : null}
           <div>
-            <div style={label}>{formatAddressTrackingNotesLabel(props.currentUser)}</div>
+            <div style={label}>
+              {formatAddressTrackingNotesLabel(notesHeadingContributorForLocation(data, listNotesLocation))}
+            </div>
             <textarea
               value={listNotesLocation.notes}
               readOnly={!canEditLocation(data, actorId, listNotesLocation)}

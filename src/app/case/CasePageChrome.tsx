@@ -556,7 +556,7 @@ export function TrackPointDrawer(props: {
   /** Subject track name shown in the header before the step number. */
   trackLabel: string
   stepIndex: number
-  /** Shown in the notes heading: `Notes - name (tax)` (e.g. signed-in user). */
+  /** Creator attribution in the notes heading (`Notes - name (tax)`). */
   notesContributor?: NotesContributor | null
   canEdit?: boolean
   canDelete?: boolean
@@ -927,7 +927,7 @@ export function LocationDrawer(props: {
   location: Location
   buildingOutlineLoading: boolean
   buildingOutlineFailed: boolean
-  /** Shown in the notes heading: `Notes - name (tax)` (e.g. signed-in user). */
+  /** Creator attribution in the notes heading (`Notes - name (tax)`). */
   notesContributor?: NotesContributor | null
   /** When false, status and notes are read-only and delete is hidden. */
   canEdit?: boolean
