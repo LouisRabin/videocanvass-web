@@ -38,7 +38,9 @@ export function Layout(props: {
   const sync = useSyncStatus()
   const [syncDiagOpen, setSyncDiagOpen] = useState(false)
   const targetMode = useTargetMode()
-  const showSyncStatusPill = getNativeCapabilities(targetMode).platform !== 'ios'
+  /** Full web (desktop layout): hide sync status dot. Mobile web / native keep prior rules (iOS hides pill). */
+  const showSyncStatusPill =
+    targetMode === 'web' ? false : getNativeCapabilities(targetMode).platform !== 'ios'
 
   const syncLabel = sync.mode === 'supabase_ok' ? 'Sync: OK' : sync.mode === 'local_fallback' ? 'Sync: issue' : 'Sync: starting'
   const syncTitleDetail = sync.message.trim() ? ` — ${sync.message}` : ''

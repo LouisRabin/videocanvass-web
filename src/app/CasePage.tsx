@@ -114,6 +114,7 @@ import {
   caseMetaInlineDescEdit,
   caseMetaInlineNameEdit,
   field,
+  formatAddressTrackingNotesLabel,
   label,
   select,
   suggestionBtn,
@@ -5426,6 +5427,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           layout="stack"
           embedInModal
           location={addressModalLocation}
+          notesContributor={props.currentUser}
           buildingOutlineLoading={footprintLoadingIds.has(addressModalLocation.id)}
           buildingOutlineFailed={footprintFailedIds.has(addressModalLocation.id)}
           canEdit={canEditLocation(data, actorId, addressModalLocation)}
@@ -5491,6 +5493,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
           point={selectedTrackPoint}
           trackLabel={selectedTrackLabel}
           stepIndex={selectedTrackPointStepIndex}
+          notesContributor={props.currentUser}
           canEdit={canEditTrackPoint(data, actorId, selectedTrackPoint)}
           canDelete={canDeleteTrackPoint(data, actorId, selectedTrackPoint)}
           onClose={() => setTrackMapModalOpen(false)}
@@ -5819,7 +5822,7 @@ export function CasePage(props: { caseId: string; currentUser: AppUser; onBack: 
             </div>
           ) : null}
           <div>
-            <div style={label}>Notes</div>
+            <div style={label}>{formatAddressTrackingNotesLabel(props.currentUser)}</div>
             <textarea
               value={listNotesLocation.notes}
               readOnly={!canEditLocation(data, actorId, listNotesLocation)}

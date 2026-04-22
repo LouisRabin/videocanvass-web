@@ -7,7 +7,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react'
-import type { Location, TrackPoint } from '../../lib/types'
+import type { AppUser, Location, TrackPoint } from '../../lib/types'
 import { statusColor, statusLabel } from '../../lib/types'
 import { formatAppDateTime, parseDatetimeLocalToTimestamp, timestampToDatetimeLocalValue } from '../../lib/timeFormat'
 import { DvrSingleDateTimePicker } from '../ProbativeDvrFlow'
@@ -60,6 +60,19 @@ export const label: CSSProperties = {
   color: '#111827',
   fontWeight: 800,
   marginBottom: 6,
+}
+
+export type NotesContributor = Pick<AppUser, 'displayName' | 'taxNumber'>
+
+/** One line, same typography as the word “Notes” (uses `label` styles where rendered). */
+export function formatAddressTrackingNotesLabel(contributor: NotesContributor | null | undefined): string {
+  if (!contributor) return 'Notes'
+  const name = contributor.displayName.trim()
+  const tax = contributor.taxNumber.trim()
+  if (!name && !tax) return 'Notes'
+  if (name && tax) return `Notes - ${name} (${tax})`
+  if (name) return `Notes - ${name}`
+  return `Notes - (${tax})`
 }
 
 export const field: CSSProperties = {
@@ -543,6 +556,8 @@ export function TrackPointDrawer(props: {
   /** Subject track name shown in the header before the step number. */
   trackLabel: string
   stepIndex: number
+  /** Shown in the notes heading: `Notes - name (tax)` (e.g. signed-in user). */
+  notesContributor?: NotesContributor | null
   canEdit?: boolean
   canDelete?: boolean
   onClose: () => void
@@ -742,9 +757,10 @@ export function TrackPointDrawer(props: {
   )
 
   const coordLine = formatLatLonForStepUi(props.point.lat, props.point.lon)
+  const notesHeading = formatAddressTrackingNotesLabel(props.notesContributor)
   const notesBlock = (
     <div>
-      <div style={label}>Notes</div>
+      <div style={label}>{notesHeading}</div>
       <div
         style={{
           fontSize: 12,
@@ -911,6 +927,8 @@ export function LocationDrawer(props: {
   location: Location
   buildingOutlineLoading: boolean
   buildingOutlineFailed: boolean
+  /** Shown in the notes heading: `Notes - name (tax)` (e.g. signed-in user). */
+  notesContributor?: NotesContributor | null
   /** When false, status and notes are read-only and delete is hidden. */
   canEdit?: boolean
   canDelete?: boolean
@@ -1041,6 +1059,8 @@ export function LocationDrawer(props: {
     </div>
   ) : null
 
+  const notesHeading = formatAddressTrackingNotesLabel(props.notesContributor)
+
   const notesOnly = (
     <div style={{ marginTop: wide ? 0 : 'var(--vc-space-md)' }}>
       {wide ? (
@@ -1055,7 +1075,7 @@ export function LocationDrawer(props: {
             marginBottom: 6,
           }}
         >
-          <span style={{ ...label, marginBottom: 0, display: 'inline-block' }}>Notes</span>
+          <span style={{ ...label, marginBottom: 0, display: 'inline-block' }}>{notesHeading}</span>
           <span
             style={{
               color: '#6b7280',
@@ -1069,7 +1089,7 @@ export function LocationDrawer(props: {
           </span>
         </div>
       ) : (
-        <div style={label}>Notes</div>
+        <div style={label}>{notesHeading}</div>
       )}
       <textarea
         value={props.location.notes}
@@ -1104,7 +1124,7 @@ export function LocationDrawer(props: {
         {canvassResultsPills(false)}
         {buildingBlock}
         <div>
-          <div style={label}>Notes</div>
+          <div style={label}>{notesHeading}</div>
           <textarea
             value={props.location.notes}
             readOnly={!canEdit}
