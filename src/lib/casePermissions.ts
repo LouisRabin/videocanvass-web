@@ -170,18 +170,31 @@ export function canDeleteCaseAttachment(data: AppData, actorUserId: string, att:
   return canEditCaseAttachment(data, actorUserId, att)
 }
 
-/** Who added this address (empty `createdByUserId` → case owner), for notes UI attribution. */
+function findUserProfileById(data: AppData, userId: string): AppUser | undefined {
+  const key = normId(userId)
+  if (!key) return undefined
+  return data.users.find((x) => normId(x.id) === key)
+}
+
+/**
+ * Who **added** this address (`createdByUserId`), for the notes heading — not the viewer.
+ * Empty creator is treated as case owner (same as delete permissions / legacy backfill).
+ * Profile lookup is UUID case-insensitive so JWT vs Postgres casing mismatches still resolve.
+ */
 export function notesHeadingContributorForLocation(data: AppData, loc: Location): NotesHeadingContributor | null {
   const c = findCase(data, loc.caseId)
   if (!c) return null
   const uid = effectiveLocationCreatorId(loc, c.ownerUserId)
-  const u = data.users.find((x) => x.id === uid)
+  const u = findUserProfileById(data, uid)
   if (u) return { displayName: u.displayName, taxNumber: u.taxNumber }
   if (uid.trim()) return { displayName: 'Unknown collaborator', taxNumber: '—' }
   return null
 }
 
-/** Who added this tracking step (empty `createdByUserId` → case owner), for notes UI attribution. */
+/**
+ * Who **added** this tracking step (`createdByUserId`), for the notes heading — not the viewer.
+ * Same rules as {@link notesHeadingContributorForLocation}.
+ */
 export function notesHeadingContributorForTrackPoint(
   data: AppData,
   point: TrackPoint,
@@ -189,7 +202,7 @@ export function notesHeadingContributorForTrackPoint(
   const c = findCase(data, point.caseId)
   if (!c) return null
   const uid = effectiveTrackPointCreatorId(point, c.ownerUserId)
-  const u = data.users.find((x) => x.id === uid)
+  const u = findUserProfileById(data, uid)
   if (u) return { displayName: u.displayName, taxNumber: u.taxNumber }
   if (uid.trim()) return { displayName: 'Unknown collaborator', taxNumber: '—' }
   return null
