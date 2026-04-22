@@ -3,12 +3,29 @@ import type { InputHTMLAttributes, TextareaHTMLAttributes } from 'react'
 
 type MobileOS = 'ios' | 'android'
 
+function parseTruthyDevEnv(raw: string | undefined): boolean {
+  if (raw == null) return false
+  const t = String(raw).trim().toLowerCase()
+  return t === 'true' || t === '1' || t === 'yes' || t === 'on'
+}
+
+/**
+ * Dev-only: treat desktop browsers as proximity-capable so localhost can exercise
+ * join-by-proximity / nearby flows without a phone UA. Production builds ignore this.
+ */
+function devDesktopProximityEnabled(): boolean {
+  if (!import.meta.env.DEV) return false
+  return parseTruthyDevEnv(import.meta.env.VITE_VC_PROXIMITY_DESKTOP_DEV as string | undefined)
+}
+
 /**
  * True for Capacitor iOS/Android shells and for mobile browsers (phone/tablet UA).
- * Used to gate proximity / team-location features; desktop browsers return false.
+ * Used to gate proximity / team-location features; desktop browsers return false
+ * unless `VITE_VC_PROXIMITY_DESKTOP_DEV` is set in local dev (see `.env.example`).
  */
 export function isMobileProximityClient(): boolean {
   if (typeof window === 'undefined') return false
+  if (devDesktopProximityEnabled()) return true
   if (Capacitor.isNativePlatform()) {
     const p = Capacitor.getPlatform()
     return p === 'ios' || p === 'android'
